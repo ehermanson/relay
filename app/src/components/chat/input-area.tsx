@@ -14,6 +14,7 @@ import type {
 } from "@shared/types";
 import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { QueuedRestore } from "@/lib/chat-types";
+import { toggleAnswerSelection } from "@/lib/utils";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
 import { ComposerPanel } from "@/components/chat/input-area/composer-panel";
 import { AttachmentStrip } from "@/components/chat/input-area/attachment-strip";
@@ -313,7 +314,7 @@ export function InputArea({
     resetAfterSend,
   } = useComposerState(instanceId, composerRef);
   const [promptText, setPromptText] = useState("");
-  const [selectedPromptAnswers, setSelectedPromptAnswers] = useState<Record<string, string>>({});
+  const [selectedPromptAnswers, setSelectedPromptAnswers] = useState<Record<string, string[]>>({});
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
   const [promptReplyMode, setPromptReplyMode] = useState(false);
   const [planComments, setPlanComments] = useState<PlanComment[]>([]);
@@ -515,12 +516,16 @@ export function InputArea({
   };
 
   const promptAnswerForQuestion = (question: UserInputQuestion) => {
+    const selected = selectedPromptAnswers[question.id] ?? [];
     if (freeformQuestionId && question.id === freeformQuestionId) {
       const customAnswer = promptText.trim();
-      if (customAnswer) return [customAnswer];
+      if (customAnswer) {
+        // Multi-select: the typed note is an extra answer alongside checked
+        // options. Single-select: the note replaces the pick (radio semantics).
+        return question.multiSelect ? [...selected, customAnswer] : [customAnswer];
+      }
     }
-    const selected = selectedPromptAnswers[question.id];
-    return selected ? [selected] : [];
+    return selected;
   };
 
   const canSubmitPrompt =
@@ -707,7 +712,11 @@ export function InputArea({
         onSelectOption={(questionId, answer) =>
           setSelectedPromptAnswers((prev) => ({
             ...prev,
-            [questionId]: answer,
+            [questionId]: toggleAnswerSelection(
+              prev[questionId],
+              answer,
+              promptQuestions.find((q) => q.id === questionId)?.multiSelect,
+            ),
           }))
         }
         collapsed={isQuestionPanelCollapsed}

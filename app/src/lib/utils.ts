@@ -153,6 +153,23 @@ export function isChatDone(
   return getChatRecencyTimestamp(instance) <= instance.doneAt;
 }
 
+/**
+ * Toggle an AskUserQuestion option in/out of the current selection.
+ * Multi-select questions accumulate a set of labels; single-select ones replace
+ * the prior choice (radio behavior — re-clicking the selected option keeps it).
+ */
+export function toggleAnswerSelection(
+  current: string[] | undefined,
+  answer: string,
+  multiSelect: boolean | undefined,
+): string[] {
+  const list = current ?? [];
+  if (multiSelect) {
+    return list.includes(answer) ? list.filter((a) => a !== answer) : [...list, answer];
+  }
+  return [answer];
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";

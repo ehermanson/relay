@@ -1,10 +1,10 @@
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import type { UserInputQuestion } from "@shared/types";
 
 interface AskUserQuestionPanelProps {
   questions: UserInputQuestion[];
-  selectedAnswers: Record<string, string>;
+  selectedAnswers: Record<string, string[]>;
   onSelectOption: (questionId: string, answer: string) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -20,7 +20,7 @@ export function AskUserQuestionPanel({
   if (questions.length === 0) return null;
 
   const answeredCount = questions.filter(
-    (q, i) => !!selectedAnswers[q.id || `question-${i}`],
+    (q, i) => (selectedAnswers[q.id || `question-${i}`]?.length ?? 0) > 0,
   ).length;
 
   return (
@@ -60,8 +60,9 @@ export function AskUserQuestionPanel({
             <div className="max-h-[50vh] overflow-y-auto">
               {questions.map((question, questionIndex) => {
                 const questionId = question.id || `question-${questionIndex}`;
-                const selectedAnswer = selectedAnswers[questionId] ?? null;
+                const selectedForQuestion = selectedAnswers[questionId] ?? [];
                 const options = question.options ?? [];
+                const multiSelect = question.multiSelect === true;
 
                 return (
                   <section
@@ -77,12 +78,15 @@ export function AskUserQuestionPanel({
                       <h3 className="mt-1.5 text-[0.8125rem] font-medium tracking-[-0.015em] text-text">
                         {question.question}
                       </h3>
+                      {multiSelect ? (
+                        <p className="mt-1 text-[0.6875rem] text-muted">Select all that apply</p>
+                      ) : null}
                     </div>
 
                     {options.length > 0 ? (
                       <div className="pb-1.5">
                         {options.map((option, optionIndex) => {
-                          const isSelected = selectedAnswer === option.label;
+                          const isSelected = selectedForQuestion.includes(option.label);
                           return (
                             <button
                               key={`${questionId}-${option.label}-${optionIndex}`}
@@ -93,13 +97,21 @@ export function AskUserQuestionPanel({
                               }`}
                             >
                               <span
-                                className={`mt-px inline-flex size-[1.375rem] shrink-0 items-center justify-center rounded-md border text-[0.6875rem] font-medium tabular-nums ${
+                                className={`mt-px inline-flex size-[1.375rem] shrink-0 items-center justify-center border text-[0.6875rem] font-medium tabular-nums ${
+                                  multiSelect ? "rounded" : "rounded-md"
+                                } ${
                                   isSelected
                                     ? "border-accent/40 bg-accent text-white"
                                     : "border-border/70 bg-surface text-muted"
                                 }`}
                               >
-                                {optionIndex + 1}
+                                {multiSelect ? (
+                                  isSelected ? (
+                                    <Check size={13} strokeWidth={3} />
+                                  ) : null
+                                ) : (
+                                  optionIndex + 1
+                                )}
                               </span>
                               <span className="min-w-0">
                                 <span

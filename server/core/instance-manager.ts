@@ -750,6 +750,9 @@ function extractUserInputRequest(activity: ActivityMessage): ProviderRequest | n
             ({
               ...question,
               id: typeof question.id === "string" ? question.id : `q_${index}`,
+              // Preserve multiSelect through replay/restore so a rehydrated prompt
+              // keeps its multiple-selection affordance (see claude-sdk.ts).
+              multiSelect: question.multiSelect === true,
               // The Claude harness always offers a freeform "Other" answer; the
               // tool input has no flag for it, so mark it here so replayed/restored
               // AskUserQuestion prompts enable the composer (see claude-sdk.ts).

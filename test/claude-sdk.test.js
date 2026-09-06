@@ -1102,7 +1102,12 @@ describe("ClaudeSdkSession", () => {
         {
           questions: [
             { question: "Which do you prefer?", options: [{ label: "Coffee" }, { label: "Tea" }] },
-            { id: "fixed", question: "Pick a number", options: [{ label: "1" }] },
+            {
+              id: "fixed",
+              question: "Pick a number",
+              options: [{ label: "1" }],
+              multiSelect: true,
+            },
           ],
         },
         { signal: new AbortController().signal, toolUseID: "tu-ask-1" },
@@ -1122,6 +1127,9 @@ describe("ClaudeSdkSession", () => {
       // Generated ids by index where absent, preserved where present.
       assert.equal(request.questions[0].id, "q_0");
       assert.equal(request.questions[1].id, "fixed");
+      // multiSelect survives the mapper and is normalized to a boolean.
+      assert.equal(request.questions[0].multiSelect, false);
+      assert.equal(request.questions[1].multiSelect, true);
 
       session.close();
       await resultPromise.catch(() => {});

@@ -281,7 +281,12 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
             )
             // The Claude harness always offers a freeform "Other" answer; flag it
             // so the UI enables the composer (see claude-sdk.ts / instance-manager.ts).
-            .map((question) => ({ ...question, isOther: true }))
+            // Normalize multiSelect to a boolean to match the SDK/replay mappers.
+            .map((question) => ({
+              ...question,
+              multiSelect: question.multiSelect === true,
+              isOther: true,
+            }))
         : [];
       if (questions.length > 0) {
         const request: ProviderRequest = {

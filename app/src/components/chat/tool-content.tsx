@@ -8,6 +8,7 @@ import { useState } from "react";
 import { ActivityCodeBlock, PatchDiffView, langFromPath } from "@/components/chat/activity-code";
 import { ImageThumbnail } from "@/components/chat/markdown-content";
 import type { EditToolInput, UserInputAnswer } from "@shared/types";
+import { toggleAnswerSelection } from "@/lib/utils";
 
 const IMAGE_EXTENSIONS = new Set([
   "png",
@@ -64,7 +65,7 @@ export function AskUserQuestionContent({
   isInteractive,
 }: AskUserQuestionContentProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string[]>>({});
   const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [replyMode, setReplyMode] = useState(false);
@@ -76,6 +77,7 @@ export function AskUserQuestionContent({
         question?: string;
         header?: string;
         options?: Array<{ label?: string; description?: string }>;
+        multiSelect?: boolean;
         isOther?: boolean;
       }>
     | undefined;
@@ -87,18 +89,31 @@ export function AskUserQuestionContent({
   const canRespond = isInteractive && isManagedPrompt && !submitted;
 
   const answerForQuestion = (questionId: string) => {
-    if (selectedAnswers[questionId] === "__other__") {
-      const other = otherAnswers[questionId]?.trim();
-      return other ? [other] : [];
+    const selected = selectedAnswers[questionId] ?? [];
+    const result: string[] = [];
+    for (const label of selected) {
+      if (label === "__other__") {
+        const other = otherAnswers[questionId]?.trim();
+        if (other) result.push(other);
+      } else {
+        result.push(label);
+      }
     }
-    const selected = selectedAnswers[questionId];
-    return selected ? [selected] : [];
+    return result;
   };
 
   const canSubmit =
     canRespond &&
     questions.every((question, index) => {
       const questionId = question.id || `question-${index}`;
+      // "Other" picked but left blank isn't a real answer — require the text so
+      // the choice isn't silently dropped when submitting.
+      if (
+        (selectedAnswers[questionId] ?? []).includes("__other__") &&
+        !otherAnswers[questionId]?.trim()
+      ) {
+        return false;
+      }
       return answerForQuestion(questionId).length > 0;
     });
 
@@ -106,8 +121,8 @@ export function AskUserQuestionContent({
     <div className="mt-2 flex flex-col gap-2">
       {questions.map((q, qi) => {
         const questionId = q.id || `question-${qi}`;
-        const selectedAnswer = selectedAnswers[questionId];
-        const showOther = q.isOther && selectedAnswer === "__other__";
+        const selectedForQuestion = selectedAnswers[questionId] ?? [];
+        const showOther = q.isOther && selectedForQuestion.includes("__other__");
 
         return (
           <div key={qi} className="overflow-hidden rounded-lg border border-border">
@@ -118,6 +133,11 @@ export function AskUserQuestionContent({
                 </span>
               )}
               {q.question}
+              {q.multiSelect && isManagedPrompt && (
+                <p className="mt-1 text-[0.6875rem] font-normal text-muted">
+                  Select all that apply
+                </p>
+              )}
             </div>
             {q.options && (
               <div className="flex flex-col">
@@ -125,7 +145,7 @@ export function AskUserQuestionContent({
                   const key = `${qi}-${oi}`;
                   const optionLabel = opt.label;
                   const isSelected = isManagedPrompt
-                    ? selectedAnswer === optionLabel
+                    ? !!optionLabel && selectedForQuestion.includes(optionLabel)
                     : selectedKey === key;
                   const isDimmed = !isManagedPrompt && selectedKey !== null && !isSelected;
                   return (
@@ -146,7 +166,11 @@ export function AskUserQuestionContent({
                               if (canRespond) {
                                 setSelectedAnswers((prev) => ({
                                   ...prev,
-                                  [questionId]: optionLabel,
+                                  [questionId]: toggleAnswerSelection(
+                                    prev[questionId],
+                                    optionLabel,
+                                    q.multiSelect,
+                                  ),
                                 }));
                               }
                             }
@@ -175,7 +199,7 @@ export function AskUserQuestionContent({
                     <button
                       type="button"
                       className={`rounded-md px-2 py-1 text-[0.75rem] font-medium transition-colors ${
-                        selectedAnswer === "__other__"
+                        selectedForQuestion.includes("__other__")
                           ? "bg-accent/10 text-accent"
                           : "text-muted hover:bg-accent/5 hover:text-text"
                       }`}
@@ -184,7 +208,11 @@ export function AskUserQuestionContent({
                           ? () =>
                               setSelectedAnswers((prev) => ({
                                 ...prev,
-                                [questionId]: "__other__",
+                                [questionId]: toggleAnswerSelection(
+                                  prev[questionId],
+                                  "__other__",
+                                  q.multiSelect,
+                                ),
                               }))
                           : undefined
                       }

@@ -175,6 +175,10 @@ export interface UserInputQuestion {
   header: string;
   question: string;
   options?: UserInputOption[] | null;
+  // When true the user may pick more than one option for this question (Claude's
+  // AskUserQuestion `multiSelect`). The answer is always a `string[]`, so this only
+  // affects how many entries it may hold and how the picker behaves.
+  multiSelect?: boolean;
   isOther?: boolean;
   isSecret?: boolean;
 }

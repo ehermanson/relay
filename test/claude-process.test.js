@@ -71,6 +71,12 @@ describe("ClaudeProcess state management", () => {
                     header: "Preference",
                     question: "Which do you prefer?",
                   },
+                  {
+                    id: "sides",
+                    header: "Sides",
+                    question: "Pick any sides",
+                    multiSelect: true,
+                  },
                 ],
               },
             },
@@ -82,6 +88,9 @@ describe("ClaudeProcess state management", () => {
     assert.equal(requests.length, 1);
     assert.equal(requests[0].kind, "user_input");
     assert.equal(requests[0].requestId, "ask-cli-1");
+    // multiSelect is normalized to a boolean on the CLI path, matching the SDK/replay mappers.
+    assert.equal(requests[0].questions[0].multiSelect, false);
+    assert.equal(requests[0].questions[1].multiSelect, true);
     assert.equal(activities.length, 1);
     assert.equal(activities[0].tool, "AskUserQuestion");
     assert.equal(activities[0].input.requestId, "ask-cli-1");

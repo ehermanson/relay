@@ -46,6 +46,7 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ViewHeader, ViewHeaderTitle, MobileSidebarToggle } from "@/components/ui/view-header";
 import type { ChatItem } from "@/hooks/use-instance-messages";
 import type { MergedActivity } from "@/lib/chat-types";
+import { toggleAnswerSelection } from "@/lib/utils";
 import type {
   InstanceInfo,
   InstanceStatus,
@@ -230,9 +231,10 @@ const ASK_USER_QUESTIONS: UserInputQuestion[] = [
   {
     id: "testing",
     header: "Testing strategy",
-    question: "What level of test coverage do you want?",
+    question: "Which test types should we add? (multi-select)",
+    multiSelect: true,
     options: [
-      { label: "Unit tests only", description: "Fast, focused tests for individual functions" },
+      { label: "Unit tests", description: "Fast, focused tests for individual functions" },
       { label: "Integration tests", description: "Test component interactions and data flow" },
       { label: "Full E2E", description: "End-to-end browser tests for critical paths" },
     ],
@@ -1029,7 +1031,7 @@ export function ChatSandbox() {
   const [instanceOverrides, setInstanceOverrides] = useState<Partial<InstanceInfo>>({});
   const [composerMode, setComposerMode] = useState<ComposerMode>("idle");
   const [planComments, setPlanComments] = useState<PlanComment[]>([]);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string[]>>({});
   const [connectionBanner, setConnectionBanner] = useState<"reconnecting" | "interrupted" | null>(
     null,
   );
@@ -1377,7 +1379,14 @@ export function ChatSandbox() {
               onPlanCommentsChange={setPlanComments}
               selectedAnswers={selectedAnswers}
               onSelectAnswer={(qId, answer) =>
-                setSelectedAnswers((prev) => ({ ...prev, [qId]: answer }))
+                setSelectedAnswers((prev) => ({
+                  ...prev,
+                  [qId]: toggleAnswerSelection(
+                    prev[qId],
+                    answer,
+                    ASK_USER_QUESTIONS.find((q) => q.id === qId)?.multiSelect,
+                  ),
+                }))
               }
             />
           )}
@@ -1405,7 +1414,7 @@ function MockComposer({
   onDismiss: () => void;
   planComments: PlanComment[];
   onPlanCommentsChange: (c: PlanComment[]) => void;
-  selectedAnswers: Record<string, string>;
+  selectedAnswers: Record<string, string[]>;
   onSelectAnswer: (qId: string, answer: string) => void;
 }) {
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
