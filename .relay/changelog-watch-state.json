@@ -1,8 +1,8 @@
 {
-  "claude-code-cli": "2.1.241",
-  "claude-agent-sdk": "0.3.241",
-  "anthropic-sdk": "0.120.0",
-  "codex-cli": "0.149.1",
-  "codex-app-server": "0.149.1",
-  "lastRunAt": "2026-08-24T00:00:00.000Z"
+  "claude-code-cli": "2.1.263",
+  "claude-agent-sdk": "0.3.263",
+  "anthropic-sdk": "0.124.0",
+  "codex-cli": "0.153.4",
+  "codex-app-server": "0.153.4",
+  "lastRunAt": "2026-09-07T00:00:00.000Z"
 }
