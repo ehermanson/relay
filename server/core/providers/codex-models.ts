@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import type { Logger } from "#core/logger.js";
 import type { ProviderModelOption } from "#core/types.js";
-import { findCodexBinary, buildCodexSpawnEnv } from "#core/providers/codex-cli.js";
+import {
+  findCodexBinary,
+  buildCodexSpawnEnv,
+  RELAY_CODEX_ORIGINATOR,
+} from "#core/providers/codex-cli.js";
 
 type SpawnFn = typeof spawn;
 
@@ -259,7 +263,7 @@ export async function discoverCodexModels(
 
     sendRequest(1, "initialize", {
       clientInfo: {
-        name: "relay",
+        name: RELAY_CODEX_ORIGINATOR,
         version: "0.0.0",
       },
       capabilities: {

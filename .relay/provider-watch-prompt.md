@@ -29,6 +29,13 @@ Codex:
 - Codex app-server protocol: same repo — protocol/schema changes in code/docs that the
   user-facing changelog may not mention (we integrate via
   `codex-app-server.ts`)
+- Codex rollout (transcript) format: same repo, `codex-rs/protocol` — the `RolloutItem` /
+  `EventMsg` variants persisted to `~/.codex/sessions/*.jsonl`. Relay parses these files
+  directly (`codex-transcript.ts`, `codex-discovery.ts`) for external sessions, hydration
+  after restart, titles and previews. Changes here never appear in the changelog; the
+  failure mode to look for is an event/item type being renamed, removed, or replaced (0.153
+  replaced `user_message`/`agent_message`/`agent_reasoning` with `item_completed` items
+  and Relay showed empty chats). Treat any such change as needs-attention (bucket 0).
 
 Locate exact changelog/release URLs from each npm page; don't assume a path that 404s.
 

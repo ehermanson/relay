@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   convertCodexTranscriptEntry,
+  extractCodexConversationMessage,
   parseCodexTranscript,
   findCodexTranscriptPath,
 } from "../dist/server/core/providers/codex-transcript.js";
@@ -471,7 +472,204 @@ describe("convertCodexTranscriptEntry", () => {
   });
 });
 
+// Codex CLI 0.153+ stopped writing `user_message` / `agent_message` /
+// `agent_reasoning` events; conversation turns arrive as `item_completed`
+// with typed v2 thread items instead.
+describe("convertCodexTranscriptEntry (0.153+ item_completed rollouts)", () => {
+  const itemCompleted = (item, timestamp = "2026-09-05T03:03:14.239Z") => ({
+    type: "event_msg",
+    timestamp,
+    payload: { type: "item_completed", thread_id: "t1", turn_id: "turn1", item },
+  });
+
+  it("converts UserMessage items to UserMessage", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      itemCompleted({
+        type: "UserMessage",
+        id: "u1",
+        content: [{ type: "text", text: "figure out the best way to do this" }],
+      }),
+      ctx,
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0].message.type, "user");
+    assert.equal(results[0].message.text, "figure out the best way to do this");
+    assert.equal(results[0].message.internal, undefined);
+  });
+
+  it("marks injected task-context prompts as internal in UserMessage items", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      itemCompleted({
+        type: "UserMessage",
+        content: [
+          {
+            type: "text",
+            text: "This project tracks tasks in .relay/tasks.json (Relay-managed snapshot JSON). Do not create a task for every request. Create a task only when explicitly asked, pick up an existing task when explicitly asked or when the request clearly matches one, and otherwise just do the work without creating a new task. Ask if unsure whether a request should map to a task. Fields: id (8-char hex), title, description (markdown), status (open|in_progress|done), priority (0-4), type (epic|task|bug), tags (string[]), parent (nullable task ID), blockedBy (task ID[]), createdAt, updatedAt (ISO timestamps). Blocked status is auto-derived from unresolved blockedBy refs. When asked to pick up a task (e.g. 'pick up task a1b2c3d4'), read .relay/tasks.json to find it.",
+          },
+        ],
+      }),
+      ctx,
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0].message.internal, true);
+  });
+
+  it("converts AgentMessage items (capitalised Text parts) to OutputMessage", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      itemCompleted({
+        type: "AgentMessage",
+        id: "a1",
+        content: [{ type: "Text", text: "I’ll read the project rules first.\n" }],
+        phase: "commentary",
+      }),
+      ctx,
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0].message.type, "output");
+    assert.equal(results[0].message.text, "I’ll read the project rules first.\n");
+  });
+
+  it("converts Reasoning items with summary text to thinking activity", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      itemCompleted({
+        type: "Reasoning",
+        id: "r1",
+        summary_text: ["**Designing local motion smoothing**", "**Refining reconciliation**"],
+        raw_content: [],
+      }),
+      ctx,
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0].message.type, "activity");
+    assert.equal(results[0].message.activity, "thinking");
+    assert.match(results[0].message.detail, /Designing local motion smoothing/);
+    assert.match(results[0].message.detail, /Refining reconciliation/);
+  });
+
+  it("ignores Reasoning items with no summary (encrypted content only)", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      itemCompleted({ type: "Reasoning", id: "r2", summary_text: [], raw_content: [] }),
+      ctx,
+    );
+    assert.equal(results.length, 0);
+  });
+
+  it("ignores item types that are already represented by response_item tool calls", () => {
+    const ctx = createContext();
+    for (const item of [
+      { type: "CommandExecution", id: "c1", command: ["/bin/zsh", "-lc", "pwd"], stdout: "/x" },
+      { type: "FileChange", id: "f1", changes: {} },
+      { type: "ContextCompaction", id: "cc1" },
+    ]) {
+      assert.equal(convertCodexTranscriptEntry(itemCompleted(item), ctx).length, 0, item.type);
+    }
+  });
+
+  it("does not surface Codex's user-role injections from response_item messages", () => {
+    const ctx = createContext();
+    const results = convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        timestamp: "2026-09-05T03:03:13.770Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<recommended_plugins>\nHere is a list…" }],
+        },
+      },
+      ctx,
+    );
+    assert.equal(results.length, 0);
+  });
+});
+
+describe("extractCodexConversationMessage", () => {
+  it("reads legacy events and item_completed items alike", () => {
+    assert.deepEqual(
+      extractCodexConversationMessage({
+        type: "event_msg",
+        payload: { type: "user_message", message: "hi" },
+      }),
+      { role: "user", text: "hi" },
+    );
+    assert.deepEqual(
+      extractCodexConversationMessage({
+        type: "event_msg",
+        payload: { type: "agent_message", message: "hello" },
+      }),
+      { role: "assistant", text: "hello" },
+    );
+    assert.deepEqual(
+      extractCodexConversationMessage({
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: { type: "AgentMessage", content: [{ type: "Text", text: "done" }] },
+        },
+      }),
+      { role: "assistant", text: "done" },
+    );
+    assert.equal(
+      extractCodexConversationMessage({
+        type: "event_msg",
+        payload: { type: "item_completed", item: { type: "CommandExecution" } },
+      }),
+      null,
+    );
+    assert.equal(extractCodexConversationMessage({ type: "token_usage_record" }), null);
+  });
+});
+
 describe("parseCodexTranscript", () => {
+  it("exposes the session start from session_meta as createdAt", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-codex-"));
+    const filePath = join(dir, "transcript.jsonl");
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          timestamp: "2026-09-05T03:03:13.449Z",
+          type: "session_meta",
+          payload: {
+            id: "sess-1",
+            cwd: "/home/user/project",
+            timestamp: "2026-09-05T03:01:44.388Z",
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-09-05T03:03:14.239Z",
+          payload: {
+            type: "item_completed",
+            item: { type: "UserMessage", content: [{ type: "text", text: "Fix the bug" }] },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-09-05T03:03:18.328Z",
+          payload: {
+            type: "item_completed",
+            item: { type: "AgentMessage", content: [{ type: "Text", text: "On it." }] },
+          },
+        }),
+      ].join("\n"),
+    );
+    try {
+      const result = parseCodexTranscript(filePath);
+      assert.equal(result.createdAt, Date.parse("2026-09-05T03:01:44.388Z"));
+      assert.equal(result.history.length, 2);
+      assert.equal(result.history[0].message.type, "user");
+      assert.equal(result.history[1].message.type, "output");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("parses a full transcript file", () => {
     const dir = mkdtempSync(join(tmpdir(), "relay-codex-"));
     const filePath = join(dir, "transcript.jsonl");

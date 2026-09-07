@@ -44,7 +44,11 @@ import { buildSessionInitEvent } from "#core/session-init.js";
 import { buildTaskListActivityFromPlan } from "#core/tools.js";
 import { ProposedPlanStreamParser } from "#core/proposed-plan.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
-import { findCodexBinary, buildCodexSpawnEnv } from "#core/providers/codex-cli.js";
+import {
+  findCodexBinary,
+  buildCodexSpawnEnv,
+  RELAY_CODEX_ORIGINATOR,
+} from "#core/providers/codex-cli.js";
 import { resolveProviderDefaultModelOption } from "#core/provider-catalog.js";
 import { getCachedCodexModels } from "#core/providers/codex-models.js";
 import { extFromPath } from "#core/paths.js";
@@ -1088,7 +1092,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private async initializeAndStartThread(message: string): Promise<void> {
     // Step 1: Initialize
     await this.sendRpc("initialize", {
-      clientInfo: { name: "relay", version: "0.0.0" },
+      clientInfo: { name: RELAY_CODEX_ORIGINATOR, version: "0.0.0" },
       capabilities: { experimentalApi: true },
     });
     this.initialized = true;
@@ -1144,7 +1148,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   private async initializeAndCompactThread(): Promise<void> {
     await this.sendRpc("initialize", {
-      clientInfo: { name: "relay", version: "0.0.0" },
+      clientInfo: { name: RELAY_CODEX_ORIGINATOR, version: "0.0.0" },
       capabilities: { experimentalApi: true },
     });
     this.initialized = true;
@@ -2681,7 +2685,7 @@ export async function fetchCodexProviderGlobalStateSnapshot({
   try {
     await Promise.race([
       sendRpc("initialize", {
-        clientInfo: { name: "relay", version: "0.0.0" },
+        clientInfo: { name: RELAY_CODEX_ORIGINATOR, version: "0.0.0" },
         capabilities: { experimentalApi: true },
       }),
       timeout,

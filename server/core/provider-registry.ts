@@ -44,6 +44,12 @@ import { getCachedCodexModels, refreshCodexModelsIfStale } from "#core/providers
 import { CodexAppServerSession } from "#core/providers/codex-app-server.js";
 import { findCodexTranscriptPath, parseCodexTranscript } from "#core/providers/codex-transcript.js";
 import {
+  DEFAULT_CODEX_TRANSCRIPT_ACTIVITY_WINDOW_MS,
+  listCodexTranscripts,
+  readCodexSessionMeta,
+  selectCodexExternalTranscripts,
+} from "#core/providers/codex-discovery.js";
+import {
   isGitWorktree,
   isRelayWorktreePath,
   resolveAnyWorktreeOrigin,
@@ -56,6 +62,8 @@ type QueryFn = ((params: { prompt: unknown; options?: unknown }) => unknown) | n
 
 interface ProviderTranscriptParseResult {
   cwd: string;
+  /** Session start recorded in the transcript, when the provider stores one. */
+  createdAt?: number;
   history: HistoryEntry[];
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
@@ -108,6 +116,12 @@ export interface LiveExternalDiscoveryResult {
 interface ProviderExternalDiscoveryContext extends ProviderDriverContext {
   excludePids: Set<number>;
   runningProcessCwds?: Map<string, Map<string, { count: number; pids: number[] }>>;
+  /**
+   * How recently a transcript must have been written to count as a live
+   * session without a matching process. Only drivers whose sessions can run
+   * without a discoverable local process (Codex Desktop) consult it.
+   */
+  transcriptActivityWindowMs?: number;
 }
 
 interface ProviderDriver {
@@ -332,94 +346,6 @@ async function findRunningProcessCwdsByCommandAsync(
   return grouped;
 }
 
-function readCodexSessionMeta(
-  filePath: string,
-): { sessionId: string; cwd: string; mtime: number } | null {
-  try {
-    const stats = statSync(filePath);
-    const cached = codexSessionMetaCache.get(filePath);
-    if (cached && cached.mtime === stats.mtimeMs) {
-      return cached.meta
-        ? { sessionId: cached.meta.sessionId, cwd: cached.meta.cwd, mtime: cached.mtime }
-        : null;
-    }
-
-    const firstLine = readFileSync(filePath, "utf-8").split("\n", 1)[0];
-    if (!firstLine) return null;
-    const parsed = JSON.parse(firstLine) as {
-      type?: string;
-      payload?: { id?: string; cwd?: string };
-    };
-    if (parsed.type !== "session_meta") return null;
-    const sessionId = parsed.payload?.id;
-    const cwd = parsed.payload?.cwd;
-    if (!sessionId || !cwd) return null;
-    const meta = { sessionId, cwd, mtime: stats.mtimeMs };
-    codexSessionMetaCache.set(filePath, { mtime: stats.mtimeMs, meta });
-    return meta;
-  } catch {
-    codexSessionMetaCache.set(filePath, { mtime: -1, meta: null });
-    return null;
-  }
-}
-
-const codexSessionMetaCache = new Map<
-  string,
-  { mtime: number; meta: { sessionId: string; cwd: string } | null }
->();
-
-function findRecentCodexTranscriptsForCwds(
-  codexDir: string,
-  cwdCounts: Map<string, number>,
-): Map<string, Array<{ path: string; sessionId: string; mtime: number }>> {
-  const sessionsDir = join(codexDir, "sessions");
-  const results = new Map<string, Array<{ path: string; sessionId: string; mtime: number }>>();
-  for (const cwd of cwdCounts.keys()) {
-    results.set(cwd, []);
-  }
-  if (!existsSync(sessionsDir) || cwdCounts.size === 0) return results;
-
-  const targets = new Set(cwdCounts.keys());
-  const stack = [sessionsDir];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    if (!dir) continue;
-
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(dir, entry);
-      let isDirectory = false;
-      try {
-        isDirectory = statSync(fullPath).isDirectory();
-      } catch {
-        continue;
-      }
-      if (isDirectory) {
-        stack.push(fullPath);
-        continue;
-      }
-      if (!entry.endsWith(".jsonl")) continue;
-      const meta = readCodexSessionMeta(fullPath);
-      if (!meta || !targets.has(meta.cwd)) continue;
-      const matches = results.get(meta.cwd) ?? [];
-      matches.push({ path: fullPath, sessionId: meta.sessionId, mtime: meta.mtime });
-      results.set(meta.cwd, matches);
-    }
-  }
-
-  for (const [cwd, matches] of results) {
-    matches.sort((a, b) => b.mtime - a.mtime);
-    results.set(cwd, matches.slice(0, cwdCounts.get(cwd) ?? 0));
-  }
-  return results;
-}
-
 async function discoverClaudeExternalSessions(
   context: ProviderExternalDiscoveryContext,
 ): Promise<DiscoveredExternalSession[]> {
@@ -453,26 +379,25 @@ async function discoverCodexExternalSessions(
   const cwdInfoMap =
     context.runningProcessCwds?.get("codex") ??
     (await findRunningProcessCwdsAsync("codex", context.excludePids));
-  const transcriptsByCwd = findRecentCodexTranscriptsForCwds(
-    context.providerDirs.codex,
-    new Map(Array.from(cwdInfoMap.entries()).map(([cwd, info]) => [cwd, info.count])),
-  );
-  const sessions: DiscoveredExternalSession[] = [];
-  for (const [cwd, info] of cwdInfoMap) {
-    if (!isRegisteredDiscoveryDirectory(cwd, context.registeredDirectories)) continue;
-    const transcripts = transcriptsByCwd.get(cwd) ?? [];
-    for (let i = 0; i < transcripts.length; i++) {
-      const transcript = transcripts[i];
-      sessions.push({
-        provider: "codex",
-        cwd,
-        transcriptPath: transcript.path,
-        sessionId: transcript.sessionId,
-        pid: info.pids[i],
-      });
-    }
-  }
-  return sessions;
+  // Process-backed cwds plus still-being-written rollouts (Codex Desktop
+  // exposes no `codex` process with the project cwd) — see codex-discovery.ts.
+  const selected = selectCodexExternalTranscripts({
+    transcripts: listCodexTranscripts(context.providerDirs.codex),
+    readMeta: (candidate) => readCodexSessionMeta(candidate.path, candidate.mtime),
+    processCwds: cwdInfoMap,
+    isRegisteredDirectory: (cwd) =>
+      isRegisteredDiscoveryDirectory(cwd, context.registeredDirectories),
+    activeSince:
+      Date.now() -
+      (context.transcriptActivityWindowMs ?? DEFAULT_CODEX_TRANSCRIPT_ACTIVITY_WINDOW_MS),
+  });
+  return selected.map((transcript) => ({
+    provider: "codex",
+    cwd: transcript.cwd,
+    transcriptPath: transcript.path,
+    sessionId: transcript.sessionId,
+    pid: transcript.pid,
+  }));
 }
 
 function createClaudeSession(
@@ -1103,6 +1028,7 @@ export function captureManagedSessionForProvider(
 export async function discoverLiveExternalSessions(
   context: ProviderDriverContext,
   excludePids: Set<number>,
+  options: { transcriptActivityWindowMs?: number } = {},
 ): Promise<LiveExternalDiscoveryResult> {
   const activeProviders = getRegisteredProviders().filter((provider) => {
     const driver = getProviderDriver(provider);
@@ -1126,6 +1052,7 @@ export async function discoverLiveExternalSessions(
         ...context,
         excludePids,
         runningProcessCwds,
+        transcriptActivityWindowMs: options.transcriptActivityWindowMs,
       });
       return {
         provider,

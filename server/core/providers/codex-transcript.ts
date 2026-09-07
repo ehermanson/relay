@@ -35,6 +35,8 @@ interface CodexReplayContext {
 
 interface CodexTranscriptParseResult {
   cwd: string;
+  /** Session start from `session_meta`, when present. */
+  createdAt?: number;
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
   history: HistoryEntry[];
@@ -343,6 +345,89 @@ function buildToolResultActivity(
   };
 }
 
+/** A user or assistant turn extracted from a rollout entry, format-agnostic. */
+export interface CodexConversationMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+/** Join the text parts of a v2 thread-item `content` array (`[{type:"Text"|"text", text}]`). */
+function joinItemContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      const record = asRecord(part);
+      return record && typeof record.text === "string" ? record.text : "";
+    })
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+/**
+ * Extract the user-facing conversation turn (if any) from a rollout entry.
+ *
+ * Codex has shipped two rollout formats for the same thing:
+ * - CLI ≤ 0.152 records `event_msg` `user_message` / `agent_message`.
+ * - CLI ≥ 0.153 records `event_msg` `item_completed` with a typed v2 thread item
+ *   (`UserMessage` / `AgentMessage`). The legacy events are gone from those files.
+ *
+ * Both are the *filtered* UI stream — unlike `response_item` messages, they never
+ * carry Codex's own user-role injections (`<recommended_plugins>`,
+ * `<environment_context>`, …). A given file contains one format or the other, so
+ * handling both here is additive, not duplicating. Shared by transcript replay,
+ * scan-time titling, and last-message previews so they cannot drift.
+ */
+export function extractCodexConversationMessage(
+  entry: Record<string, unknown>,
+): CodexConversationMessage | null {
+  if (entry.type !== "event_msg") return null;
+  const payload = asRecord(entry.payload);
+  if (!payload) return null;
+
+  if (payload.type === "user_message") {
+    return typeof payload.message === "string" && payload.message.trim()
+      ? { role: "user", text: payload.message }
+      : null;
+  }
+  if (payload.type === "agent_message") {
+    return typeof payload.message === "string" && payload.message.trim()
+      ? { role: "assistant", text: payload.message }
+      : null;
+  }
+  if (payload.type === "item_completed") {
+    const item = asRecord(payload.item);
+    if (!item) return null;
+    if (item.type === "UserMessage" || item.type === "AgentMessage") {
+      const text = joinItemContentText(item.content);
+      if (!text.trim()) return null;
+      return { role: item.type === "UserMessage" ? "user" : "assistant", text };
+    }
+  }
+  return null;
+}
+
+/** Reasoning summary text from either rollout format, or null when absent. */
+function extractCodexReasoningText(payload: Record<string, unknown>): string | null {
+  if (payload.type === "agent_reasoning") {
+    return typeof payload.text === "string" && payload.text.trim() ? payload.text : null;
+  }
+  if (payload.type === "item_completed") {
+    const item = asRecord(payload.item);
+    if (item?.type !== "Reasoning") return null;
+    const summary = Array.isArray(item.summary_text)
+      ? item.summary_text.filter((part): part is string => typeof part === "string")
+      : [];
+    const text = summary.join("\n\n").trim();
+    return text ? text : null;
+  }
+  return null;
+}
+
 export function convertCodexTranscriptEntry(
   entry: Record<string, unknown>,
   ctx: CodexReplayContext,
@@ -480,46 +565,42 @@ export function convertCodexTranscriptEntry(
         : null;
     if (!payload || typeof payload.type !== "string") return results;
 
+    // Conversation turns + reasoning come in two rollout formats (legacy events
+    // vs. 0.153+ `item_completed` items) — see extractCodexConversationMessage.
+    const conversation = extractCodexConversationMessage(entry);
+    if (conversation?.role === "user") {
+      const userText = stripInjectedWrapper(conversation.text);
+      results.push({
+        timestamp,
+        message: {
+          type: "user",
+          text: userText,
+          internal: isInternalInjectedUserText(userText) || undefined,
+        } as UserMessage,
+      });
+      return results;
+    }
+    if (conversation?.role === "assistant") {
+      for (const message of convertProposedPlanText(conversation.text, { raw: payload })) {
+        results.push({ timestamp, message });
+      }
+      return results;
+    }
+    const reasoning = extractCodexReasoningText(payload);
+    if (reasoning) {
+      results.push({
+        timestamp,
+        message: {
+          type: "activity",
+          activity: "thinking",
+          description: "Reasoning...",
+          detail: reasoning,
+        } as ActivityMessage,
+      });
+      return results;
+    }
+
     switch (payload.type) {
-      case "user_message":
-        if (typeof payload.message === "string" && payload.message.trim()) {
-          const userText = stripInjectedWrapper(payload.message);
-          results.push({
-            timestamp,
-            message: {
-              type: "user",
-              text: userText,
-              internal: isInternalInjectedUserText(userText) || undefined,
-            } as UserMessage,
-          });
-        }
-        break;
-
-      case "agent_reasoning":
-        if (typeof payload.text === "string" && payload.text.trim()) {
-          results.push({
-            timestamp,
-            message: {
-              type: "activity",
-              activity: "thinking",
-              description: "Reasoning...",
-              detail: payload.text,
-            } as ActivityMessage,
-          });
-        }
-        break;
-
-      case "agent_message":
-        if (typeof payload.message === "string" && payload.message.trim()) {
-          for (const message of convertProposedPlanText(payload.message, { raw: payload })) {
-            results.push({
-              timestamp,
-              message,
-            });
-          }
-        }
-        break;
-
       case "image_generation_end": {
         // Codex saves generated images to `~/.codex/generated_images/<session>/<call_id>.png`
         // and records the path here. Surface it as a GenerateImage tool activity (rendered
@@ -703,6 +784,7 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
   }
 
   let cwd = "";
+  let createdAt: number | undefined;
   const history: HistoryEntry[] = [];
   const ctx: CodexReplayContext = {
     pendingCalls: new Map(),
@@ -716,14 +798,15 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
     try {
       const entry = JSON.parse(line) as Record<string, unknown>;
       if (!cwd && entry.type === "session_meta") {
-        const payload =
-          typeof entry.payload === "object" && entry.payload !== null
-            ? (entry.payload as Record<string, unknown>)
-            : null;
+        const payload = asRecord(entry.payload);
         if (payload && typeof payload.cwd === "string") {
           cwd = payload.cwd;
           ctx.cwd = cwd;
         }
+        const started = new Date(
+          typeof payload?.timestamp === "string" ? payload.timestamp : (entry.timestamp as string),
+        ).getTime();
+        if (!Number.isNaN(started)) createdAt = started;
       }
 
       const converted = convertCodexTranscriptEntry(entry, ctx);
@@ -739,6 +822,7 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
 
   return {
     cwd,
+    createdAt,
     tasks: ctx.tasks,
     files: ctx.files,
     history,

@@ -37,7 +37,11 @@ import {
   getSdkDiscoveredRateLimits,
 } from "#core/providers/claude-sdk.js";
 import type { ClaudeSdkSession } from "#core/providers/claude-sdk.js";
-import { convertCodexTranscriptEntry } from "#core/providers/codex-transcript.js";
+import {
+  convertCodexTranscriptEntry,
+  extractCodexConversationMessage,
+} from "#core/providers/codex-transcript.js";
+import { isSubagentSessionMeta } from "#core/providers/codex-discovery.js";
 import { fetchCodexProviderGlobalStateSnapshot } from "#core/providers/codex-app-server.js";
 import { getCachedCodexModels, prewarmCodexModels } from "#core/providers/codex-models.js";
 import { isCodexInstalled } from "#core/providers/codex-cli.js";
@@ -255,6 +259,8 @@ interface WatchState {
 
 interface TranscriptParseResult {
   cwd: string;
+  /** Session start recorded in the transcript, when the provider stores one. */
+  createdAt?: number;
   history: HistoryEntry[];
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
@@ -870,7 +876,11 @@ function readFirstUserMessage(jsonlPath: string): string | null {
 }
 
 /** Read the last user or assistant message from a JSONL file by scanning the tail. */
-function readLastMessage(jsonlPath: string): LastMessagePreview | null {
+function readLastMessage(
+  jsonlPath: string,
+  provider: ProviderKind = "claude",
+): LastMessagePreview | null {
+  if (provider === "codex") return readLastCodexMessage(jsonlPath);
   try {
     const fd = openSync(jsonlPath, "r");
     try {
@@ -914,6 +924,52 @@ function readLastMessage(jsonlPath: string): LastMessagePreview | null {
             }
             continue;
           }
+        } catch {
+          // partial line — skip
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // file read error
+  }
+  return null;
+}
+
+/**
+ * Codex counterpart of `readLastMessage`: the rollout tail is dominated by
+ * tool I/O and token-usage records, so read a larger window and walk back for
+ * the last user/agent turn in either rollout format.
+ */
+function readLastCodexMessage(jsonlPath: string): LastMessagePreview | null {
+  try {
+    const fd = openSync(jsonlPath, "r");
+    try {
+      const stat = fstatSync(fd);
+      const tailSize = Math.min(stat.size, 256 * 1024);
+      const buf = Buffer.alloc(tailSize);
+      readSync(fd, buf, 0, tailSize, stat.size - tailSize);
+      const lines = buf.toString("utf-8").split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        try {
+          const parsed = JSON.parse(line);
+          const turn = extractCodexConversationMessage(parsed);
+          if (!turn) continue;
+          const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
+          const timestamp = ts || Date.now();
+          if (turn.role === "user") {
+            const cleaned = stripInjectedWrapper(turn.text).trim();
+            if (cleaned && !isTrivialMessage(cleaned)) {
+              return { text: cleaned, from: "user", timestamp };
+            }
+            continue;
+          }
+          const text = turn.text.trim();
+          const preview = text.length > 120 ? text.slice(0, 120) + "…" : text;
+          return { text: preview, from: "assistant", timestamp };
         } catch {
           // partial line — skip
         }
@@ -4933,7 +4989,10 @@ export class InstanceManager extends EventEmitter {
       const pid = instance.process?.pid;
       if (pid !== undefined) managedPids.add(pid);
     }
-    return discoverLiveExternalSessions(this.getProviderContext(), managedPids);
+    return discoverLiveExternalSessions(this.getProviderContext(), managedPids, {
+      // Same window removeStaleExternals trusts as "still active" evidence.
+      transcriptActivityWindowMs: DISCOVERY_INTERVAL * STALE_THRESHOLD,
+    });
   }
 
   private cwdToProjectDir(cwd: string, projectsDir: string): string | null {
@@ -5148,7 +5207,14 @@ export class InstanceManager extends EventEmitter {
     parentSessionId?: string,
     pid?: number,
   ): Promise<void> {
-    const { cwd, history, tasks, files, stats } = this.parseProviderTranscript(provider, jsonlPath);
+    const {
+      cwd,
+      createdAt: transcriptCreatedAt,
+      history,
+      tasks,
+      files,
+      stats,
+    } = this.parseProviderTranscript(provider, jsonlPath);
     if (!cwd) return; // Can't determine working directory
 
     // Detect worktree paths (relay or external like .t3) and resolve to the
@@ -5194,7 +5260,9 @@ export class InstanceManager extends EventEmitter {
       name,
       workingDirectory,
       status: "idle",
-      createdAt: lastActivity,
+      // Prefer the transcript's own start time: a session discovered hours
+      // after it began must not read as "created" at discovery time.
+      createdAt: transcriptCreatedAt ?? lastActivity,
       lastActivityAt: lastActivity,
       external: true,
       lastMessage,
@@ -5483,6 +5551,7 @@ export class InstanceManager extends EventEmitter {
   private cloneParsedTranscript(parsed: TranscriptParseResult): TranscriptParseResult {
     return {
       cwd: parsed.cwd,
+      createdAt: parsed.createdAt,
       history: parsed.history.map((entry) => ({
         ...entry,
         message: structuredClone(entry.message),
@@ -6996,10 +7065,21 @@ export class InstanceManager extends EventEmitter {
                   archivedShadows++;
                   continue;
                 }
-                if (!existing.model) {
+                // Backfill what earlier scans couldn't read: the model, and a
+                // real title for rows still carrying the placeholder (a parser
+                // that didn't understand the file's format leaves those behind).
+                const needsTitle = !existing.custom_title && isDefaultSessionTitle(existing.name);
+                if (!existing.model || needsTitle) {
                   const meta = this.readCodexSessionMeta(fullPath);
-                  if (meta?.model) {
+                  if (!existing.model && meta?.model) {
                     this.backfillSessionModel(existing.session_id, meta.model);
+                  }
+                  if (needsTitle && meta?.firstUserMessage) {
+                    this.db.updateName(
+                      existing.session_id,
+                      generateTitle(meta.firstUserMessage, "codex"),
+                      false,
+                    );
                   }
                 }
               }
@@ -7009,6 +7089,8 @@ export class InstanceManager extends EventEmitter {
             // Read session_meta from first line
             const meta = this.readCodexSessionMeta(fullPath);
             if (!meta) continue;
+            // Sub-agent rollouts belong to their parent thread, not the sidebar.
+            if (meta.subagent) continue;
 
             // Skip JSONL files that belong to managed sessions
             if (
@@ -7021,7 +7103,7 @@ export class InstanceManager extends EventEmitter {
             const cwd = meta.cwd;
             if (!cwd || !existsSync(cwd)) continue;
 
-            const lastMsg = readLastMessage(fullPath);
+            const lastMsg = readLastMessage(fullPath, "codex");
             const projectDirectory = normalizeProjectDirectory(cwd);
 
             rows.push({
@@ -7089,47 +7171,54 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  /** Read session_meta + first user message from a Codex JSONL file. */
+  /**
+   * Read session_meta + first user message from a Codex JSONL file.
+   *
+   * Reads the head in chunks rather than a fixed 64KB slice: a 0.153+ rollout
+   * front-loads ~90KB of system prompt, `<app-context>` developer text and a
+   * `<recommended_plugins>` injection before the first real user turn, so a
+   * small fixed window never reaches the title-worthy message.
+   */
   private readCodexSessionMeta(jsonlPath: string): {
     id: string;
     cwd: string;
+    subagent: boolean;
     createdAt: number;
     firstUserMessage: string | null;
     model: string | null;
   } | null {
+    const CHUNK_BYTES = 65536;
+    const MAX_HEAD_BYTES = 1024 * 1024;
     try {
       const fd = openSync(jsonlPath, "r");
       try {
-        const buf = Buffer.alloc(65536);
-        const bytesRead = readSync(fd, buf, 0, 65536, 0);
-        const text = buf.toString("utf-8", 0, bytesRead);
-
         let id: string | null = null;
         let cwd: string | null = null;
+        let subagent = false;
         let createdAt = 0;
         let firstUserMessage: string | null = null;
         let model: string | null = null;
 
-        for (const line of text.split("\n")) {
-          if (!line.trim()) continue;
+        const consume = (line: string): boolean => {
+          if (!line.trim()) return false;
           try {
             const parsed = JSON.parse(line);
             if (parsed.type === "session_meta" && parsed.payload) {
               id = parsed.payload.id;
               cwd = parsed.payload.cwd;
+              subagent = isSubagentSessionMeta(parsed.payload);
               const ts = new Date(parsed.payload.timestamp || parsed.timestamp).getTime();
               createdAt = isNaN(ts) ? Date.now() : ts;
-            } else if (
-              !firstUserMessage &&
-              parsed.type === "event_msg" &&
-              parsed.payload?.type === "user_message" &&
-              parsed.payload.message
-            ) {
-              const msg = parsed.payload.message.trim();
-              if (msg && !isTrivialMessage(msg)) {
-                firstUserMessage = msg;
+            } else if (!firstUserMessage) {
+              const turn = extractCodexConversationMessage(parsed);
+              if (turn?.role === "user") {
+                const msg = turn.text.trim();
+                if (msg && !isTrivialMessage(msg)) {
+                  firstUserMessage = msg;
+                }
               }
-            } else if (
+            }
+            if (
               !model &&
               parsed.type === "turn_context" &&
               typeof parsed.payload?.model === "string" &&
@@ -7137,15 +7226,39 @@ export class InstanceManager extends EventEmitter {
             ) {
               model = parsed.payload.model;
             }
-            // Stop once we have all metadata we care about.
-            if (id && firstUserMessage && model) break;
           } catch {
-            // partial line
+            // malformed line
+          }
+          // Stop once we have all metadata we care about.
+          return Boolean(id && firstUserMessage && model);
+        };
+
+        // Carry the trailing partial line as bytes, not text: decoding a chunk
+        // that ends mid-codepoint would corrupt the character on the boundary.
+        const buf = Buffer.alloc(CHUNK_BYTES);
+        let pending = Buffer.alloc(0);
+        let offset = 0;
+        let done = false;
+        while (!done && offset < MAX_HEAD_BYTES) {
+          const bytesRead = readSync(fd, buf, 0, CHUNK_BYTES, offset);
+          if (bytesRead === 0) break;
+          offset += bytesRead;
+          pending = Buffer.concat([pending, buf.subarray(0, bytesRead)]);
+          const lastNewline = pending.lastIndexOf(0x0a);
+          if (lastNewline === -1) continue;
+          const lines = pending.subarray(0, lastNewline).toString("utf-8").split("\n");
+          pending = Buffer.from(pending.subarray(lastNewline + 1));
+          for (const line of lines) {
+            if (consume(line)) {
+              done = true;
+              break;
+            }
           }
         }
+        if (!done && pending.length > 0) consume(pending.toString("utf-8"));
 
         if (!id || !cwd) return null;
-        return { id, cwd, createdAt, firstUserMessage, model };
+        return { id, cwd, subagent, createdAt, firstUserMessage, model };
       } finally {
         closeSync(fd);
       }
@@ -7555,7 +7668,7 @@ export class InstanceManager extends EventEmitter {
       const jsonlPath =
         instance.watchState?.jsonlPath || instance.externalState?.jsonlPath || instance.jsonlPath;
       if (!jsonlPath) continue;
-      const lastMsg = readLastMessage(jsonlPath);
+      const lastMsg = readLastMessage(jsonlPath, instance.info.provider);
       if (lastMsg) {
         instance.info.lastMessage = lastMsg;
         this.emitInstanceStatus(instance);
