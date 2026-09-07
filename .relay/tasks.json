@@ -36,7 +36,9 @@
       "type": "bug",
       "tags": [],
       "parent": null,
-      "blockedBy": ["73adce9a"],
+      "blockedBy": [
+        "73adce9a"
+      ],
       "createdAt": "2026-03-10T20:43:05.745465-04:00",
       "updatedAt": "2026-03-10T20:57:48.954414-04:00"
     },
@@ -218,7 +220,9 @@
       "type": "task",
       "tags": [],
       "parent": "befb4eea",
-      "blockedBy": ["0a13e811"],
+      "blockedBy": [
+        "0a13e811"
+      ],
       "createdAt": "2026-03-08T16:02:59.980668-04:00",
       "updatedAt": "2026-03-12T20:30:13.336845-04:00"
     },
@@ -231,7 +235,10 @@
       "type": "task",
       "tags": [],
       "parent": "befb4eea",
-      "blockedBy": ["dd5b26bc", "0a13e811"],
+      "blockedBy": [
+        "dd5b26bc",
+        "0a13e811"
+      ],
       "createdAt": "2026-03-08T16:03:04.240735-04:00",
       "updatedAt": "2026-03-12T20:30:13.348738-04:00"
     },
@@ -309,7 +316,9 @@
       "type": "task",
       "tags": [],
       "parent": null,
-      "blockedBy": ["4c40cf1a"],
+      "blockedBy": [
+        "4c40cf1a"
+      ],
       "createdAt": "2026-03-09T17:46:11.715826-04:00",
       "updatedAt": "2026-03-12T21:01:40.871548-04:00"
     },
@@ -400,7 +409,9 @@
       "type": "bug",
       "tags": [],
       "parent": null,
-      "blockedBy": ["73adce9a"],
+      "blockedBy": [
+        "73adce9a"
+      ],
       "createdAt": "2026-03-10T20:43:05.687719-04:00",
       "updatedAt": "2026-03-11T06:47:43.127124-04:00"
     },
@@ -686,7 +697,9 @@
       "type": "task",
       "tags": [],
       "parent": null,
-      "blockedBy": ["4c40cf1a"],
+      "blockedBy": [
+        "4c40cf1a"
+      ],
       "createdAt": "2026-03-09T17:46:08.707939-04:00",
       "updatedAt": "2026-03-12T21:21:50.766179-04:00"
     },
@@ -972,7 +985,9 @@
       "type": "task",
       "tags": [],
       "parent": null,
-      "blockedBy": ["4c40cf1a"],
+      "blockedBy": [
+        "4c40cf1a"
+      ],
       "createdAt": "2026-03-09T17:46:02.868294-04:00",
       "updatedAt": "2026-03-12T20:33:43.672428-04:00"
     },
@@ -998,7 +1013,9 @@
       "type": "task",
       "tags": [],
       "parent": null,
-      "blockedBy": ["4c40cf1a"],
+      "blockedBy": [
+        "4c40cf1a"
+      ],
       "createdAt": "2026-03-09T17:46:05.568906-04:00",
       "updatedAt": "2026-03-15T14:31:10.098411-04:00"
     },
@@ -1061,7 +1078,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["react", "runtime", "regression"],
+      "tags": [
+        "react",
+        "runtime",
+        "regression"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-18T23:07:52Z",
@@ -1074,7 +1095,10 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["tasks", "migration"],
+      "tags": [
+        "tasks",
+        "migration"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-18T23:53:20Z",
@@ -1087,7 +1111,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["issues", "ui", "sorting"],
+      "tags": [
+        "issues",
+        "ui",
+        "sorting"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-19T00:01:30Z",
@@ -1100,7 +1128,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["docs", "tasks", "model-guidance"],
+      "tags": [
+        "docs",
+        "tasks",
+        "model-guidance"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-19T00:07:30Z",
@@ -1152,7 +1184,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["tasks", "ui", "api"],
+      "tags": [
+        "tasks",
+        "ui",
+        "api"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-19T02:05:47.552Z",
@@ -1178,7 +1214,12 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui", "typescript", "routing", "react"],
+      "tags": [
+        "ui",
+        "typescript",
+        "routing",
+        "react"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-19T02:50:29Z",
@@ -1204,7 +1245,9 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui"],
+      "tags": [
+        "ui"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-19T20:51:59.000Z",
@@ -1217,7 +1260,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui", "header", "layout-shift"],
+      "tags": [
+        "ui",
+        "header",
+        "layout-shift"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T02:51:16.754Z",
@@ -1230,7 +1277,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["ui", "react", "hydration"],
+      "tags": [
+        "ui",
+        "react",
+        "hydration"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T10:42:45.434Z",
@@ -1243,7 +1294,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["spaces", "chat", "ui"],
+      "tags": [
+        "spaces",
+        "chat",
+        "ui"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T13:02:26Z",
@@ -1256,7 +1311,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["ui", "history", "spaces"],
+      "tags": [
+        "ui",
+        "history",
+        "spaces"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T13:11:08Z",
@@ -1269,7 +1328,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["codex", "ui", "history"],
+      "tags": [
+        "codex",
+        "ui",
+        "history"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T13:14:30Z",
@@ -1282,7 +1345,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["ux", "providers", "tasks"],
+      "tags": [
+        "ux",
+        "providers",
+        "tasks"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T13:20:25Z",
@@ -1295,7 +1362,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["git", "projects", "tests"],
+      "tags": [
+        "git",
+        "projects",
+        "tests"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-20T18:18:18Z",
@@ -1321,7 +1392,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["stability", "architecture", "instance-manager"],
+      "tags": [
+        "stability",
+        "architecture",
+        "instance-manager"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-22T18:00:00Z",
@@ -1334,7 +1409,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["stability", "process-management", "shutdown"],
+      "tags": [
+        "stability",
+        "process-management",
+        "shutdown"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-22T18:00:00Z",
@@ -1347,9 +1426,15 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["stability", "architecture", "instance-manager"],
+      "tags": [
+        "stability",
+        "architecture",
+        "instance-manager"
+      ],
       "parent": null,
-      "blockedBy": ["3090839f"],
+      "blockedBy": [
+        "3090839f"
+      ],
       "createdAt": "2026-03-22T18:00:00Z",
       "updatedAt": "2026-03-22T21:10:00Z"
     },
@@ -1360,7 +1445,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["db", "migration", "cleanup"],
+      "tags": [
+        "db",
+        "migration",
+        "cleanup"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-27T16:56:58Z",
@@ -1373,7 +1462,10 @@
       "status": "done",
       "priority": 1,
       "type": "epic",
-      "tags": ["spaces", "ux"],
+      "tags": [
+        "spaces",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-27T12:00:00.000Z",
@@ -1386,7 +1478,10 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["spaces", "context"],
+      "tags": [
+        "spaces",
+        "context"
+      ],
       "parent": "d35e610e",
       "blockedBy": [],
       "createdAt": "2026-03-27T12:00:00.000Z",
@@ -1399,7 +1494,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spaces", "ux"],
+      "tags": [
+        "spaces",
+        "ux"
+      ],
       "parent": "d35e610e",
       "blockedBy": [],
       "createdAt": "2026-03-27T12:00:00.000Z",
@@ -1412,7 +1510,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spaces", "ux", "cross-chat"],
+      "tags": [
+        "spaces",
+        "ux",
+        "cross-chat"
+      ],
       "parent": "d35e610e",
       "blockedBy": [],
       "createdAt": "2026-03-27T12:00:00.000Z",
@@ -1425,7 +1527,11 @@
       "status": "done",
       "priority": 2,
       "type": "bug",
-      "tags": ["spaces", "git", "diff"],
+      "tags": [
+        "spaces",
+        "git",
+        "diff"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-27T23:55:00Z",
@@ -1438,7 +1544,10 @@
       "status": "done",
       "priority": 1,
       "type": "epic",
-      "tags": ["terminal", "feature"],
+      "tags": [
+        "terminal",
+        "feature"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-27T12:00:00Z",
@@ -1451,7 +1560,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["spaces", "recovery", "merge"],
+      "tags": [
+        "spaces",
+        "recovery",
+        "merge"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-28T02:02:04Z",
@@ -1464,7 +1577,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["performance", "websocket", "history"],
+      "tags": [
+        "performance",
+        "websocket",
+        "history"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-28T02:12:00Z",
@@ -1477,7 +1594,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["ui", "websocket", "chat"],
+      "tags": [
+        "ui",
+        "websocket",
+        "chat"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-03-29T01:58:56.434Z",
@@ -1503,7 +1624,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["architecture", "runtime", "db"],
+      "tags": [
+        "architecture",
+        "runtime",
+        "db"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-02T10:45:00-04:00",
@@ -1516,7 +1641,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui", "sessions", "external"],
+      "tags": [
+        "ui",
+        "sessions",
+        "external"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-03T13:12:50.630Z",
@@ -1529,7 +1658,13 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["debug", "ui", "protocol", "codex", "claude"],
+      "tags": [
+        "debug",
+        "ui",
+        "protocol",
+        "codex",
+        "claude"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-03T15:25:00-04:00",
@@ -1542,7 +1677,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui", "refactor", "mobile"],
+      "tags": [
+        "ui",
+        "refactor",
+        "mobile"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-10T19:45:00-04:00",
@@ -1555,7 +1694,12 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["providers", "skills", "composer", "contracts"],
+      "tags": [
+        "providers",
+        "skills",
+        "composer",
+        "contracts"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-11T14:45:13Z",
@@ -1568,7 +1712,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["docs", "cli", "remote"],
+      "tags": [
+        "docs",
+        "cli",
+        "remote"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-11T16:25:00-04:00",
@@ -1581,7 +1729,12 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["remote", "auth", "qr", "ux"],
+      "tags": [
+        "remote",
+        "auth",
+        "qr",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-11T16:37:00-04:00",
@@ -1594,7 +1747,12 @@
       "status": "open",
       "priority": 1,
       "type": "epic",
-      "tags": ["architecture", "remote", "multi-machine", "federation"],
+      "tags": [
+        "architecture",
+        "remote",
+        "multi-machine",
+        "federation"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-11T16:37:00-04:00",
@@ -1607,7 +1765,12 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "chats", "spaces", "workflow"],
+      "tags": [
+        "ux",
+        "chats",
+        "spaces",
+        "workflow"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-11T16:37:00-04:00",
@@ -1711,7 +1874,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["handoff", "ux"],
+      "tags": [
+        "handoff",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T00:00:00-04:00",
@@ -1724,7 +1890,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spin-off", "ux"],
+      "tags": [
+        "spin-off",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T19:39:21.755Z",
@@ -1737,7 +1906,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spin-off", "selection", "ux"],
+      "tags": [
+        "spin-off",
+        "selection",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T19:43:11.405Z",
@@ -1750,7 +1923,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spin-off", "ux"],
+      "tags": [
+        "spin-off",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T19:49:26.051Z",
@@ -1763,7 +1939,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["spin-off", "rename"],
+      "tags": [
+        "spin-off",
+        "rename"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T20:00:11.986Z",
@@ -1776,7 +1955,13 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "spaces", "settings", "actions", "composer"],
+      "tags": [
+        "ux",
+        "spaces",
+        "settings",
+        "actions",
+        "composer"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-13T18:30:00Z",
@@ -1789,7 +1974,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["sessions", "managed", "dedup"],
+      "tags": [
+        "sessions",
+        "managed",
+        "dedup"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T01:51:07.387Z",
@@ -1802,7 +1991,13 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "tasks", "chats", "spaces", "workflow"],
+      "tags": [
+        "ux",
+        "tasks",
+        "chats",
+        "spaces",
+        "workflow"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T14:45:00Z",
@@ -1815,7 +2010,12 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "chat", "composer", "inline-reply"],
+      "tags": [
+        "ux",
+        "chat",
+        "composer",
+        "inline-reply"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-14T14:55:00Z",
@@ -1828,7 +2028,13 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["history", "sessions", "timestamps", "codex", "ux"],
+      "tags": [
+        "history",
+        "sessions",
+        "timestamps",
+        "codex",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-15T11:31:43Z",
@@ -1841,7 +2047,12 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "timestamps", "sidebar", "chat-list"],
+      "tags": [
+        "ux",
+        "timestamps",
+        "sidebar",
+        "chat-list"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-15T12:04:27Z",
@@ -1854,7 +2065,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["search", "timestamps", "ux"],
+      "tags": [
+        "search",
+        "timestamps",
+        "ux"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-15T12:15:00Z",
@@ -1867,7 +2082,10 @@
       "status": "done",
       "priority": 2,
       "type": "bug",
-      "tags": ["terminal", "websocket"],
+      "tags": [
+        "terminal",
+        "websocket"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-18T00:00:00.000Z",
@@ -1880,7 +2098,13 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["security", "git", "spaces", "sessions", "db"],
+      "tags": [
+        "security",
+        "git",
+        "spaces",
+        "sessions",
+        "db"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-23T00:21:34Z",
@@ -1893,7 +2117,14 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["tests", "regression", "git", "spaces", "sessions", "db"],
+      "tags": [
+        "tests",
+        "regression",
+        "git",
+        "spaces",
+        "sessions",
+        "db"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-23T00:36:53Z",
@@ -1906,7 +2137,12 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["tasks", "storage", "git", "migration"],
+      "tags": [
+        "tasks",
+        "storage",
+        "git",
+        "migration"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-04-23T19:52:00Z",
@@ -1919,7 +2155,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "notifications"],
+      "tags": [
+        "ux",
+        "notifications"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-05-05T00:00:00Z",
@@ -1932,7 +2171,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["ui", "performance", "chat"],
+      "tags": [
+        "ui",
+        "performance",
+        "chat"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-05-12T18:13:02Z",
@@ -1945,7 +2188,10 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["spaces", "context"],
+      "tags": [
+        "spaces",
+        "context"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-04T00:00:00.000Z",
@@ -1958,7 +2204,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ux", "composer", "skills"],
+      "tags": [
+        "ux",
+        "composer",
+        "skills"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-04T03:00:00.000Z",
@@ -1971,7 +2221,10 @@
       "status": "done",
       "priority": 2,
       "type": "bug",
-      "tags": ["plan-mode", "composer"],
+      "tags": [
+        "plan-mode",
+        "composer"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-06T00:00:00.000Z",
@@ -1997,7 +2250,10 @@
       "status": "done",
       "priority": 3,
       "type": "task",
-      "tags": ["ui", "input-area"],
+      "tags": [
+        "ui",
+        "input-area"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-08T00:02:00.000Z",
@@ -2010,7 +2266,11 @@
       "status": "done",
       "priority": 2,
       "type": "bug",
-      "tags": ["input-area", "ask-user-question", "hydration"],
+      "tags": [
+        "input-area",
+        "ask-user-question",
+        "hydration"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-08T00:03:00.000Z",
@@ -2023,7 +2283,11 @@
       "status": "done",
       "priority": 2,
       "type": "bug",
-      "tags": ["input-area", "ask-user-question", "chat"],
+      "tags": [
+        "input-area",
+        "ask-user-question",
+        "chat"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-10T19:02:34.000Z",
@@ -2036,7 +2300,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["providers", "claude", "rate-limits"],
+      "tags": [
+        "providers",
+        "claude",
+        "rate-limits"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-11T22:24:46.963Z",
@@ -2049,7 +2317,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["sidebar", "favicon", "review-followup"],
+      "tags": [
+        "sidebar",
+        "favicon",
+        "review-followup"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-20T12:00:00.000Z",
@@ -2062,7 +2334,10 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["ui", "mobile"],
+      "tags": [
+        "ui",
+        "mobile"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2075,7 +2350,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2088,7 +2367,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2101,7 +2384,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2114,7 +2401,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "codex", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "codex",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2127,7 +2418,11 @@
       "status": "open",
       "priority": 3,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-3"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-3"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-06-30T00:00:00.000Z",
@@ -2140,7 +2435,12 @@
       "status": "open",
       "priority": 3,
       "type": "task",
-      "tags": ["provider-watch", "claude", "codex", "bucket-3"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "codex",
+        "bucket-3"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-01T16:15:00.000Z",
@@ -2153,7 +2453,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-13T00:00:00.000Z",
@@ -2166,7 +2470,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "codex", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "codex",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-13T00:00:00.000Z",
@@ -2179,7 +2487,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-13T00:00:00.000Z",
@@ -2192,7 +2504,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-06T00:00:00.000Z",
@@ -2205,7 +2521,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-06T00:00:00.000Z",
@@ -2218,7 +2538,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "providers", "ui"],
+      "tags": [
+        "mcp",
+        "providers",
+        "ui"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2231,7 +2555,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "providers", "settings"],
+      "tags": [
+        "mcp",
+        "providers",
+        "settings"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2244,7 +2572,10 @@
       "status": "done",
       "priority": 1,
       "type": "epic",
-      "tags": ["mcp", "providers"],
+      "tags": [
+        "mcp",
+        "providers"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2257,7 +2588,10 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "auth"],
+      "tags": [
+        "mcp",
+        "auth"
+      ],
       "parent": "c3e5a7b9",
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2270,7 +2604,10 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "project-settings"],
+      "tags": [
+        "mcp",
+        "project-settings"
+      ],
       "parent": "c3e5a7b9",
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2283,7 +2620,10 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "providers"],
+      "tags": [
+        "mcp",
+        "providers"
+      ],
       "parent": "c3e5a7b9",
       "blockedBy": [],
       "createdAt": "2026-07-14T00:00:00.000Z",
@@ -2296,9 +2636,17 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "tests", "review"],
+      "tags": [
+        "mcp",
+        "tests",
+        "review"
+      ],
       "parent": "c3e5a7b9",
-      "blockedBy": ["d4f6b8c0", "e5a7c9d1", "f6b8d0e2"],
+      "blockedBy": [
+        "d4f6b8c0",
+        "e5a7c9d1",
+        "f6b8d0e2"
+      ],
       "createdAt": "2026-07-14T00:00:00.000Z",
       "updatedAt": "2026-07-14T00:00:00.000Z"
     },
@@ -2309,7 +2657,11 @@
       "status": "done",
       "priority": 1,
       "type": "task",
-      "tags": ["mcp", "providers", "review"],
+      "tags": [
+        "mcp",
+        "providers",
+        "review"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-15T00:00:00.000Z",
@@ -2322,7 +2674,11 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["mcp", "providers", "state"],
+      "tags": [
+        "mcp",
+        "providers",
+        "state"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-15T00:00:00.000Z",
@@ -2335,7 +2691,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-20T00:00:00.000Z",
@@ -2348,7 +2708,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-20T00:00:00.000Z",
@@ -2361,7 +2725,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-20T00:00:00.000Z",
@@ -2374,7 +2742,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-20T00:00:00.000Z",
@@ -2387,7 +2759,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2400,7 +2776,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2413,7 +2793,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2426,7 +2810,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2439,7 +2827,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2452,7 +2844,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2465,7 +2861,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2478,7 +2878,11 @@
       "status": "done",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-07-27T00:00:00.000Z",
@@ -2491,7 +2895,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2504,7 +2912,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2517,7 +2929,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2530,7 +2946,12 @@
       "status": "open",
       "priority": 3,
       "type": "task",
-      "tags": ["provider-watch", "claude", "codex", "bucket-3"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "codex",
+        "bucket-3"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2543,9 +2964,15 @@
       "status": "open",
       "priority": 3,
       "type": "task",
-      "tags": ["provider-watch", "codex", "bucket-3"],
+      "tags": [
+        "provider-watch",
+        "codex",
+        "bucket-3"
+      ],
       "parent": null,
-      "blockedBy": ["d9e3f5a7"],
+      "blockedBy": [
+        "d9e3f5a7"
+      ],
       "createdAt": "2026-08-17T00:00:00.000Z",
       "updatedAt": "2026-08-17T00:00:00.000Z"
     },
@@ -2556,7 +2983,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2569,7 +3000,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
@@ -2582,7 +3017,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-24T00:00:00.000Z",
@@ -2595,7 +3034,11 @@
       "status": "open",
       "priority": 1,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-0"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-24T00:00:00.000Z",
@@ -2608,7 +3051,11 @@
       "status": "open",
       "priority": 2,
       "type": "task",
-      "tags": ["provider-watch", "claude", "bucket-2"],
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-24T00:00:00.000Z",
@@ -2621,11 +3068,167 @@
       "status": "done",
       "priority": 1,
       "type": "bug",
-      "tags": ["codex", "provider-watch"],
+      "tags": [
+        "codex",
+        "provider-watch"
+      ],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-09-07T00:18:53.512295Z",
       "updatedAt": "2026-09-07T00:18:53.512295Z"
+    },
+    {
+      "id": "3a7f1c2d",
+      "title": "Anthropic SDK: Files/Skills beta APIs go GA \u2014 audit for dated beta headers",
+      "description": "Anthropic SDK 0.122.0 (2026-08-27) promotes the Files and Skills API namespaces from beta to GA and drops support for dated beta header pins (e.g. `anthropic-beta: files-api-2025-04-14`). Any code still sending a dated beta header for these namespaces will receive a rejection after a pin upgrade.\n\nRelay pins `@anthropic-ai/sdk` and `@anthropic-ai/claude-agent-sdk` \u2014 so this is a heads-up for the next upgrade, not a currently-broken state. But because the Claude Agent SDK transitively depends on `@anthropic-ai/sdk`, the next agent-sdk bump will carry this change.\n\nNeeded:\n1. Search `claude-sdk.ts` and any HTTP utility that sets `anthropic-beta` headers for `files-api-*` or `skills-*` dated pins.\n2. Remove or upgrade any dated pins found.\n3. Confirm the effective beta header set in the installed SDK version.\n\nScope: small (audit ~30 min). Touch points: `claude-sdk.ts`, any request helper.\n\nBucket 0 \u2014 priority 1.\n\nRef: https://github.com/anthropics/anthropic-sdk-typescript/blob/main/CHANGELOG.md (v0.122.0)",
+      "status": "open",
+      "priority": 1,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-0"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "9b4e8a10",
+      "title": "Claude: expose --restricted mode as a new ProviderCapabilities runtime mode",
+      "description": "Claude Code CLI 2.1.248 adds a `--restricted` flag that launches sessions with command-execution and code-running tools removed and file access confined to the working directory. This is a tighter sandbox than `approval-required` (which still prompts for every tool call) and is aimed at read/analysis workloads where execution capability is undesirable.\n\nRelay's `ProviderRuntimeMode` currently covers `approval-required | full-access | plan`. `restricted` is a new peer mode that should be added as:\n1. A new `'restricted'` value in `ProviderRuntimeMode`.\n2. An entry in `ProviderCapabilities.runtimeModes` for Claude with label, description, and icon.\n3. Mapping in `claude-sdk.ts` to the SDK session arg that triggers restricted mode (likely `permissionMode: 'restricted'` or a dedicated flag \u2014 confirm from SDK types).\n4. DB migration if `ProviderRuntimeMode` is stored as an enum column.\n\nScope: small (~1\u20132h). Touch points: `server/core/types.ts`, `claude-sdk.ts`, `ProviderCapabilities`, runtime-mode picker UI.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-code CHANGELOG v2.1.248",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "5c2d9f48",
+      "title": "Claude Agent SDK: filter ambient/housekeeping task events from sidecar activity",
+      "description": "Agent SDK 0.3.247 adds an optional `ambient` boolean to `task_started`, `task_notification`, and `background_tasks_changed` events. When `ambient: true`, the task is routine housekeeping (e.g. internal bookkeeping, background maintenance) that hosts should silently suppress from user-facing activity indicators. When absent or false, the event is meaningful and should surface normally.\n\nRelay's sidecar and activity panels forward all task events indiscriminately today. Adding ambient-filtering prevents meaningless housekeeping entries from polluting the Tasks sidecar and the activity timeline.\n\nNeeded:\n1. In `claude-sdk.ts`, check `ambient === true` on task events before forwarding to the activity stream; skip ambient events.\n2. Verify the field is present on all three event types in the installed SDK version (0.3.247+).\n\nScope: small (~30 min). Touch points: `claude-sdk.ts` (task event handlers).\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.247",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "1f7b3e65",
+      "title": "Claude Agent SDK: expose perTaskStopAffordance for background-preserving interrupt",
+      "description": "Agent SDK 0.3.246 adds a `perTaskStopAffordance` session option. When enabled, the stop/interrupt action aborts only the currently-running foreground task while leaving background agents running \u2014 a finer-grained interrupt than today's all-or-nothing cancel.\n\nRelay's chat toolbar currently has a single stop button that calls `interrupt()` on the SDK session, which halts everything. With `perTaskStopAffordance`, Relay could offer two interrupt behaviors:\n- **Stop current task** (new): cancel only the foreground task, leave background agents.\n- **Stop all** (existing): halt everything, as today.\n\nNeeded:\n1. Set `perTaskStopAffordance: true` in the Claude session start options in `claude-sdk.ts`.\n2. Add a `stopCurrentTask()` method on the session driver alongside the existing `interrupt()`.\n3. Add `perTaskStop?: boolean` to `ProviderCapabilities` so the UI can render the two-button stop affordance only when the provider supports it.\n4. Update the stop button UI in the chat toolbar to show the split affordance.\n\nScope: medium (~2\u20133h). Touch points: `claude-sdk.ts`, `ProviderCapabilities`, chat toolbar.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.246",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "a8c0d492",
+      "title": "Claude Agent SDK: surface modelUsage.costBasis for per-turn cost attribution",
+      "description": "Agent SDK 0.3.246 adds a `costBasis` field to each entry in `modelUsage[]` in the turn result. The field indicates which pricing table was used to compute that model's cost (e.g. `standard`, `batch`, `prompt_cache_write`, `prompt_cache_read`). Previously, cost was a scalar with no indication of how it was calculated.\n\nRelay tracks per-turn costs via `estimateCost` in the session stats path. With `costBasis`, Relay can:\n1. Show a breakdown label alongside the cost figure (e.g. \"$0.003 via cached reads\").\n2. Validate that Relay's own cost estimation matches the SDK's reported basis.\n\nNeeded:\n1. In `claude-sdk.ts`, read `costBasis` from `modelUsage` entries and forward through `SessionStats` (add an optional `costBasis?: string` field).\n2. Display the basis in the cost breakdown tooltip or context stats panel.\n\nScope: small (~1h). Touch points: `claude-sdk.ts`, `SessionStats` type, context sidecar cost display.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.246",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "7e4f2b9c",
+      "title": "Claude: surface rate_limits.spend_limit in provider status UI",
+      "description": "Claude Code CLI 2.1.251 adds a `rate_limits.spend_limit` field to the headless status stream and a spend limit bar to `/usage`. This means the SDK now exposes spending-limit data (dollar cap + current spend) alongside the existing time-window rate limits.\n\nRelay's `ProviderRateLimitStatus` currently models rate limit windows (five_hour, seven_day, model_scoped). Spending limits are a distinct concept \u2014 a dollar cap per billing period \u2014 that needs a separate field.\n\nNeeded:\n1. Confirm whether `spend_limit` arrives via the rate_limit_event stream or via the `get_usage` snapshot (check the headless init event and rate_limit_event shape in the installed SDK).\n2. Add `spendLimit?: { used: number; limit: number; currency: string }` to `ProviderRateLimitStatus`.\n3. Parse it in `claude-sdk.ts` and include in the provider status broadcast.\n4. Render a spend-limit bar or row in the sidecar and settings rate-limit UI.\n\nScope: small\u2013medium (~2h). Touch points: `claude-sdk.ts`, `ProviderRateLimitStatus`, rate-limit UI.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-code CHANGELOG v2.1.251",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "b7c2e4f1",
+      "title": "Claude Agent SDK: surface thinkingTokens in context stats display",
+      "description": "Agent SDK 0.3.257 adds `thinkingTokens` to the per-model `modelUsage` entries in turn results. We accumulate `input_tokens`, `output_tokens`, `cache_write_tokens`, and `cache_read_tokens` in `SessionStats`; `thinkingTokens` is a new dimension representing tokens consumed by extended thinking that are distinct from regular output tokens.\n\nNeeded:\n1. In `claude-sdk.ts`, read `thinkingTokens` from `modelUsage` entries in the turn result and accumulate it in `SessionStats`.\n2. Add a `thinkingTokens` field to `SessionStats` (or extend the per-model breakdown object).\n3. Display it in the Context sidecar panel alongside the other token counts \u2014 likely adjacent to output tokens with a clear label.\n\nScope: small (~1h). Touch points: `claude-sdk.ts` (result handler), `SessionStats` type, context sidecar.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.257",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "d3f9a0e5",
+      "title": "Claude Agent SDK: render MCP resource links from tool results",
+      "description": "Agent SDK 0.3.257 adds `resourceLinks` to tool result messages from MCP servers \u2014 structured links (hyperlinks, file paths, resource URIs) the MCP server considers directly relevant to the tool output. These are distinct from the tool result text and represent actionable references.\n\nRelay renders tool results in the chat message view today. `resourceLinks` provides machine-readable links that could be surfaced as clickable buttons (Open File, Visit URL) beneath the tool output text.\n\nNeeded:\n1. In `claude-sdk.ts`, parse `resourceLinks` from tool result messages and forward through `SessionHistoryEntry`/`ChatMessage` (add an optional `resourceLinks?: Array<{type: string; url?: string; path?: string}>` field).\n2. In the JSONL replay path, extract `resourceLinks` from stored tool results.\n3. Render clickable link chips below the tool-result text in the chat message component.\n\nCross-provider normalization: if Codex gains a parallel field, `ChatMessage.resourceLinks` already carries it.\n\nScope: small (~2h including UI). Touch points: `claude-sdk.ts`, `SessionHistoryEntry`/`ChatMessage`, tool-result renderer, JSONL parser.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.257",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
+    },
+    {
+      "id": "e6a1b4c8",
+      "title": "Claude Agent SDK: expose permissionPrompts:'none' for unattended sessions",
+      "description": "Agent SDK 0.3.259 adds `permissionPrompts: 'none'` to session options. Unlike `full-access` (which bypasses all permissions and allows everything), this mode auto-denies all permission prompts without disabling auto mode \u2014 suited for unattended or scheduled Relay sessions where hanging on an approval dialog is unacceptable but full-access is too permissive.\n\nRelay currently maps `ProviderRuntimeMode` to Claude SDK `permissionMode` values. `permissionPrompts: 'none'` is a session-start arg orthogonal to `permissionMode` \u2014 it does not map to an existing mode.\n\nDecision needed:\n1. Is this a new `ProviderRuntimeMode` peer value (e.g. `'auto-deny'`), or a boolean session flag alongside an existing mode?\n2. Should Relay expose this as a session-level option (per-chat setting) or as a flag on scheduled/background sessions specifically?\n3. Add the option to `claude-sdk.ts` session start args once the design decision is made.\n4. If a new runtime mode: add to `ProviderCapabilities.runtimeModes`, DB migration, and runtime-mode picker UI.\n\nScope: small once design is decided (~1\u20132h). Touch points: `claude-sdk.ts`, `ProviderCapabilities`, `ProviderRuntimeMode`.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.259",
+      "status": "open",
+      "priority": 2,
+      "type": "task",
+      "tags": [
+        "provider-watch",
+        "claude",
+        "bucket-2"
+      ],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-07T00:00:00.000Z",
+      "updatedAt": "2026-09-07T00:00:00.000Z"
     }
   ]
 }
