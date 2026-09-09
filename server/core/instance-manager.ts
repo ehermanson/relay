@@ -8522,12 +8522,19 @@ export class InstanceManager extends EventEmitter {
    * `doneAt` is a timestamp, not a flag: consumers treat a chat as done only
    * while its recency is at or below the marker, so any later activity revives
    * it without the server having to detect and clear anything.
+   *
+   * Marking done also releases the chat's process slot (see
+   * {@link stopIdleProcessForDone}) — a done chat holding a live process is
+   * exactly what makes the user hit the concurrent-process cap. Clearing the
+   * marker never boots anything; the next message revives it lazily.
    */
   async setInstanceDone(id: string, done: boolean): Promise<boolean> {
     const doneAt = done ? Date.now() : null;
     const persisted = this.db.setDone(id, doneAt);
     const updatedLive = await this.enqueueInstanceMutation(id, async (instance) => {
       instance.info.doneAt = doneAt ?? undefined;
+      // stopInstance broadcasts the "stopped" status itself, carrying doneAt.
+      if (done && this.stopIdleProcessForDone(instance)) return true;
       this.emitInstanceStatus(instance);
       return true;
     }).catch((err) => {
@@ -8549,6 +8556,8 @@ export class InstanceManager extends EventEmitter {
    *
    * Emits one `instances:changed` rather than a status message per chat — a
    * sweep touches hundreds of rows, and that many broadcasts would stall the UI.
+   * (Stopping a live process does emit its own status, but that is bounded by
+   * the process cap, not by the sweep size.)
    */
   setInstancesDone(ids: readonly string[], done: boolean): number {
     const doneAt = done ? Date.now() : null;
@@ -8561,10 +8570,28 @@ export class InstanceManager extends EventEmitter {
       const instance = this.instances.get(id);
       if (!instance) continue;
       instance.info.doneAt = doneAt ?? undefined;
+      if (done) this.stopIdleProcessForDone(instance);
       updated.add(id);
     }
     if (updated.size > 0) this.emit("instances:changed");
     return updated.size;
+  }
+
+  /**
+   * Release a done chat's process slot. Marking a chat done says "I'm not
+   * coming back to this for now", so keeping its process alive only burns a
+   * slot against the concurrent-process cap — the user then has to pause the
+   * same chats by hand to start anything new.
+   *
+   * Never interrupts a `processing` chat (that would abort in-flight work; its
+   * next activity revives it out of Done anyway), and defers to
+   * {@link stopInstance}'s own guards for external / already-stopped /
+   * non-resumable sessions. Returns true when a process was actually stopped.
+   */
+  private stopIdleProcessForDone(instance: Instance): boolean {
+    if (!instance.process || instance.info.external) return false;
+    if (instance.info.status === "processing") return false;
+    return this.stopInstance(instance.info.id);
   }
 
   /**

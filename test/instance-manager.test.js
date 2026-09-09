@@ -293,6 +293,57 @@ describe("InstanceManager", () => {
       assert.throws(() => manager.createInstance(), /Maximum processes \(3\)/);
     });
 
+    it("marking a chat done stops its idle process and frees the slot", async () => {
+      const a = manager.createInstance();
+      manager.createInstance();
+      manager.createInstance();
+      const internal = manager.instances.get(a.id);
+      internal.sessionId = "resume-done";
+      internal.info.sessionId = "resume-done";
+
+      assert.equal(await manager.setInstanceDone(a.id, true), true);
+      assert.equal(internal.process, null);
+      assert.equal(internal.info.status, "stopped");
+      assert.ok(internal.info.doneAt);
+      assert.doesNotThrow(() => manager.createInstance());
+
+      // Clearing the marker never boots the process back up.
+      assert.equal(await manager.setInstanceDone(a.id, false), true);
+      assert.equal(internal.process, null);
+      assert.equal(internal.info.doneAt, undefined);
+    });
+
+    it("marking a chat done never interrupts a processing turn", async () => {
+      const a = manager.createInstance();
+      const internal = manager.instances.get(a.id);
+      internal.sessionId = "resume-busy";
+      internal.info.sessionId = "resume-busy";
+      internal.info.status = "processing";
+
+      assert.equal(await manager.setInstanceDone(a.id, true), true);
+      assert.ok(internal.process);
+      assert.equal(internal.info.status, "processing");
+      assert.ok(internal.info.doneAt);
+    });
+
+    it("bulk mark-done stops idle live processes", () => {
+      const a = manager.createInstance();
+      const b = manager.createInstance();
+      manager.createInstance();
+      for (const id of [a.id, b.id]) {
+        const internal = manager.instances.get(id);
+        internal.sessionId = `resume-${id}`;
+        internal.info.sessionId = `resume-${id}`;
+      }
+
+      assert.equal(manager.setInstancesDone([a.id, b.id], true), 2);
+      assert.equal(manager.instances.get(a.id).process, null);
+      assert.equal(manager.instances.get(b.id).process, null);
+      // Two slots freed under a cap of 3.
+      assert.doesNotThrow(() => manager.createInstance());
+      assert.doesNotThrow(() => manager.createInstance());
+    });
+
     it("stopInstance refuses a session with no resumable id", () => {
       const a = manager.createInstance();
       // Fresh instance has no captured session id yet.
