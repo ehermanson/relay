@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, type RefObject, type SetStateAction } from "react";
 import type { MentionEntry } from "./shared";
 import type { ComposerEditorHandle } from "../composer-editor";
+import { shouldAutoFocusComposer } from "@/lib/composer-focus";
 
 const DRAFT_PREFIX = "relay:draft:";
 
@@ -191,7 +192,7 @@ export function useComposerState(
   useEffect(() => {
     if (!draftKey) return;
     dispatch({ type: "restore", value: loadDraft(draftKey) });
-    composerRef.current?.focus();
+    if (shouldAutoFocusComposer()) composerRef.current?.focus();
   }, [composerRef, draftKey]);
 
   const persistDraft = useCallback(

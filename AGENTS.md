@@ -121,6 +121,8 @@ The iOS keyboard is handled by **accepting** WebKit's native page push (the head
 - Pre-shrinking `<body>` on `focusin` prevents the push, but iOS freezes web-content compositing during the keyboard presentation, so the shrink paints only after the transition settles (~1s perceived stall) — web-unfixable
 - Pre-shrinking at `pointerdown` paints in time but moves the tap target mid-gesture — iOS abandons the tap (no focus, no keyboard)
 
+**The composer never steals focus on touch devices.** Passive focuses — opening a chat (draft restore), a plan or question arriving — are gated by `shouldAutoFocusComposer()` (`app/src/lib/composer-focus.ts`, false on `pointer: coarse`), because a programmatic focus raises the keyboard and pushes the page. Focuses that follow a tap (suggestion cards, editing a queued message, "reply with text") stay unconditional.
+
 ### Mobile Type & Touch Targets
 
 Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight it per-component:

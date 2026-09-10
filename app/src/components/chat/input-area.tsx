@@ -35,6 +35,7 @@ import { ProjectContext } from "@/context/project-context";
 import { useWSMethods } from "@/context/websocket-context";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { expandTaskReferences } from "@/lib/composer-mentions";
+import { shouldAutoFocusComposer } from "@/lib/composer-focus";
 
 import { AnimatePresence, motion } from "motion/react";
 import { MessageSquareReply, X } from "lucide-react";
@@ -325,7 +326,7 @@ export function InputArea({
   useEffect(() => {
     setPlanComments([]);
     setPlanFeedbackText("");
-    if (pendingPlan) {
+    if (pendingPlan && shouldAutoFocusComposer()) {
       composerRef.current?.focus();
     }
   }, [pendingPlan]);
@@ -376,7 +377,7 @@ export function InputArea({
     setSelectedPromptAnswers({});
     setIsQuestionPanelCollapsed(false);
     setPromptReplyMode(false);
-    if (promptRequestId) {
+    if (promptRequestId && shouldAutoFocusComposer()) {
       composerRef.current?.focus();
     }
   }, [promptRequestId]);
