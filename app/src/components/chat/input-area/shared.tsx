@@ -1,3 +1,4 @@
+import { videoContentType } from "@shared/video-attachments";
 import type { ProviderModelOption } from "@shared/types";
 
 export const SLASH_COMMANDS = [
@@ -54,11 +55,11 @@ export function mentionEntryKey(entry: MentionEntry): string {
 /**
  * A staged composer attachment. `kind: "image"` renders inline as a thumbnail
  * (and as `<img>` in the transcript); `kind: "file"` renders as a clickable
- * file chip. `preview` is only set for images.
+ * file chip. Videos have a playable preview and are sent as files.
  */
 export interface FileAttachment {
   file: File;
-  kind: "image" | "file";
+  kind: "image" | "video" | "file";
   preview?: string;
 }
 
@@ -103,7 +104,8 @@ function fileExtension(name: string): string {
   return dot >= 0 ? name.slice(dot).toLowerCase() : "";
 }
 
-export function classifyAttachment(file: File): "image" | "file" | null {
+export function classifyAttachment(file: File): "image" | "video" | "file" | null {
+  if (videoContentType(file.name, file.type)) return "video";
   if (file.type.startsWith("image/")) return "image";
   const mime = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
   if (FILE_MIME_ALLOWLIST.has(mime)) return "file";

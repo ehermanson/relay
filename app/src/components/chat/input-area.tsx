@@ -974,7 +974,7 @@ export function InputArea({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,application/pdf,application/json,application/xml,application/yaml,application/sql,text/plain,text/csv,text/markdown,text/html,text/xml,text/yaml,.pdf,.json,.csv,.md,.txt,.log,.html,.yaml,.yml,.xml,.diff,.patch,.sql"
+            accept="video/*,.mp4,.mov,.webm,.m4v,.avi,.mkv,.ogv,.mpeg,.mpg,.3gp,.3g2,image/*,application/pdf,application/json,application/xml,application/yaml,application/sql,text/plain,text/csv,text/markdown,text/html,text/xml,text/yaml,.pdf,.json,.csv,.md,.txt,.log,.html,.yaml,.yml,.xml,.diff,.patch,.sql"
             multiple
             className="hidden"
             onChange={(event) => {

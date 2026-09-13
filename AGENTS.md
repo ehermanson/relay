@@ -134,6 +134,12 @@ Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight i
 - Mobile overlays (sidebar, sidecar) use the shared `SwipeableDrawer` (`app/src/components/ui/swipeable-drawer.tsx`): motion-drag swipe-to-dismiss with a progress-driven backdrop, plus opt-in edge-swipe-to-open. Don't hand-roll new overlay gestures — reuse it. Its edge listeners never block taps (they claim the gesture only after horizontal intent), but the OS back-gesture can win at the outermost bezel, so a tap affordance must always exist too.
 - `SwipeableDrawer` owns scroll containment: a capture-phase `touchmove` guard cancels any touch that isn't inside an _overflowing_ `overflow-y: auto/scroll` element, and `[data-swipeable-drawer] * { overscroll-behavior: contain }` stops edge bounce chaining into the page. Two rules keep it working on iOS: (1) the guard never cancels inside a real scroller, not even at its edges — iOS decides on the first `touchmove` and a cancelled first event kills the whole gesture, so a 1px jitter at `scrollTop` 0 would dead-end every scroll; (2) the panel is a stretched flex column — never give it a percentage height (WebKit won't reliably resolve one through a row-flex item, and a collapsed panel means content never overflows, so touches scroll the page instead). Drawer content must be a genuine scroller filling the panel via `flex-1 min-h-0`.
 
+### Composer Attachments
+
+- Video formats and the 100 MB video limit live in `server/core/video-attachments.ts`, shared by the composer, upload client, and file routes. Photos/documents retain their 10 MB limit.
+- Videos have composer previews and inline chat playback, but travel as `attachments` / `[File: source: ...]` through the shared provider path, never as `images` or native video model input. Both Claude and Codex receive the local file path. Browser codec support determines playback; the chat keeps a file link as fallback.
+- `/api/file` streams video responses with single byte-range support for seeking. Draft video blobs use the existing IndexedDB attachment store; revoke their object URLs just like image previews.
+
 ### Lazy Hydration
 
 Sidebar/dashboard rows render from persisted SQLite metadata first. Opening a chat triggers lazy hydration of transcript/task/file state and git info, but history reads stay passive: Relay does not boot/resume a stopped managed session until the user explicitly sends a message (or otherwise takes over/resumes it).

@@ -1,6 +1,6 @@
-// IndexedDB-backed store for draft image attachments. Drafts (text) live in
+// IndexedDB-backed store for draft attachments. Drafts (text) live in
 // sessionStorage, but Files can't be serialized there — IDB lets us keep
-// blobs around so attached-but-unsent images survive chat switches.
+// blobs around so attached-but-unsent files survive chat switches.
 
 const DB_NAME = "relay-draft-attachments";
 const DB_VERSION = 1;

@@ -42,7 +42,7 @@ export function useAttachmentState(draftKey?: string) {
         return {
           file,
           kind,
-          preview: kind === "image" ? URL.createObjectURL(file) : undefined,
+          preview: kind === "image" || kind === "video" ? URL.createObjectURL(file) : undefined,
         };
       });
       setAttachments(restored);
@@ -84,7 +84,7 @@ export function useAttachmentState(draftKey?: string) {
       entries.push({
         file,
         kind,
-        preview: kind === "image" ? URL.createObjectURL(file) : undefined,
+        preview: kind === "image" || kind === "video" ? URL.createObjectURL(file) : undefined,
       });
     }
     if (entries.length === 0) return;
@@ -132,7 +132,7 @@ export function useAttachmentState(draftKey?: string) {
       );
       return {
         images: paths.filter((p) => p.kind === "image").map((p) => p.path),
-        attachments: paths.filter((p) => p.kind === "file").map((p) => p.path),
+        attachments: paths.filter((p) => p.kind !== "image").map((p) => p.path),
       };
     } finally {
       setUploading(false);

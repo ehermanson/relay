@@ -47,6 +47,7 @@ If you do not use spaces, you can still use Relay just fine with regular chats.
 - Complete a space by merging it, or archive it without merging
 - Use built-in git actions like branch switch, fetch, pull, push, and space push/PR
 - Change provider, model, reasoning level, and runtime mode when the provider supports it
+- Attach photos, documents, and videos to chats; videos support inline playback and files up to 100 MB (playback depends on browser codec support). Agents receive videos as local file attachments.
 - Respond to approval requests and other agent prompts from the browser
 - Start review chats for a branch or for the files changed in a chat
 - Browse project tasks, plans, installed skills, docs, and usage stats

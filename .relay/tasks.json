@@ -2626,6 +2626,19 @@
       "blockedBy": [],
       "createdAt": "2026-09-07T00:18:53.512295Z",
       "updatedAt": "2026-09-07T00:18:53.512295Z"
+    },
+    {
+      "id": "ed517c42",
+      "title": "Support video attachments in the composer",
+      "description": "Accept common video formats, preview and persist drafts, upload and serve videos, and send through the shared file attachment flow for all providers.",
+      "status": "done",
+      "priority": 2,
+      "type": "task",
+      "tags": [],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-13T19:36:34.356747+00:00",
+      "updatedAt": "2026-09-13T19:40:06.567074+00:00"
     }
   ]
 }

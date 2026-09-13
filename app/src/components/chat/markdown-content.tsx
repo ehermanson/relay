@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import hljs from "../../lib/markdown";
 import { openNativePath } from "../../lib/api";
 import { FileIcon } from "@/components/ui/file-icon";
+import { videoContentType } from "@shared/video-attachments";
 
 interface MarkdownContentProps {
   text: string;
@@ -350,6 +351,23 @@ function MarkdownLink({
     }
     const basename = path.split("/").pop() || path;
     const url = `/api/file?path=${encodeURIComponent(path)}`;
+    if (videoContentType(path)) {
+      return (
+        <span className="inline-flex max-w-full flex-col gap-1 align-middle">
+          <video
+            src={url}
+            aria-label={basename}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-80 max-w-full rounded-lg border border-border bg-black"
+          />
+          <a href={url} target="_blank" rel="noopener noreferrer" className="text-[0.8125rem]">
+            {basename}
+          </a>
+        </span>
+      );
+    }
     return (
       <a
         href={url}

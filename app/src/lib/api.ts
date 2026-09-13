@@ -1,3 +1,4 @@
+import { videoContentType, MAX_VIDEO_UPLOAD } from "@shared/video-attachments";
 import type {
   CreateInstancePayload,
   HistoryEntry,
@@ -375,6 +376,8 @@ const EXT_TO_MIME: Record<string, string> = {
 };
 
 function inferContentType(file: File): string {
+  const videoMime = videoContentType(file.name, file.type);
+  if (videoMime) return videoMime;
   if (file.type) return file.type;
   const dot = file.name.lastIndexOf(".");
   if (dot < 0) return "application/octet-stream";
@@ -382,10 +385,12 @@ function inferContentType(file: File): string {
 }
 
 /**
- * Upload a single file attachment (image or supported document) to the server.
+ * Upload a single file attachment (image, video, or supported document) to the server.
  * Returns the absolute path on disk where the file was staged (~/.relay/uploads/<uuid>.ext).
  */
 export async function uploadAttachment(file: File): Promise<string> {
+  const limit = videoContentType(file.name, file.type) ? MAX_VIDEO_UPLOAD : 10 * 1024 * 1024;
+  if (file.size > limit) throw new Error(`File too large (${limit / (1024 * 1024)}MB limit)`);
   const res = await fetch("/api/upload", {
     method: "POST",
     headers: { "Content-Type": inferContentType(file) },

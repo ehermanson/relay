@@ -1,3 +1,4 @@
+import { VIDEO_MIME_BY_EXT } from "#core/video-attachments.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Context, Next } from "hono";
@@ -81,6 +82,7 @@ export async function readBodyBuffer(c: AppContext, maxBytes: number): Promise<B
 
 export function getMimeType(filePath: string): string {
   const mimeTypes: Record<string, string> = {
+    ...VIDEO_MIME_BY_EXT,
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
