@@ -47,3 +47,33 @@ describe("custom tool activity visibility", () => {
     expect(view.queryByText("Running... 2s")).toBeNull();
   });
 });
+
+describe("readable command rows", () => {
+  it("shows the label first and the exact command and output only on expansion", () => {
+    const command =
+      "/bin/zsh -lc 'PATH=\"/tools/bin:$PATH\" git push origin main > /tmp/push.log 2>&1'";
+    const view = render(
+      <ActivityGroup
+        activities={[
+          {
+            type: "activity",
+            activity: "tool_use",
+            tool: "Bash",
+            description: "Push changes",
+            detail: command,
+            input: { command },
+            inputDescription: "Push changes",
+            mergedResultDetail: "Everything up-to-date",
+            mergedResultStatus: "success",
+          },
+        ]}
+      />,
+    );
+    expect(view.getByText("Push changes")).toBeTruthy();
+    expect(view.container.textContent).not.toContain(command);
+    expect(view.queryByText("Everything up-to-date")).toBeNull();
+    fireEvent.click(view.getByText("Push changes"));
+    expect(view.container.textContent).toContain(command);
+    expect(view.getByText("Everything up-to-date")).toBeTruthy();
+  });
+});

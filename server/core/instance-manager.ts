@@ -254,6 +254,7 @@ interface WatchState {
   pendingTools: Map<string, string>;
   pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
   pendingProviderCalls: Map<string, { name: string; arguments?: string }>;
+  providerCommandIds: Set<string>;
   stats: SessionStats;
 }
 
@@ -1285,6 +1286,7 @@ function createWatchState(
     pendingTools: new Map(),
     pendingTaskCreates: new Map(),
     pendingProviderCalls: new Map(),
+    providerCommandIds: new Set(),
     stats: existingStats
       ? { ...existingStats }
       : {
@@ -6417,6 +6419,7 @@ export class InstanceManager extends EventEmitter {
       instance.info.provider === "codex"
         ? convertCodexTranscriptEntry(entry as Record<string, unknown>, {
             pendingCalls: instance.watchState.pendingProviderCalls,
+            commandIds: (instance.watchState.providerCommandIds ??= new Set()),
             tasks: instance.tasks,
             files: instance.files,
             stats: instance.watchState.stats,

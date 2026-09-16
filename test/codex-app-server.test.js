@@ -891,7 +891,7 @@ describe("CodexAppServerSession", () => {
             command: "ls -la",
             cwd: "/tmp/project",
             status: "inProgress",
-            commandActions: [],
+            commandActions: [{ type: "listFiles", command: "ls -la", path: "/tmp/project" }],
             aggregatedOutput: null,
             exitCode: null,
             durationMs: null,
@@ -912,7 +912,7 @@ describe("CodexAppServerSession", () => {
             command: "ls -la",
             cwd: "/tmp/project",
             status: "completed",
-            commandActions: [],
+            commandActions: [{ type: "listFiles", command: "ls -la", path: "/tmp/project" }],
             aggregatedOutput: "file1.ts\nfile2.ts\n",
             exitCode: 0,
             durationMs: 50,
@@ -925,7 +925,9 @@ describe("CodexAppServerSession", () => {
 
     const toolUse = activities.find(([a]) => a.activity === "tool_use" && a.tool === "Bash");
     assert.ok(toolUse, "Expected a tool_use activity for Bash");
-    assert.match(toolUse[0].description, /Running command/);
+    assert.equal(toolUse[0].description, "List files in /tmp/project");
+    assert.equal(toolUse[0].inputDescription, "List files in /tmp/project");
+    assert.equal(toolUse[0].input.command, "ls -la");
 
     const toolResult = activities.find(([a]) => a.activity === "tool_result" && a.tool === "Bash");
     assert.ok(toolResult, "Expected a tool_result activity for Bash");

@@ -264,7 +264,12 @@ Spaces group multiple concurrent agent chats within a shared git worktree/branch
 ### Codex Code-Mode Activities
 
 - Code-mode `exec` calls arrive as `custom_tool_call` with freeform JavaScript in `input`; outputs may be arrays of `input_text`/image blocks. `codex-tool-activity.ts` preserves scripts as `ExecuteCode` activities and extracts bounded text output, shared with app-server dynamic tools. Do not require JSON arguments or expose base64 image data as result text.
-- A tool call without structured input is not necessarily a progress update. Only known `Running...` progress entries are hidden; legacy freeform input in `detail` remains expandable. Code-mode batches display their actual script and combined output because rollout records do not provide separate inner-tool activities.
+- A tool call without structured input is not necessarily a progress update. Only known `Running...` progress entries are hidden; legacy freeform input in `detail` remains expandable. Code-mode batches keep their script and combined output; v2 `CommandExecution` items additionally supply the inner shell commands and `parsed_cmd` metadata. Replay preserves these inner commands and deduplicates by ID against direct `exec_command` calls.
+
+### Codex Command Labels
+
+- `codex-command-label.ts` turns app-server `commandActions` and rollout `parsed_cmd` metadata into collapsed-row labels (read, search, list files), with conservative fallbacks for common Git, package, and test commands. It never evaluates shell input. Unsupported scripts get a generic label rather than inferred intent.
+- Human labels go in `inputDescription`; `input.command` and `detail` retain the full command for expansion. Claude already supplies its own Bash descriptions, so its labeling is unchanged. Keep approval request commands explicit.
 
 ### Codex Process Spawning
 

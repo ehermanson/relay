@@ -1,3 +1,4 @@
+import { describeCodexCommand } from "#core/providers/codex-command-label.js";
 /**
  * Codex App-Server Session Provider
  *
@@ -126,6 +127,7 @@ interface CommandExecutionItem extends ThreadItemBase {
   command: string;
   cwd: string;
   status: "inProgress" | "completed" | "failed" | "declined";
+  commandActions?: unknown[];
   aggregatedOutput?: string | null;
   exitCode?: number | null;
   durationMs?: number | null;
@@ -1539,7 +1541,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           description: `Requesting approval: ${command}`,
           detail: command,
           input: { command },
-          inputDescription: command,
+          inputDescription: describeCodexCommand(command, params.commandActions),
         } as ActivityMessage);
         break;
       }
@@ -2199,16 +2201,18 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
     switch (item.type) {
       case "commandExecution": {
-        const cmd = (item as CommandExecutionItem).command;
+        const execution = item as CommandExecutionItem;
+        const cmd = execution.command;
+        const label = describeCodexCommand(cmd, execution.commandActions);
         this.emit("activity", {
           type: "activity",
           activity: "tool_use",
           toolUseId: item.id,
           tool: "Bash",
-          description: `Running command: ${cmd}`,
+          description: label,
           detail: cmd,
           input: { command: cmd },
-          inputDescription: cmd,
+          inputDescription: label,
           raw: item,
         } as ActivityMessage);
         break;
@@ -2332,7 +2336,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           description: status,
           detail: outputText || cmd.command,
           input: { command: cmd.command, exitCode: cmd.exitCode ?? undefined },
-          inputDescription: cmd.command,
+          inputDescription: describeCodexCommand(cmd.command, cmd.commandActions),
           raw: item,
         } as ActivityMessage);
         break;

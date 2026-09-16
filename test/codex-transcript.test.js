@@ -560,8 +560,20 @@ describe("convertCodexTranscriptEntry (0.153+ item_completed rollouts)", () => {
     assert.equal(results.length, 0);
   });
 
-  it("ignores item types that are already represented by response_item tool calls", () => {
+  it("ignores item types already represented by response_item tool calls", () => {
     const ctx = createContext();
+    convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "c1",
+          arguments: '{"cmd":"pwd"}',
+        },
+      },
+      ctx,
+    );
     for (const item of [
       { type: "CommandExecution", id: "c1", command: ["/bin/zsh", "-lc", "pwd"], stdout: "/x" },
       { type: "FileChange", id: "f1", changes: {} },
@@ -856,5 +868,63 @@ describe("code-mode custom tools", () => {
       createContext(),
     );
     assert.deepEqual(entry.message.input, { input: "freeform input" });
+  });
+});
+
+describe("native command labels in replay", () => {
+  const command = ["/bin/zsh", "-lc", "cat '/tmp/my file.ts'"];
+  const event = (id = "exec-inner") => ({
+    type: "event_msg",
+    payload: {
+      type: "item_completed",
+      item: {
+        type: "CommandExecution",
+        id,
+        command,
+        parsed_cmd: [{ type: "read", name: "my file.ts", path: "/tmp/my file.ts" }],
+        status: "completed",
+        exit_code: 0,
+        aggregated_output: "const x = 1;",
+      },
+    },
+  });
+  it("restores inner command metadata, exact arguments, and captured output", () => {
+    const ctx = createContext();
+    const entries = convertCodexTranscriptEntry(event(), ctx);
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].message.inputDescription, "Read my file.ts");
+    assert.equal(
+      entries[0].message.input.command,
+      `/bin/zsh -lc 'cat '\"'\"'/tmp/my file.ts'\"'\"''`,
+    );
+    assert.equal(entries[1].message.detail, "const x = 1;");
+    assert.equal(entries[1].message.toolUseId, entries[0].message.toolUseId);
+    assert.deepEqual(convertCodexTranscriptEntry(event(), ctx), []);
+  });
+  it("does not duplicate direct exec_command calls with native events", () => {
+    const ctx = createContext();
+    const [call] = convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-1",
+          arguments: '{"cmd":"git push origin main"}',
+        },
+      },
+      ctx,
+    );
+    assert.equal(call.message.inputDescription, "Push changes");
+    assert.equal(call.message.input.command, "git push origin main");
+    assert.deepEqual(convertCodexTranscriptEntry(event("call-1"), ctx), []);
+  });
+  it("preserves command failures", () => {
+    const failed = event();
+    failed.payload.item.exit_code = 1;
+    assert.equal(
+      convertCodexTranscriptEntry(failed, createContext())[1].message.description,
+      "Tool error",
+    );
   });
 });

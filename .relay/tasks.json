@@ -2665,6 +2665,19 @@
       "blockedBy": [],
       "createdAt": "2026-09-16T10:41:03.247484+00:00",
       "updatedAt": "2026-09-16T10:43:51.401923+00:00"
+    },
+    {
+      "id": "c70d947d",
+      "title": "Use readable Codex command labels",
+      "description": "Added metadata-driven Codex read/search/list labels with conservative Git, package and test command summaries. Exact commands/results remain expandable. Restored v2 inner shell command events with call-ID deduplication. Verified screenshot commands, 186 targeted backend tests, 190 UI tests, server/app builds, and lint (existing warnings only).",
+      "status": "done",
+      "priority": 1,
+      "type": "task",
+      "tags": [],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-16T11:21:54.334393+00:00",
+      "updatedAt": "2026-09-16T11:28:14.133355+00:00"
     }
   ]
 }

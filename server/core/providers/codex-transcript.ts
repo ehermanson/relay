@@ -1,3 +1,4 @@
+import { describeCodexCommand } from "#core/providers/codex-command-label.js";
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import type {
@@ -32,6 +33,8 @@ interface CodexPendingCall {
 
 interface CodexReplayContext {
   pendingCalls: Map<string, CodexPendingCall>;
+  /** Deduplicate native command events against direct exec_command calls in this turn. */
+  commandIds?: Set<string>;
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
   stats: SessionStats;
@@ -246,7 +249,7 @@ function buildToolUseActivity(
       description: command ? "Running command" : "Running command",
       detail: command,
       input: command ? { command } : undefined,
-      inputDescription: command,
+      inputDescription: command ? describeCodexCommand(command) : "Run shell command",
     };
   }
 
@@ -301,7 +304,7 @@ function buildToolResultActivity(
       description: succeeded ? "Command completed" : "Command failed",
       detail: detail || command,
       input: command ? { command, exitCode } : exitCode != null ? { exitCode } : undefined,
-      inputDescription: command,
+      inputDescription: command ? describeCodexCommand(command) : "Run shell command",
     };
   }
 
@@ -445,6 +448,9 @@ export function convertCodexTranscriptEntry(
     ) {
       const rawArguments =
         typeof payload.arguments === "string" ? payload.arguments : payload.input;
+      if (payload.name === "exec_command" && typeof payload.call_id === "string") {
+        (ctx.commandIds ??= new Set()).add(payload.call_id);
+      }
       if (typeof payload.call_id === "string") {
         ctx.pendingCalls.set(payload.call_id, {
           name: payload.name,
@@ -564,6 +570,63 @@ export function convertCodexTranscriptEntry(
         ? (entry.payload as Record<string, unknown>)
         : null;
     if (!payload || typeof payload.type !== "string") return results;
+
+    if (payload.type === "task_started") ctx.commandIds?.clear();
+
+    // Code-mode batches record the actual shell executions as native items even
+    // when no standalone exec_command response item exists. Preserve those rows
+    // and their parsed metadata; the outer ExecuteCode row remains inspectable.
+    if (payload.type === "item_completed") {
+      const item = asRecord(payload.item);
+      if (item?.type === "CommandExecution" && typeof item.id === "string") {
+        const rawCommand = item.command;
+        const command =
+          typeof rawCommand === "string"
+            ? rawCommand
+            : Array.isArray(rawCommand) && rawCommand.every((arg) => typeof arg === "string")
+              ? rawCommand
+                  .map((arg) =>
+                    /^[\w./:-]+$/.test(arg) ? arg : "'" + arg.replace(/'/g, "'\"'\"'") + "'",
+                  )
+                  .join(" ")
+              : undefined;
+        if (!command || ctx.commandIds?.has(item.id)) return results;
+        (ctx.commandIds ??= new Set()).add(item.id);
+        const failed =
+          item.status === "failed" ||
+          item.status === "declined" ||
+          (typeof item.exit_code === "number" && item.exit_code !== 0);
+        results.push(
+          {
+            timestamp,
+            message: {
+              type: "activity",
+              activity: "tool_use",
+              tool: "Bash",
+              toolUseId: item.id,
+              description: "Running command",
+              detail: command,
+              input: { command },
+              inputDescription: describeCodexCommand(command, item.parsed_cmd),
+            },
+          },
+          {
+            timestamp,
+            message: {
+              type: "activity",
+              activity: "tool_result",
+              tool: "Bash",
+              toolUseId: item.id,
+              description: failed ? "Tool error" : "Command completed",
+              detail:
+                extractCodexToolOutput(item.aggregated_output ?? item.formatted_output) ||
+                undefined,
+            },
+          },
+        );
+        return results;
+      }
+    }
 
     // Conversation turns + reasoning come in two rollout formats (legacy events
     // vs. 0.153+ `item_completed` items) — see extractCodexConversationMessage.
