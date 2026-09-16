@@ -149,6 +149,7 @@ export function buildToolResultActivity(
   toolName: string | undefined,
   content: string,
   toolResultMeta?: { nonExecutionKind?: string; userFeedback?: string },
+  toolUseId?: string,
 ): ActivityMessage {
   const denied = isError && isPermissionDenial(content);
   const deniedTool = denied ? toolName || "Unknown" : undefined;
@@ -157,6 +158,7 @@ export function buildToolResultActivity(
   return {
     type: "activity",
     activity: "tool_result",
+    toolUseId,
     description: deniedTool
       ? "Permission denied"
       : resolution

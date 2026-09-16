@@ -671,6 +671,24 @@ describe("ClaudeSdkSession", () => {
       assert.ok(toolActs.length >= 1);
       assert.equal(toolActs[0][0].tool, "Read");
       assert.equal(toolActs[0][0].detail, "/test/file.ts");
+      assert.equal(toolActs[0][0].toolUseId, "tu-1");
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tu-1",
+              content: [{ type: "text", text: "const x = 1;" }],
+            },
+          ],
+        },
+      });
+      await tick();
+      const readResult = activities.find(([a]) => a.activity === "tool_result")?.[0];
+      assert.equal(readResult?.toolUseId, "tu-1");
+      assert.equal(readResult?.detail, "const x = 1;");
       session.close();
     });
 

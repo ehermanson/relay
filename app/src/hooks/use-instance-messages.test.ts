@@ -626,3 +626,80 @@ describe("useInstanceMessages passive history hydration", () => {
     expect(result.current.getReplayCursor("inst-b")).toBeUndefined();
   });
 });
+
+describe("tool result pairing", () => {
+  const read = (id: string): ActivityMessage => ({
+    type: "activity",
+    activity: "tool_use",
+    tool: "Read",
+    toolUseId: id,
+    description: "Reading file",
+    input: { file_path: `/${id}.ts` },
+  });
+  const result = (id: string): ActivityMessage => ({
+    type: "activity",
+    activity: "tool_result",
+    toolUseId: id,
+    description: "Tool completed",
+    detail: `contents of ${id}`,
+  });
+  const messages = [read("a"), read("b"), result("b"), result("a")];
+  function assertPairs(items: ReturnType<typeof replayHistoryToItems>) {
+    const activities = items.flatMap((item) =>
+      item.kind === "activity-group" ? item.activities : [],
+    );
+    expect(
+      activities
+        .filter((a) => a.activity === "tool_use")
+        .map((a) => [a.toolUseId, a.mergedResultDetail]),
+    ).toEqual([
+      ["a", "contents of a"],
+      ["b", "contents of b"],
+    ]);
+  }
+  it("pairs out-of-order parallel reads during replay", () => {
+    assertPairs(replayHistoryToItems(messages.map((message) => ({ timestamp: 1, message }))));
+  });
+  it("pairs out-of-order parallel reads in live updates", () => {
+    const hook = renderHook(() => useInstanceMessages());
+    act(() => hook.result.current.setInstanceId("test"));
+    act(() =>
+      messages.forEach((message) =>
+        hook.result.current.handleMessage("test", { ...message, instanceId: "test" }),
+      ),
+    );
+    assertPairs(hook.result.current.items);
+  });
+  it("finds the call across intervening activity groups", () => {
+    const history: HistoryEntry[] = [
+      { timestamp: 1, message: read("a") },
+      {
+        timestamp: 2,
+        message: { type: "activity", activity: "thinking", description: "Thinking", detail: "hmm" },
+      },
+      { timestamp: 3, message: read("b") },
+      { timestamp: 4, message: result("a") },
+      { timestamp: 5, message: result("b") },
+    ];
+    assertPairs(replayHistoryToItems(history));
+  });
+  it("does not attach an unknown result to the latest read", () => {
+    const items = replayHistoryToItems(
+      [read("a"), result("unknown")].map((message) => ({ timestamp: 1, message })),
+    );
+    const group = items.find((item) => item.kind === "activity-group");
+    expect(
+      group?.kind === "activity-group" && group.activities[0].mergedResultDetail,
+    ).toBeUndefined();
+  });
+  it("never overwrites already paired legacy results", () => {
+    const legacy = [read("a"), read("b"), result("a"), result("b")].map(
+      ({ toolUseId: _id, ...message }) => ({ timestamp: 1, message }),
+    );
+    const items = replayHistoryToItems(legacy);
+    const activities = items.flatMap((item) =>
+      item.kind === "activity-group" ? item.activities : [],
+    );
+    expect(activities.map((a) => a.mergedResultDetail)).toEqual(["contents of a", "contents of b"]);
+  });
+});

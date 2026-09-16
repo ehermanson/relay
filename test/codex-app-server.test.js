@@ -2507,3 +2507,50 @@ describe("CodexAppServerSession", () => {
     session.close();
   });
 });
+
+describe("code-mode tool activities", () => {
+  it("preserves dynamic exec input and output", async () => {
+    const harness = createHarness();
+    const session = new CodexAppServerSession({
+      cwd: "/tmp/project",
+      logger: noopLogger,
+      spawnProcess: harness.spawnProcess,
+      codexPath: "codex",
+    });
+    const activities = collectEvents(session, "activity");
+    session.send("inspect files");
+    const child = harness.children[0];
+    autoRespond(child);
+    await tick(50);
+    const code = 'text(await tools.exec_command({cmd: "ls"}));';
+    for (const method of ["item/started", "item/completed"]) {
+      child.stdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method,
+          params: {
+            threadId: "thread-001",
+            turnId: "turn-1",
+            item: {
+              type: "dynamicToolCall",
+              id: "exec-1",
+              tool: "exec",
+              arguments: code,
+              status: method === "item/started" ? "inProgress" : "completed",
+              contentItems: [{ type: "text", text: "file.ts" }],
+              success: true,
+            },
+          },
+        }) + "\n",
+      );
+    }
+    await tick();
+    const use = activities.find(([a]) => a.activity === "tool_use")?.[0];
+    const result = activities.find(([a]) => a.activity === "tool_result")?.[0];
+    assert.equal(use?.tool, "ExecuteCode");
+    assert.deepEqual(use?.input, { code });
+    assert.equal(result?.toolUseId, use?.toolUseId);
+    assert.equal(result?.detail, "file.ts");
+    session.close();
+  });
+});

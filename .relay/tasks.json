@@ -2639,6 +2639,32 @@
       "blockedBy": [],
       "createdAt": "2026-09-13T19:36:34.356747+00:00",
       "updatedAt": "2026-09-13T19:40:06.567074+00:00"
+    },
+    {
+      "id": "c70d947b",
+      "title": "Restore expanded read-file previews",
+      "description": "Restored Claude SDK user-envelope and content-block tool results; preserved call IDs across Claude/Codex live and replay paths; matched parallel results by ID and restored highlighted read/image previews. Verified 187 UI tests, 288 targeted backend tests, server/app builds, type checks and lint (existing warnings only).",
+      "status": "done",
+      "priority": 1,
+      "type": "bug",
+      "tags": [],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-16T10:30:11.519240+00:00",
+      "updatedAt": "2026-09-16T10:35:28.230047+00:00"
+    },
+    {
+      "id": "c70d947c",
+      "title": "Show Codex code-mode tool calls",
+      "description": "Preserved Codex freeform exec scripts as expandable Run code activities with structured text output, across rollout replay and dynamic app-server tools. Narrowed progress hiding and restored legacy detail expansion. Verified current chat transcript (33 calls), 189 UI tests, 88 Codex tests, builds, type checks, and lint.",
+      "status": "done",
+      "priority": 1,
+      "type": "bug",
+      "tags": [],
+      "parent": null,
+      "blockedBy": [],
+      "createdAt": "2026-09-16T10:41:03.247484+00:00",
+      "updatedAt": "2026-09-16T10:43:51.401923+00:00"
     }
   ]
 }

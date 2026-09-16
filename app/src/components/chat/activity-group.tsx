@@ -98,13 +98,14 @@ export function ActivityGroup({
     hiddenResults.add(i);
   }
 
-  // Hide progress-update entries: tool_use without `input` (emitted by the server
+  // Hide known progress-update entries (emitted by the server
   // for long-running Bash commands as "Running... Ns"). Once the real result is
   // merged into the original tool_use (which has `input`), these are stale noise.
   for (let i = 0; i < activities.length; i++) {
     const act = activities[i];
-    if (act.activity !== "tool_use" || act.input) continue;
-    // No input — this is a progress update. Hide it.
+    if (act.activity !== "tool_use" || act.input || !act.description.startsWith("Running... "))
+      continue;
+    // Missing input alone does not imply progress: custom tools may lack arguments.
     hiddenResults.add(i);
   }
 

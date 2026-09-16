@@ -87,35 +87,32 @@ function mergeToolResult(activities: MergedActivity[], result: ActivityMessage):
   // Permission denials stay as separate entries — they have their own UI
   if (result.permissionDenied) return false;
   // Interactive tool resolutions stay separate — handled by resolvedInteractive logic
-  if (result.resolution && INTERACTIVE_TOOLS.has(result.tool || "")) return false;
+  if (result.resolution) return false;
 
   const status = result.description === "Tool error" ? "error" : "success";
 
-  // Scan backwards for the best tool_use to merge into.
-  // Prefer entries with `input` (the original call) over progress updates
-  // (which the server emits without `input` for long-running Bash commands).
-  let fallbackIdx = -1;
-  for (let i = activities.length - 1; i >= 0; i--) {
-    const act = activities[i];
-    if (act.activity === "tool_use") {
-      if (act.input) {
-        // Found the original tool_use with input — merge here
-        activities[i] = {
-          ...act,
-          mergedResultDetail: result.detail,
-          mergedResultStatus: status,
-        };
-        return true;
-      }
-      if (fallbackIdx === -1) fallbackIdx = i;
-    }
-  }
-  // No tool_use with input found — fall back to last tool_use (progress entry)
-  if (fallbackIdx !== -1) {
-    activities[fallbackIdx] = {
-      ...activities[fallbackIdx],
+  // IDs are authoritative: parallel calls can finish in any order. Never attach
+  // an identified result to a different call just because it is more recent.
+  const index = result.toolUseId
+    ? activities.findIndex(
+        (act) => act.activity === "tool_use" && act.toolUseId === result.toolUseId,
+      )
+    : activities.findIndex(
+        (act) =>
+          act.activity === "tool_use" &&
+          !!act.input &&
+          !act.mergedResultStatus &&
+          (!result.tool || act.tool === result.tool) &&
+          !INTERACTIVE_TOOLS.has(act.tool || ""),
+      );
+  // Legacy events without IDs use the oldest unmatched call (provider emission
+  // order). They must never overwrite an already paired result.
+  if (index >= 0) {
+    activities[index] = {
+      ...activities[index],
       mergedResultDetail: result.detail,
       mergedResultStatus: status,
+      toolResultMeta: result.toolResultMeta,
     };
     return true;
   }
@@ -264,6 +261,8 @@ export function replayHistoryToItems(history: HistoryEntry[]): ChatItem[] {
                 if (mergeToolResult(acts, msg)) {
                   items[j] = { kind: "activity-group", activities: acts };
                   merged = true;
+                } else if (msg.toolUseId && !msg.permissionDenied && !msg.resolution) {
+                  continue;
                 } else {
                   // Permission denied / interactive — append as separate entry in the group
                   items[j] = { kind: "activity-group", activities: [...acts, msg] };
@@ -687,13 +686,13 @@ function coreReducer(state: State, action: Action): State {
               if (mergeToolResult(acts, msg)) {
                 items[i] = { kind: "activity-group", activities: acts };
                 merged = true;
+              } else if (msg.toolUseId && !msg.permissionDenied && !msg.resolution) {
+                continue;
               } else {
                 // Couldn't merge (permission denied / interactive result) — append as
                 // a separate entry in this group. This is safe because the live reducer
                 // processes events sequentially; the most recent activity group always
                 // corresponds to the current tool call sequence.
-                // NOTE: ID-based matching (via toolUseId) would make this more robust
-                // but requires threading the ID through ActivityMessage on the server side.
                 items[i] = { kind: "activity-group", activities: [...group.activities, msg] };
                 merged = true;
               }

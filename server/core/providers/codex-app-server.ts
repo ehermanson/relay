@@ -54,6 +54,11 @@ import { getCachedCodexModels } from "#core/providers/codex-models.js";
 import { extFromPath } from "#core/paths.js";
 import { mcpServerId, normalizeMcpAuthentication, normalizeMcpConnectionState } from "#core/mcp.js";
 
+import {
+  buildCodexGenericToolUse,
+  extractCodexToolOutput,
+} from "#core/providers/codex-tool-activity.js";
+
 type SpawnFn = typeof spawn;
 
 // =============================================================================
@@ -2198,6 +2203,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_use",
+          toolUseId: item.id,
           tool: "Bash",
           description: `Running command: ${cmd}`,
           detail: cmd,
@@ -2238,6 +2244,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           this.emit("activity", {
             type: "activity",
             activity: "tool_use",
+            toolUseId: item.id,
             tool,
             description: tool === "Write" ? "Writing file" : "Editing file",
             detail: change.path,
@@ -2254,6 +2261,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_use",
+          toolUseId: item.id,
           tool: mcp.tool,
           description: `Using ${mcp.server}/${mcp.tool}`,
           mcp: {
@@ -2277,6 +2285,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           this.emit("activity", {
             type: "activity",
             activity: "tool_use",
+            toolUseId: item.id,
             tool: "ViewImage",
             description: "Viewing image",
             detail: path,
@@ -2287,10 +2296,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           break;
         }
         this.emit("activity", {
-          type: "activity",
-          activity: "tool_use",
-          tool: dyn.tool,
-          description: `Using ${dyn.tool}`,
+          ...buildCodexGenericToolUse(dyn.tool, dyn.arguments),
+          toolUseId: item.id,
           raw: item,
         } as ActivityMessage);
         break;
@@ -2320,6 +2327,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_result",
+          toolUseId: item.id,
           tool: "Bash",
           description: status,
           detail: outputText || cmd.command,
@@ -2350,6 +2358,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_result",
+          toolUseId: item.id,
           tool: "Edit",
           description: "Tool completed",
           detail,
@@ -2368,6 +2377,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           this.emit("activity", {
             type: "activity",
             activity: "tool_use",
+            toolUseId: item.id,
             tool: "GenerateImage",
             description: "Generated image",
             detail: path,
@@ -2384,6 +2394,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_result",
+          toolUseId: item.id,
           tool: mcp.tool,
           description: `${mcp.server}/${mcp.tool} completed`,
           mcp: {
@@ -2406,6 +2417,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           this.emit("activity", {
             type: "activity",
             activity: "tool_result",
+            toolUseId: item.id,
             tool: "ViewImage",
             description: "Image loaded",
             detail: path,
@@ -2417,8 +2429,10 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("activity", {
           type: "activity",
           activity: "tool_result",
+          toolUseId: item.id,
           tool: dyn.tool,
-          description: `${dyn.tool} completed`,
+          description: dyn.success === false ? "Tool error" : `${dyn.tool} completed`,
+          detail: extractCodexToolOutput(dyn.contentItems) || undefined,
           raw: item,
         } as ActivityMessage);
         break;

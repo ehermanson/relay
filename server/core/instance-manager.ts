@@ -5687,7 +5687,13 @@ export class InstanceManager extends EventEmitter {
       }
       results.push({
         timestamp,
-        message: buildToolResultActivity(block.is_error, toolName, blockContent, toolResultMeta),
+        message: buildToolResultActivity(
+          block.is_error,
+          toolName,
+          blockContent,
+          toolResultMeta,
+          block.tool_use_id,
+        ),
       });
     }
   }
@@ -6223,6 +6229,7 @@ export class InstanceManager extends EventEmitter {
           type: "activity",
           activity: "tool_use",
           tool: block.name,
+          toolUseId: block.id,
           description: describeToolUse(block.name || "Unknown", block.input),
           detail: describeToolDetail(block.name || "Unknown", block.input),
           input: buildToolActivityInput(

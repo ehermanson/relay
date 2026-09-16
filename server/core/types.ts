@@ -1039,6 +1039,8 @@ export interface EditToolInput {
 export interface ActivityMessage {
   type: "activity";
   activity: "tool_use" | "tool_result" | "thinking" | "task_list" | "file_list";
+  /** Provider call identity, shared by tool use and result. */
+  toolUseId?: string;
   tool?: string;
   description: string;
   detail?: string;

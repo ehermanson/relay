@@ -16,6 +16,11 @@ import { convertProposedPlanText } from "#core/proposed-plan.js";
 import { buildTaskListActivityFromPlan } from "#core/tools.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 
+import {
+  buildCodexGenericToolUse,
+  extractCodexToolOutput,
+} from "#core/providers/codex-tool-activity.js";
+
 const MAX_HISTORY = 1000;
 const TOOL_OUTPUT_MARKER = "\nOutput:\n";
 
@@ -69,10 +74,9 @@ function parseArguments(raw: unknown): Record<string, unknown> | undefined {
 }
 
 function normalizeToolOutput(output: unknown): string {
-  if (typeof output !== "string") return "";
-  const markerIndex = output.lastIndexOf(TOOL_OUTPUT_MARKER);
-  const normalized =
-    markerIndex >= 0 ? output.slice(markerIndex + TOOL_OUTPUT_MARKER.length) : output;
+  const text = extractCodexToolOutput(output);
+  const markerIndex = text.indexOf(TOOL_OUTPUT_MARKER);
+  const normalized = markerIndex >= 0 ? text.slice(markerIndex + TOOL_OUTPUT_MARKER.length) : text;
   return normalized.trim();
 }
 
@@ -274,14 +278,7 @@ function buildToolUseActivity(
     };
   }
 
-  return {
-    type: "activity",
-    activity: "tool_use",
-    tool: normalizeToolName(name),
-    description: `Using ${normalizeToolName(name)}`,
-    detail: typeof rawArguments === "string" && rawArguments.length > 0 ? rawArguments : undefined,
-    input: parsedArgs,
-  };
+  return buildCodexGenericToolUse(normalizeToolName(name), rawArguments);
 }
 
 function buildToolResultActivity(
@@ -532,13 +529,16 @@ export function convertCodexTranscriptEntry(
       } else {
         results.push({
           timestamp,
-          message: buildToolUseActivity(
-            payload.name,
-            rawArguments,
-            typeof payload.call_id === "string" && payload.name === "request_user_input"
-              ? `codex-input-${payload.call_id}`
-              : undefined,
-          ),
+          message: {
+            toolUseId: typeof payload.call_id === "string" ? payload.call_id : undefined,
+            ...buildToolUseActivity(
+              payload.name,
+              rawArguments,
+              typeof payload.call_id === "string" && payload.name === "request_user_input"
+                ? `codex-input-${payload.call_id}`
+                : undefined,
+            ),
+          },
         });
       }
     } else if (
@@ -551,7 +551,7 @@ export function convertCodexTranscriptEntry(
       if (call?.name === "update_plan") return results;
       results.push({
         timestamp,
-        message: buildToolResultActivity(call, payload.output),
+        message: { ...buildToolResultActivity(call, payload.output), toolUseId: callId },
       });
     }
 

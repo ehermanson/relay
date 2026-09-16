@@ -193,6 +193,7 @@ describe("convertCodexTranscriptEntry", () => {
       );
       assert.equal(results.length, 1);
       assert.equal(results[0].message.activity, "tool_result");
+      assert.equal(results[0].message.toolUseId, "call-1");
       assert.equal(results[0].message.tool, "Bash");
       // Pending call should be cleared
       assert.ok(!ctx.pendingCalls.has("call-1"));
@@ -801,5 +802,59 @@ describe("findCodexTranscriptPath", () => {
   it("returns undefined when sessions dir doesn't exist", () => {
     const found = findCodexTranscriptPath("/nonexistent", "sess-1");
     assert.equal(found, undefined);
+  });
+});
+
+describe("code-mode custom tools", () => {
+  it("preserves exec source and text block output with a matching call ID", () => {
+    const ctx = createContext();
+    const code = 'text(await tools.exec_command({cmd: "ls"}));';
+    const [use] = convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "code-1",
+          input: code,
+        },
+      },
+      ctx,
+    );
+    assert.equal(use.message.tool, "ExecuteCode");
+    assert.deepEqual(use.message.input, { code });
+    const [result] = convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "code-1",
+          output: [
+            { type: "input_text", text: "Script completed\nOutput:\n" },
+            { type: "input_text", text: "file.ts\nOutput:\nkeep this nested output" },
+            { type: "input_image", image_url: "data:image/png;base64,private-image" },
+          ],
+        },
+      },
+      ctx,
+    );
+    assert.equal(result.message.toolUseId, use.message.toolUseId);
+    assert.match(result.message.detail, /file.ts\nOutput:\nkeep this nested output/);
+    assert.ok(!result.message.detail.includes("private-image"));
+  });
+  it("retains unknown freeform tool arguments", () => {
+    const [entry] = convertCodexTranscriptEntry(
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "custom",
+          call_id: "custom-1",
+          input: "freeform input",
+        },
+      },
+      createContext(),
+    );
+    assert.deepEqual(entry.message.input, { input: "freeform input" });
   });
 });

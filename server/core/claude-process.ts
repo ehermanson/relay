@@ -304,6 +304,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
       type: "activity",
       activity: "tool_use",
       tool: toolName,
+      toolUseId,
       description: describeToolUse(toolName, input),
       detail: describeToolDetail(toolName, input),
       input: activityInput,
@@ -613,7 +614,13 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
             } else {
               const content = extractToolResultText(event.content);
               const toolName = pendingTools.get(event.tool_use_id);
-              const activity = buildToolResultActivity(event.is_error, toolName, content);
+              const activity = buildToolResultActivity(
+                event.is_error,
+                toolName,
+                content,
+                undefined,
+                event.tool_use_id,
+              );
 
               // Suppress duplicate denial emissions after cancel
               if (activity.permissionDenied && this._cancelledForPermission) continue;
@@ -652,7 +659,13 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
                   } else {
                     const text = extractToolResultText(block.content);
                     const toolName = pendingTools.get(block.tool_use_id);
-                    const activity = buildToolResultActivity(block.is_error, toolName, text);
+                    const activity = buildToolResultActivity(
+                      block.is_error,
+                      toolName,
+                      text,
+                      undefined,
+                      block.tool_use_id,
+                    );
 
                     // Suppress duplicate denial emissions after cancel
                     if (activity.permissionDenied && this._cancelledForPermission) continue;

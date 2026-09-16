@@ -140,6 +140,12 @@ Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight i
 - Videos have composer previews and inline chat playback, but travel as `attachments` / `[File: source: ...]` through the shared provider path, never as `images` or native video model input. Both Claude and Codex receive the local file path. Browser codec support determines playback; the chat keeps a file link as fallback.
 - `/api/file` streams video responses with single byte-range support for seeking. Draft video blobs use the existing IndexedDB attachment store; revoke their object URLs just like image previews.
 
+### Tool Result Previews
+
+- `ActivityMessage.toolUseId` carries the provider call identity on both tool uses and results (Claude SDK/CLI and transcript replay; Codex app-server items and rollout calls). Preserve it through new provider paths: parallel tools can finish out of order, so matching by the most recent tool attaches results to the wrong file.
+- Claude SDK tool results normally arrive in `user.message.content`, including array-of-text-block content; process them even when `tool_result_meta` is absent. Assistant-envelope results remain supported.
+- The chat reducer matches results by ID across activity groups; legacy events without IDs use unmatched calls in emission order. Read previews show captured result text with file-language highlighting. Read/ViewImage image previews retain their thumbnail even when the result includes text; errors show the result instead.
+
 ### Lazy Hydration
 
 Sidebar/dashboard rows render from persisted SQLite metadata first. Opening a chat triggers lazy hydration of transcript/task/file state and git info, but history reads stay passive: Relay does not boot/resume a stopped managed session until the user explicitly sends a message (or otherwise takes over/resumes it).
@@ -254,6 +260,11 @@ Spaces group multiple concurrent agent chats within a shared git worktree/branch
 
 - Provider-specific plan output should normalize onto Relay's shared `ExitPlanMode` / `pendingPlan` / `planContent` flow instead of inventing a separate UI path
 - Codex `<proposed_plan>...</proposed_plan>` blocks are treated as plan-review events, not plain assistant markdown, in both live app-server streaming and transcript replay
+
+### Codex Code-Mode Activities
+
+- Code-mode `exec` calls arrive as `custom_tool_call` with freeform JavaScript in `input`; outputs may be arrays of `input_text`/image blocks. `codex-tool-activity.ts` preserves scripts as `ExecuteCode` activities and extracts bounded text output, shared with app-server dynamic tools. Do not require JSON arguments or expose base64 image data as result text.
+- A tool call without structured input is not necessarily a progress update. Only known `Running...` progress entries are hidden; legacy freeform input in `detail` remains expandable. Code-mode batches display their actual script and combined output because rollout records do not provide separate inner-tool activities.
 
 ### Codex Process Spawning
 

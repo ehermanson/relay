@@ -365,6 +365,7 @@ interface ToolContentProps {
   tool: string;
   input: Record<string, unknown>;
   resultDetail?: string;
+  resultStatus?: "success" | "error";
   onSendMessage?: (text: string) => void;
   onAnswerUserInput?: (
     requestId: string,
@@ -389,6 +390,7 @@ export function ToolContent({
   tool,
   input,
   resultDetail,
+  resultStatus,
   onSendMessage,
   onAnswerUserInput,
   isInteractive,
@@ -433,6 +435,12 @@ export function ToolContent({
         }
         return null;
       }
+      case "ExecuteCode": {
+        const code = input.code;
+        return typeof code === "string" ? (
+          <ActivityCodeBlock content={code} lang="javascript" />
+        ) : null;
+      }
       case "Bash": {
         const command = input.command as string | undefined;
         if (command) {
@@ -440,33 +448,33 @@ export function ToolContent({
         }
         return null;
       }
-      case "Read": {
-        const filePath = (input.file_path as string) || undefined;
-        if (filePath) {
-          const parts = [];
-          if (input.offset) parts.push(`offset: ${input.offset}`);
-          if (input.limit) parts.push(`limit: ${input.limit}`);
-          const extra = parts.length > 0 ? ` (${parts.join(", ")})` : "";
-          return (
-            <>
-              <ActivityCodeBlock content={filePath + extra} />
-              {isImagePath(filePath) && <ImagePreview path={filePath} />}
-            </>
-          );
-        }
-        return null;
-      }
+      case "Read":
       case "ViewImage": {
         const filePath = (input.file_path as string) || (input.path as string) || undefined;
-        if (filePath) {
+        const parts = [];
+        if (input.offset != null) parts.push(`offset: ${input.offset}`);
+        if (input.limit != null) parts.push(`limit: ${input.limit}`);
+        const extra = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+        const label = filePath ? filePath + extra : undefined;
+        if (resultStatus === "error") {
+          return (
+            <ActivityCodeBlock content={resultDetail || "Unable to read file"} label={label} />
+          );
+        }
+        if (filePath && (tool === "ViewImage" || isImagePath(filePath))) {
           return (
             <>
-              <ActivityCodeBlock content={filePath} />
+              <ActivityCodeBlock content={label!} />
               <ImagePreview path={filePath} />
             </>
           );
         }
-        return null;
+        if (resultDetail) {
+          return (
+            <ActivityCodeBlock content={resultDetail} label={label} lang={langFromPath(filePath)} />
+          );
+        }
+        return label ? <ActivityCodeBlock content={label} /> : null;
       }
       case "GenerateImage": {
         const filePath = (input.file_path as string) || (input.path as string) || undefined;
@@ -542,6 +550,9 @@ export function ToolContent({
 
   const hasResult = !!resultDetail;
 
+  // File reads own their layout: generic result text must not replace image previews.
+  if (tool === "Read" || tool === "ViewImage") return inputContent;
+
   // Edit: just the diff. The result ("file updated successfully") is noise.
   if (tool === "Edit") return inputContent;
 
@@ -550,10 +561,14 @@ export function ToolContent({
   if (tool === "Write") return inputContent;
 
   // Bash: labeled Command + Result sections (like Kanna).
-  if (tool === "Bash") {
+  if (tool === "Bash" || tool === "ExecuteCode") {
     return (
       <div className="flex flex-col gap-2">
-        {inputContent && <LabeledSection label="Command">{inputContent}</LabeledSection>}
+        {inputContent && (
+          <LabeledSection label={tool === "ExecuteCode" ? "Code" : "Command"}>
+            {inputContent}
+          </LabeledSection>
+        )}
         {hasResult ? (
           <LabeledSection label="Result">
             <ActivityCodeBlock content={resultDetail!} />

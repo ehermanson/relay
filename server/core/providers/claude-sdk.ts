@@ -42,6 +42,7 @@ import {
   TASK_TOOLS,
   FILE_WRITE_TOOLS,
   buildToolResultActivity,
+  extractToolResultText,
 } from "#core/tools.js";
 import { buildSessionInitEvent } from "#core/session-init.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
@@ -1910,6 +1911,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       type: "activity",
       activity: "tool_use",
       tool: toolName,
+      toolUseId,
       description: describeToolUse(toolName, input),
       detail: describeToolDetail(toolName, input),
       input: activityInput,
@@ -1945,14 +1947,16 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       const toolUseId = typeof b.tool_use_id === "string" ? b.tool_use_id : undefined;
       if (!toolUseId) continue;
       const meta = (b as Record<string, unknown>).tool_result_meta;
-      if (!meta || typeof meta !== "object" || Array.isArray(meta)) continue;
-      const m = meta as Record<string, unknown>;
-      const nonExecutionKind =
-        typeof m.non_execution_kind === "string" ? m.non_execution_kind : undefined;
-      const userFeedback = typeof m.user_feedback === "string" ? m.user_feedback : undefined;
-      if (nonExecutionKind !== undefined || userFeedback !== undefined) {
-        this.pendingToolResultMeta.set(toolUseId, { nonExecutionKind, userFeedback });
+      if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+        const m = meta as Record<string, unknown>;
+        const nonExecutionKind =
+          typeof m.non_execution_kind === "string" ? m.non_execution_kind : undefined;
+        const userFeedback = typeof m.user_feedback === "string" ? m.user_feedback : undefined;
+        if (nonExecutionKind !== undefined || userFeedback !== undefined) {
+          this.pendingToolResultMeta.set(toolUseId, { nonExecutionKind, userFeedback });
+        }
       }
+      this.handleToolResult(b);
     }
   }
 
@@ -1960,7 +1964,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     const toolUseId = block.tool_use_id as string;
     const toolName = this.pendingTools.get(toolUseId);
     const isError = block.is_error as boolean | undefined;
-    const content = typeof block.content === "string" ? block.content : "";
+    const content = extractToolResultText(block.content);
 
     if (
       isError &&
@@ -1994,7 +1998,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // For non-task tools, emit a tool_result activity
     const meta = this.pendingToolResultMeta.get(toolUseId);
     this.pendingToolResultMeta.delete(toolUseId);
-    const activity = buildToolResultActivity(isError, toolName, content, meta);
+    const activity = buildToolResultActivity(isError, toolName, content, meta, toolUseId);
     this.emit("activity", activity);
   }
 
