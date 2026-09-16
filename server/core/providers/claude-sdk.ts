@@ -104,12 +104,26 @@ interface SdkUsageSnapshot {
 
 /** Context usage breakdown from getContextUsage() */
 interface ContextUsage {
-  categories: { name: string; tokens: number; color: string; isDeferred?: boolean }[];
+  categories: {
+    name: string;
+    tokens: number;
+    color: string;
+    isDeferred?: boolean;
+    kind?: "used" | "free" | "buffer" | "deferred";
+  }[];
   totalTokens: number;
   maxTokens: number;
   rawMaxTokens: number;
   percentage: number;
   model: string;
+}
+
+/** Subset of SDKContextUsage from the /context command result (SDK >= 0.3.232) */
+interface SdkContextUsage {
+  model: string;
+  total_tokens: number;
+  raw_max_tokens: number;
+  categories: { name: string; tokens: number; kind: "used" | "free" | "buffer" | "deferred" }[];
 }
 
 /** Model capability info from supportedModels() */
@@ -1368,6 +1382,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         }
       | undefined;
 
+    if (msg.context_usage != null) {
+      this.applyContextUsage(msg.context_usage as SdkContextUsage);
+    }
+
     if (!message?.content) return;
 
     // Accumulate usage
@@ -2123,6 +2141,22 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       .finally(() => {
         this._contextUsageInflight = false;
       });
+  }
+
+  private applyContextUsage(ctx: SdkContextUsage): void {
+    this._stats.contextTokens = ctx.total_tokens;
+    const knownWindow =
+      getContextWindow(ctx.model) ||
+      (this._stats.model ? getContextWindow(this._stats.model) : undefined);
+    this._stats.contextWindow = knownWindow || ctx.raw_max_tokens;
+    this._stats.contextCategories = ctx.categories.map((c) => ({
+      name: c.name,
+      tokens: c.tokens,
+      color: "",
+      isDeferred: c.kind === "deferred",
+      kind: c.kind,
+    }));
+    this.emit("stats", { ...this._stats });
   }
 
   // ===========================================================================

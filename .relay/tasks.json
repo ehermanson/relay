@@ -2566,14 +2566,14 @@
       "id": "f3b5d2e9",
       "title": "Claude Agent SDK: consume SDKContextUsage structured payload from /context results",
       "description": "Agent SDK 0.3.232 adds a structured `context_usage` payload (typed as `SDKContextUsage`) to `/context` command result messages, so renderers can display context stats without parsing the markdown output text.\n\nRelay's sidecar context panel currently shows token usage from accumulated session stats. If a user runs `/context` in the composer, the result arrives as an assistant message and Relay renders it as plain markdown. The new `context_usage` field enables a richer, more accurate context stat display tied to a specific point in the conversation.\n\nNeeded:\n1. In `claude-sdk.ts`, detect the `context_usage` field on `/context` result messages and forward it through the session event stream (e.g. as a new `context_snapshot` event type or appended to the existing stats broadcast).\n2. In the sidecar context panel or the message renderer, prefer the structured payload when present for the context ring and token breakdown display.\n3. This also provides a natural sync point to refresh the context ring after a `/context` call, replacing the current turn-end polling approach.\n\nScope: small (~1\u20132h). Touch points: `claude-sdk.ts` (result handler), `SessionHistoryEntry` or a new event type, sidecar context panel.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-agent-sdk CHANGELOG v0.3.232",
-      "status": "open",
+      "status": "done",
       "priority": 2,
       "type": "task",
       "tags": ["provider-watch", "claude", "bucket-2"],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
-      "updatedAt": "2026-08-17T00:00:00.000Z"
+      "updatedAt": "2026-09-16T00:00:00.000Z"
     },
     {
       "id": "a2b4d6f8",
