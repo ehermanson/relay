@@ -542,7 +542,13 @@ export interface SessionStats {
   /** Provider-reported context window size when available. */
   contextWindow?: number;
   /** Per-category context token breakdown from SDK getContextUsage() when available. */
-  contextCategories?: { name: string; tokens: number; color: string; isDeferred?: boolean }[];
+  contextCategories?: {
+    name: string;
+    tokens: number;
+    color: string;
+    isDeferred?: boolean;
+    kind?: "used" | "free" | "buffer" | "deferred";
+  }[];
   /** Reasoning/thinking output tokens (Codex/OpenAI models). */
   reasoningTokens?: number;
 }
