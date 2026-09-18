@@ -349,6 +349,33 @@ export async function fetchInstanceHistory(instanceId: string): Promise<HistoryE
   return res.json();
 }
 
+/**
+ * Detailed transcript of one delegated agent (`agentId` is the Relay agent key,
+ * `AgentInfo.agentId`). Served from transcript files — never boots or resumes
+ * anything. Returns `null` when the server has no history for this agent (404).
+ */
+export async function fetchAgentHistory(
+  instanceId: string,
+  agentId: string,
+): Promise<HistoryEntry[] | null> {
+  const res = await fetch(
+    `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/history`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to fetch agent history");
+  const data = (await res.json()) as { history?: HistoryEntry[] };
+  return Array.isArray(data.history) ? data.history : [];
+}
+
+export async function fetchAgentModel(instanceId: string, agentId: string): Promise<string | null> {
+  const res = await fetch(
+    `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/model`,
+  );
+  if (!res.ok) throw new Error("Failed to fetch agent model");
+  const data = (await res.json()) as { model: string | null };
+  return data.model;
+}
+
 export async function fetchInstanceSummary(instanceId: string): Promise<InstanceInfo | null> {
   const res = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/summary`);
   if (res.status === 404) return null;

@@ -16,13 +16,16 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { RenderRow } from "@/lib/chat-types";
+import type { AgentInfo } from "@shared/types";
+import { getAgentTitle } from "@/lib/agents";
+import { formatElapsed } from "@/lib/utils";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
 interface TimelineMarker {
   timestamp: number;
   rowIndex: number;
-  kind: "user" | "assistant" | "boundary" | "model" | "transcript";
+  kind: "user" | "assistant" | "boundary" | "model" | "delegated";
   label: string;
 }
 
@@ -30,18 +33,13 @@ interface ChatTimelineProps {
   rows: RenderRow[];
   onScrollToRow: (index: number) => void;
   isLive: boolean;
+  /** Delegated agents, for labelling inserted `agent-card` rows by name. */
+  agents?: Record<string, AgentInfo>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-function formatElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${s % 60}s`;
-}
-
-function extractLabel(row: RenderRow): string {
+function extractLabel(row: RenderRow, agents: Record<string, AgentInfo> | undefined): string {
   switch (row.kind) {
     case "user":
     case "assistant":
@@ -54,8 +52,12 @@ function extractLabel(row: RenderRow): string {
       if (from && to) return `${from} → ${to}`;
       return to ? `Changed to ${to}` : "Model changed";
     }
-    case "agent-transcript":
-      return row.title;
+    case "agent-card": {
+      const agent = agents?.[row.agentId];
+      return agent ? getAgentTitle(agent) : "";
+    }
+    case "agent-note":
+      return row.name ? `From ${row.name}: ${row.text.slice(0, 80)}` : row.text.slice(0, 100);
     default:
       return "";
   }
@@ -66,7 +68,7 @@ const KIND_LABELS: Record<TimelineMarker["kind"], string> = {
   assistant: "Agent",
   boundary: "Compaction",
   model: "Model switch",
-  transcript: "Transcript",
+  delegated: "Delegated agent",
 };
 
 // ── Marker builder ─────────────────────────────────────────────────────
@@ -77,14 +79,18 @@ function getRowTimestamp(row: RenderRow): number | undefined {
     case "assistant":
     case "compact-boundary":
     case "model-switch":
-    case "agent-transcript":
+    case "agent-card":
+    case "agent-note":
       return row.timestamp;
     default:
       return undefined;
   }
 }
 
-function buildMarkers(rows: RenderRow[]): TimelineMarker[] {
+function buildMarkers(
+  rows: RenderRow[],
+  agents: Record<string, AgentInfo> | undefined,
+): TimelineMarker[] {
   const markers: TimelineMarker[] = [];
 
   for (let i = 0; i < rows.length; i++) {
@@ -104,8 +110,9 @@ function buildMarkers(rows: RenderRow[]): TimelineMarker[] {
       case "model-switch":
         kind = "model";
         break;
-      case "agent-transcript":
-        kind = "transcript";
+      case "agent-card":
+      case "agent-note":
+        kind = "delegated";
         break;
       default:
         continue;
@@ -114,7 +121,7 @@ function buildMarkers(rows: RenderRow[]): TimelineMarker[] {
     const ts = getRowTimestamp(row);
     if (ts == null) continue;
 
-    markers.push({ timestamp: ts, rowIndex: i, kind, label: extractLabel(row) });
+    markers.push({ timestamp: ts, rowIndex: i, kind, label: extractLabel(row, agents) });
   }
 
   return markers;
@@ -176,7 +183,7 @@ function buildPositions(markers: TimelineMarker[]): number[] {
 
 // ── Component ──────────────────────────────────────────────────────────
 
-export function ChatTimeline({ rows, onScrollToRow, isLive }: ChatTimelineProps) {
+export function ChatTimeline({ rows, onScrollToRow, isLive, agents }: ChatTimelineProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(true);
   const [activeMarkerIdx, setActiveMarkerIdx] = useState<number | null>(null);
@@ -184,7 +191,7 @@ export function ChatTimeline({ rows, onScrollToRow, isLive }: ChatTimelineProps)
   const scrubbing = useRef(false);
   const scrollThrottle = useRef(0);
 
-  const markers = useMemo(() => buildMarkers(rows), [rows]);
+  const markers = useMemo(() => buildMarkers(rows, agents), [rows, agents]);
   const positions = useMemo(() => buildPositions(markers), [markers]);
 
   const baseTs = markers.length > 0 ? markers[0].timestamp : 0;

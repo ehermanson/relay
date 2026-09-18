@@ -147,6 +147,35 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     }
   });
 
+  // Delegated agents known for a chat (live + replayed), keyed by Relay agent key.
+  app.get("/api/instances/:id/agents", (c) => {
+    try {
+      return c.json({ agents: instanceManager.getAgents(c.req.param("id")) });
+    } catch {
+      return c.json({ error: "Instance not found" }, 404);
+    }
+  });
+
+  // Small metadata lookup for collapsed agent surfaces.
+  app.get("/api/instances/:id/agents/:agentId/model", (c) => {
+    const model = instanceManager.readAgentModel(c.req.param("id"), c.req.param("agentId"));
+    return c.json({ model: model ?? null });
+  });
+
+  // A delegated agent's detailed transcript, read from disk on demand. The
+  // `:agentId` is the Relay key (AgentInfo.agentId); the manager resolves the
+  // provider-native id. Never boots or resumes a session.
+  app.get("/api/instances/:id/agents/:agentId/history", async (c) => {
+    const history = await instanceManager.readAgentHistory(
+      c.req.param("id"),
+      c.req.param("agentId"),
+    );
+    if (!history) {
+      return c.json({ error: "Agent history not available" }, 404);
+    }
+    return c.json({ history });
+  });
+
   app.get("/api/instances/:id/diff", (c) => {
     const diff = instanceManager.getInstanceDiff(c.req.param("id"), c.req.query("path"));
     if (diff === null) {

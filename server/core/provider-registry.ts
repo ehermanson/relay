@@ -1,10 +1,11 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { CoreConfig } from "#core/config.js";
 import { ClaudeProcess } from "#core/claude-process.js";
+import { readAgentModelFromTranscript } from "#core/agent-model.js";
 import {
   DEFAULT_PROVIDER_CAPABILITIES,
   findProviderModelLabel,
@@ -42,7 +43,12 @@ import {
 import type { ProviderVersionAdvisory } from "#core/types.js";
 import { getCachedCodexModels, refreshCodexModelsIfStale } from "#core/providers/codex-models.js";
 import { CodexAppServerSession } from "#core/providers/codex-app-server.js";
-import { findCodexTranscriptPath, parseCodexTranscript } from "#core/providers/codex-transcript.js";
+import {
+  findCodexTranscriptPath,
+  parseCodexTranscript,
+  readCodexAgentHistory,
+  resolveCodexAgentRolloutPath,
+} from "#core/providers/codex-transcript.js";
 import {
   DEFAULT_CODEX_TRANSCRIPT_ACTIVITY_WINDOW_MS,
   listCodexTranscripts,
@@ -124,6 +130,26 @@ interface ProviderExternalDiscoveryContext extends ProviderDriverContext {
   transcriptActivityWindowMs?: number;
 }
 
+/**
+ * Everything a driver may need to locate one delegated agent's transcript on
+ * disk. Reading history must never boot/resume a session, so drivers only get
+ * file-system facts here — no live session handle.
+ */
+export interface ProviderAgentHistoryContext {
+  providerDirs: Record<ProviderKind, string>;
+  /** Parent chat's transcript path when known (Claude child files live beside it). */
+  transcriptPath?: string;
+  /** Parent chat's provider session id (Claude session uuid / Codex root thread id). */
+  sessionId?: string;
+  workingDirectory: string;
+  /** Relay agent key (`AgentInfo.agentId`). */
+  agentId: string;
+  /** Provider-native id (`AgentInfo.providerAgentId`) when the chat has seen one. */
+  providerAgentId?: string;
+  /** InstanceManager's cached Claude JSONL parser (mtime/size LRU — same machinery as hydrate). */
+  parseClaudeTranscript: (filePath: string) => ProviderTranscriptParseResult;
+}
+
 interface ProviderDriver {
   kind: ProviderKind;
   capabilities: ProviderCapabilities;
@@ -150,6 +176,52 @@ interface ProviderDriver {
   discoverExternalSessions?(
     context: ProviderExternalDiscoveryContext,
   ): Promise<DiscoveredExternalSession[]>;
+  /**
+   * Read one delegated agent's transcript from disk, with every message
+   * stamped `agentId = context.agentId`. Null when unavailable. Must not start
+   * or resume any provider process.
+   */
+  readAgentHistory?(context: ProviderAgentHistoryContext): Promise<HistoryEntry[] | null>;
+  readAgentModel?(context: ProviderAgentHistoryContext): string | undefined;
+}
+
+/**
+ * Claude writes each subagent's transcript next to the parent's:
+ * `<projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl`. Returns undefined
+ * when either id is missing; existence is the caller's check.
+ */
+export function resolveClaudeAgentTranscriptPath(
+  parentTranscriptPath: string | undefined,
+  providerAgentId: string | undefined,
+): string | undefined {
+  if (!parentTranscriptPath || !providerAgentId) return undefined;
+  if (!/^[A-Za-z0-9_-]+$/.test(providerAgentId)) return undefined;
+  const stem = basename(parentTranscriptPath).replace(/\.jsonl$/, "");
+  return join(dirname(parentTranscriptPath), stem, "subagents", `agent-${providerAgentId}.jsonl`);
+}
+
+/** Attribute the child's own messages without overwriting nested agent attribution. */
+function attributeHistoryToAgent(history: HistoryEntry[], agentId: string): HistoryEntry[] {
+  return history.map((entry) => {
+    const message = entry.message;
+    switch (message.type) {
+      case "output":
+      case "activity":
+      case "user":
+        return message.agentId ? entry : { ...entry, message: { ...message, agentId } };
+      case "agent_update":
+        // A grandchild announced inside the child transcript: keep its own key,
+        // but record who spawned it when the child didn't say.
+        return message.agent.parentAgentId
+          ? entry
+          : {
+              ...entry,
+              message: { ...message, agent: { ...message.agent, parentAgentId: agentId } },
+            };
+      default:
+        return entry;
+    }
+  });
 }
 
 type ClaudeSdkModelInfo = NonNullable<ReturnType<typeof getSdkDiscoveredModels>>[number];
@@ -543,6 +615,36 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
     parseTranscript(filePath, parseClaudeTranscript) {
       return parseClaudeTranscript(filePath);
     },
+    async readAgentHistory(context) {
+      // The Relay key is the spawning tool_use id; the file is named by the
+      // provider agent id, so we need the latter. Without it there is nothing
+      // to read — "unknown stays unknown".
+      if (!context.providerAgentId) return null;
+      const parentPath =
+        context.transcriptPath ??
+        (context.sessionId
+          ? join(
+              resolveClaudeProjectDir(context.providerDirs.claude, context.workingDirectory),
+              `${context.sessionId}.jsonl`,
+            )
+          : undefined);
+      const childPath = resolveClaudeAgentTranscriptPath(parentPath, context.providerAgentId);
+      if (!childPath || !existsSync(childPath)) return null;
+      const parsed = context.parseClaudeTranscript(childPath);
+      return attributeHistoryToAgent(parsed.history, context.agentId);
+    },
+    readAgentModel(context) {
+      const parentPath =
+        context.transcriptPath ??
+        (context.sessionId
+          ? join(
+              resolveClaudeProjectDir(context.providerDirs.claude, context.workingDirectory),
+              `${context.sessionId}.jsonl`,
+            )
+          : undefined);
+      const path = resolveClaudeAgentTranscriptPath(parentPath, context.providerAgentId);
+      return path ? readAgentModelFromTranscript(path, "claude") : undefined;
+    },
     resolveManagedTranscriptPath(options) {
       if (options.transcriptPath && existsSync(options.transcriptPath)) {
         return options.transcriptPath;
@@ -696,6 +798,20 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
         files: parsed.files,
         stats: parsed.stats,
       };
+    },
+    async readAgentHistory(context) {
+      // Codex: the Relay key *is* the child thread id (== providerAgentId).
+      const threadId = context.providerAgentId ?? context.agentId;
+      return readCodexAgentHistory(context.providerDirs.codex, threadId, {
+        rootThreadId: context.sessionId,
+      });
+    },
+    readAgentModel(context) {
+      const path = resolveCodexAgentRolloutPath(
+        context.providerDirs.codex,
+        context.providerAgentId ?? context.agentId,
+      );
+      return path ? readAgentModelFromTranscript(path, "codex") : undefined;
     },
     resolveManagedTranscriptPath(options) {
       if (options.transcriptPath && existsSync(options.transcriptPath)) {
@@ -1016,6 +1132,27 @@ export function parseTranscriptForProvider(
   parseClaudeTranscript: (filePath: string) => ProviderTranscriptParseResult,
 ): ProviderTranscriptParseResult {
   return getProviderDriver(provider).parseTranscript(filePath, parseClaudeTranscript);
+}
+
+/**
+ * Read a delegated agent's transcript through its provider driver. Resolves
+ * to null when the provider has no child-history support or the file is
+ * missing. Never boots a session.
+ */
+export async function readAgentHistoryForProvider(
+  provider: ProviderKind,
+  context: ProviderAgentHistoryContext,
+): Promise<HistoryEntry[] | null> {
+  const driver = getProviderDriver(provider);
+  if (!driver.readAgentHistory) return null;
+  return driver.readAgentHistory(context);
+}
+
+export function readAgentModelForProvider(
+  provider: ProviderKind,
+  context: ProviderAgentHistoryContext,
+): string | undefined {
+  return getProviderDriver(provider).readAgentModel?.(context);
 }
 
 export function captureManagedSessionForProvider(

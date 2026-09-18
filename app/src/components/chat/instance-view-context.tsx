@@ -4,6 +4,7 @@ import type { ChatItem, LiveActivity } from "@/hooks/use-instance-messages";
 import type { QueuedRestore, UserRow } from "@/lib/chat-types";
 import type { SidecarTab } from "@/stores/sidecar-store";
 import type {
+  AgentInfo,
   FileChange,
   HistoryEntry,
   InstanceInfo,
@@ -33,6 +34,15 @@ export type InstanceViewContextValue = {
     attachedReviews: InstanceInfo[];
     planChild?: InstanceInfo;
     items: ChatItem[];
+    /**
+     * Delegated agents keyed by Relay agent key. Already capability-gated:
+     * EMPTY when the provider doesn't advertise `supportsAgentActivity`.
+     */
+    agents: Record<string, AgentInfo>;
+    /** Nested transcripts keyed by Relay agent key (gated like `agents`). */
+    agentItems: Record<string, ChatItem[]>;
+    /** `agents` is non-empty — gates the Agents tab/toggle. */
+    hasAgentsContent: boolean;
     rawHistory: HistoryEntry[] | null;
     searchFocus: { query: string; snippet?: string } | null;
     currentTasks: TaskItem[] | null;

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { AgentTranscript } from "@/components/chat/agent-transcript";
+import { AgentCard } from "@/components/chat/agent-card";
+import { AgentCardsProvider } from "@/components/chat/agent-card-context";
+import { AgentNote } from "@/components/chat/agent-note";
 import { ChatTimeline } from "@/components/chat/chat-timeline";
 import { ChatTOC } from "@/components/chat/chat-toc";
 import { AgentMessage } from "@/components/chat/agent-message";
@@ -18,8 +20,12 @@ import { buildRows, estimateRowHeight } from "@/components/chat/build-rows";
 import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import type { ChatItem, LiveActivity, RenderRow, UserRow } from "@/lib/chat-types";
-import type { UserInputAnswer } from "@shared/types";
+import type { AgentInfo, ProviderKind, ProviderRequest, UserInputAnswer } from "@shared/types";
+import { buildAgentAnchorIndex, findRequestAgentId } from "@/lib/agents";
 import { computeBubbleShrinkwrap, onFontReady } from "@/lib/pretext";
+
+const EMPTY_AGENTS: Record<string, AgentInfo> = {};
+const EMPTY_AGENT_ITEMS: Record<string, ChatItem[]> = {};
 
 // Always keep the last N rows non-virtualized so the bottom of the chat
 // is real DOM with accurate measurements — reduces virtualizer churn
@@ -59,6 +65,16 @@ interface MessageListProps {
   onEditQueued?: (row: UserRow) => void;
   /** Remove a queued message without sending it. */
   onRemoveQueued?: (queuedId: string) => void;
+  /** Delegated agents (Relay key → info) for in-chat cards. */
+  agents?: Record<string, AgentInfo>;
+  /** Nested transcripts keyed by Relay agent key. */
+  agentItems?: Record<string, ChatItem[]>;
+  /** Chat id, for on-demand agent history fetches. */
+  instanceId?: string;
+  /** Provider, for model label formatting on cards. */
+  provider?: ProviderKind;
+  /** Pending permission request — badges the owning agent's card when tagged. */
+  pendingRequest?: ProviderRequest | null;
 }
 
 export function MessageList({
@@ -82,7 +98,24 @@ export function MessageList({
   onInterruptAndSend,
   onEditQueued,
   onRemoveQueued,
+  agents = EMPTY_AGENTS,
+  agentItems = EMPTY_AGENT_ITEMS,
+  instanceId,
+  provider,
+  pendingRequest,
 }: MessageListProps) {
+  // Delegated-agent cards: anchor index (tool_use id → agent) is recomputed
+  // when the stream or agent set changes; the context keeps ToolContainer's
+  // prop surface unchanged.
+  const anchoredAgents = useMemo(() => buildAgentAnchorIndex(items, agents), [items, agents]);
+  const pendingAgentId = useMemo(
+    () => findRequestAgentId(pendingRequest, agents),
+    [pendingRequest, agents],
+  );
+  const agentCardsValue = useMemo(
+    () => ({ agents, agentItems, anchoredAgents, instanceId, provider, pendingAgentId }),
+    [agents, agentItems, anchoredAgents, instanceId, provider, pendingAgentId],
+  );
   // When a new turn is sent we "frame" it: park the message near the top and
   // reserve space below (spacerHeight) so the answer can stream into the gap,
   // then hand off to normal following once it fills the viewport.
@@ -136,10 +169,14 @@ export function MessageList({
     const queued: UserRow[] = [];
     for (const r of allRows) {
       if (r.kind === "user" && r.queued) queued.push(r);
+      // Inserted cards whose agent isn't in `agents` (the provider doesn't
+      // support agent activity, so the view resolved it to empty) render
+      // nothing — drop the row so it doesn't leave an empty gap.
+      else if (r.kind === "agent-card" && !agents[r.agentId]) continue;
       else main.push(r);
     }
     return { rows: main, queuedRows: queued };
-  }, [allRows]);
+  }, [allRows, agents]);
   const searchTargetIndex = useMemo(() => {
     if (!searchFocus?.query) return -1;
     return findSearchTargetRowIndex(rows, searchFocus);
@@ -453,8 +490,13 @@ export function MessageList({
         );
       case "thinking-block":
         return <ThinkingBlock text={row.text} />;
-      case "agent-transcript":
-        return <AgentTranscript title={row.title} result={row.result} />;
+      case "agent-card": {
+        const agent = agents[row.agentId];
+        if (!agent) return null;
+        return <AgentCard agent={agent} />;
+      }
+      case "agent-note":
+        return <AgentNote text={row.text} name={row.name} agentId={row.agentId} timestamp={row.timestamp} />;
       case "response-divider":
         return <ResponseDivider durationLabel={row.durationLabel} />;
       case "tool-container":
@@ -482,9 +524,15 @@ export function MessageList({
   const hasNonVirtual = nonVirtualizedRows.length > 0 || showThinking || queuedRows.length > 0;
 
   return (
+    <AgentCardsProvider value={agentCardsValue}>
     <div className="flex min-h-0 flex-1 flex-col">
       {!isMobile && (
-        <ChatTimeline rows={rows} onScrollToRow={handleScrollToRow} isLive={!!isProcessing} />
+        <ChatTimeline
+          rows={rows}
+          onScrollToRow={handleScrollToRow}
+          isLive={!!isProcessing}
+          agents={agents}
+        />
       )}
       <div className="relative flex min-h-0 flex-1">
         <ChatTOC rows={rows} onScrollToRow={handleScrollToRow} />
@@ -596,6 +644,7 @@ export function MessageList({
         </div>
       </div>
     </div>
+    </AgentCardsProvider>
   );
 }
 
@@ -674,8 +723,8 @@ function getSearchableRowText(row: RenderRow): string {
     case "system":
     case "thinking-block":
       return normalizeSearchText(row.text);
-    case "agent-transcript":
-      return normalizeSearchText(`${row.title} ${row.result}`);
+    case "agent-note":
+      return normalizeSearchText(`${row.name ?? ""} ${row.text}`);
     default:
       return "";
   }
