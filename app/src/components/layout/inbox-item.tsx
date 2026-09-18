@@ -27,14 +27,14 @@ import {
   getChatRecencyTimestamp,
 } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
-import type { InboxEntry } from "@/hooks/use-inbox-navigation-model";
+import type { InboxChatEntry } from "@/lib/inbox";
 
 /**
  * The model this chat is actually running, preferring what the provider last
  * reported over what the user picked. Never falls back to a project or global
  * default — showing a model a chat has never used would be a lie.
  */
-function resolveModelLabel(entry: InboxEntry): string | null {
+function resolveModelLabel(entry: InboxChatEntry): string | null {
   const { instance } = entry;
   const modelId =
     instance.providerStatus?.effectiveModel ?? instance.stats?.model ?? instance.preferredModel;
@@ -58,7 +58,7 @@ function resolveModelLabel(entry: InboxEntry): string | null {
  * collapsed rail — where the avatar is all there is, so the hover is the only
  * place project, branch, model, recency and status can appear.
  */
-export function InboxChatSummary({ entry }: { entry: InboxEntry }) {
+export function InboxChatSummary({ entry }: { entry: InboxChatEntry }) {
   const { instance } = entry;
   const status = deriveInstanceStatusPresentation(instance);
   const modelLabel = resolveModelLabel(entry);
@@ -110,7 +110,7 @@ export function InboxAvatar({
   tooltip,
   className = "mt-0.5",
 }: {
-  entry: InboxEntry;
+  entry: InboxChatEntry;
   unread: boolean;
   isActive: boolean;
   size?: number;
@@ -159,7 +159,7 @@ export function InboxAvatar({
 }
 
 interface InboxItemProps {
-  entry: InboxEntry;
+  entry: InboxChatEntry;
   isActive: boolean;
   /** Currently active chatId — used to offer "Open in split view". */
   activeChatId?: string;

@@ -48,6 +48,7 @@ function rowToInfo(row: SpaceRow, chatCount: number): SpaceInfo {
     createdAt: row.created_at,
     lastActivityAt: row.last_activity_at,
     chatCount,
+    pinned: row.pinned === 1,
     mergeCommit: row.merge_commit,
     mergeMethod: row.merge_method as MergeMethod | null,
     mergedAt: row.merged_at,
@@ -763,6 +764,19 @@ export class SpaceManager extends EventEmitter {
     const updated = this.db.getSpace(id);
     if (!updated) {
       throw new Error(`Space ${id} not found after rename`);
+    }
+    const info = this.toInfo(updated);
+    this.emit("space:updated", info);
+    return info;
+  }
+
+  setSpacePinned(id: string, pinned: boolean): SpaceInfo {
+    if (!this.db.setSpacePinned(id, pinned)) {
+      throw new Error(`Space ${id} not found`);
+    }
+    const updated = this.db.getSpace(id);
+    if (!updated) {
+      throw new Error(`Space ${id} not found after pin update`);
     }
     const info = this.toInfo(updated);
     this.emit("space:updated", info);

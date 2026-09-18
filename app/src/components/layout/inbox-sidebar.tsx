@@ -1,8 +1,8 @@
 /**
  * InboxSidebar — sidebar v2.
  *
- * One flat list of every chat across every project, sorted by activity rather
- * than grouped by project. Chats the user has finished with collapse into a
+ * One mixed list of standalone chats and named spaces across projects, sorted
+ * by activity. Finished chats and closed spaces collapse into a
  * "Done" section; project-level actions move into a "Projects" section at the
  * bottom, since there are no project headers to hang them off.
  */
@@ -33,7 +33,12 @@ import {
 } from "@/hooks/use-inbox-navigation-model";
 import { useDoneSectionDisclosure, useDoneTransitionPulse } from "@/hooks/use-done-section";
 import { setInstancesDone } from "@/lib/api";
-import { selectStaleInboxEntries, STALE_CHAT_DONE_DAYS } from "@/lib/inbox";
+import {
+  capInboxEntries,
+  isInboxEntryCurrent,
+  selectStaleInboxEntries,
+  STALE_CHAT_DONE_DAYS,
+} from "@/lib/inbox";
 import { Button } from "../ui/button";
 import { Collapsible } from "../ui/collapsible";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
@@ -41,6 +46,7 @@ import { Menu } from "../ui/menu";
 import { ProjectAvatar } from "../ui/project-avatar";
 import { Tooltip } from "../ui/tooltip";
 import { InboxItem } from "./inbox-item";
+import { InboxSpaceItem } from "./inbox-space-item";
 import { NewChatMenu } from "./new-chat-menu";
 import { ProjectActionsMenuContent } from "./project-actions-menu";
 import {
@@ -75,38 +81,42 @@ function ShowAllButton({ hidden, onClick }: { hidden: number; onClick: () => voi
  * Renders a capped list with a "Show all" escape hatch. The cap exists so a
  * long backlog can't push live chats off-screen, never to silently hide them.
  */
-function CappedChatList({
+function CappedInboxList({
   entries,
   limit,
   currentId,
+  currentSpaceId,
 }: {
   entries: InboxEntry[];
   limit: number;
   currentId?: string;
+  currentSpaceId?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  // Keep the open chat reachable even when it falls past the cap.
-  const visible = useMemo(() => {
-    if (expanded || entries.length <= limit) return entries;
-    const head = entries.slice(0, limit);
-    if (currentId && !head.some((entry) => entry.instance.id === currentId)) {
-      const active = entries.find((entry) => entry.instance.id === currentId);
-      if (active) return [...head, active];
-    }
-    return head;
-  }, [entries, expanded, limit, currentId]);
+  const visible = useMemo(
+    () => (expanded ? entries : capInboxEntries(entries, limit, currentId, currentSpaceId)),
+    [entries, expanded, limit, currentId, currentSpaceId],
+  );
   const hidden = entries.length - visible.length;
 
   return (
     <div className="space-y-0.5">
-      {visible.map((entry) => (
-        <InboxItem
-          key={entry.instance.id}
-          entry={entry}
-          isActive={entry.instance.id === currentId}
-          activeChatId={currentId}
-        />
-      ))}
+      {visible.map((entry) =>
+        entry.kind === "space" ? (
+          <InboxSpaceItem
+            key={entry.id}
+            entry={entry}
+            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
+          />
+        ) : (
+          <InboxItem
+            key={entry.id}
+            entry={entry}
+            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
+            activeChatId={currentId}
+          />
+        ),
+      )}
       {hidden > 0 && <ShowAllButton hidden={hidden} onClick={() => setExpanded(true)} />}
     </div>
   );
@@ -322,6 +332,9 @@ export function InboxSidebar({
   } = useInboxNavigationModel(projectFilter);
 
   const currentId = currentChatId;
+  const currentEntry = [...active, ...done].find((entry) =>
+    isInboxEntryCurrent(entry, currentChatId, currentSpaceId),
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
 
@@ -336,22 +349,26 @@ export function InboxSidebar({
   // moving into Done with a header pulse instead. Both live in `use-done-section`
   // so the transition rules can be tested without mounting the sidebar.
   const [doneOpen, setDoneOpen] = useDoneSectionDisclosure({
-    chatId: currentChatId,
-    isActive: active.some((entry) => entry.instance.id === currentChatId),
-    isDone: done.some((entry) => entry.instance.id === currentChatId),
+    chatId: currentEntry?.id,
+    isActive: active.some((entry) => entry.id === currentEntry?.id),
+    isDone: done.some((entry) => entry.id === currentEntry?.id),
   });
   const donePulse = useDoneTransitionPulse(active, done);
 
   useEffect(() => {
     if (didInitialScrollRef.current) return;
-    if (!currentId) return;
+    if (!currentEntry) return;
     const container = scrollRef.current;
     if (!container) return;
-    const el = container.querySelector<HTMLElement>(`[data-chat-id="${CSS.escape(currentId)}"]`);
+    const selector =
+      currentEntry.kind === "space"
+        ? `[data-space-id="${CSS.escape(currentEntry.space.id)}"]`
+        : `[data-chat-id="${CSS.escape(currentEntry.instance.id)}"]`;
+    const el = container.querySelector<HTMLElement>(selector);
     if (!el) return;
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
     didInitialScrollRef.current = true;
-  }, [currentId, active, done]);
+  }, [currentEntry, active, done, doneOpen]);
 
   // Scoped to `active`, which the project filter has already narrowed — the
   // sweep marks exactly what the list in front of the user shows.
@@ -469,10 +486,11 @@ export function InboxSidebar({
               <div className="px-2">
                 {active.length > 0 ? (
                   <>
-                    <CappedChatList
+                    <CappedInboxList
                       entries={active}
                       limit={ACTIVE_VISIBLE_LIMIT}
                       currentId={currentId}
+                      currentSpaceId={currentSpaceId}
                     />
                     {staleEntries.length > 0 && (
                       <SweepStaleRow
@@ -486,7 +504,7 @@ export function InboxSidebar({
                     <Check size={18} className="text-muted/40" />
                     <p className="text-[0.75rem] text-muted">Inbox zero</p>
                     <span className="text-[0.6875rem] text-muted/60">
-                      {done.length > 0 ? "Everything is marked done" : "No chats yet"}
+                      {done.length > 0 ? "All chats and spaces are done" : "No chats or spaces yet"}
                     </span>
                   </div>
                 )}
@@ -510,10 +528,11 @@ export function InboxSidebar({
                   </Collapsible.Trigger>
                   <Collapsible.Content>
                     <div className="px-2">
-                      <CappedChatList
+                      <CappedInboxList
                         entries={done}
                         limit={DONE_VISIBLE_LIMIT}
                         currentId={currentId}
+                        currentSpaceId={currentSpaceId}
                       />
                     </div>
                   </Collapsible.Content>

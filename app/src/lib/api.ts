@@ -819,6 +819,19 @@ export async function fetchSpaceDetail(spaceId: string): Promise<SpaceInfo> {
   return res.json();
 }
 
+export async function setSpacePinned(spaceId: string, pinned: boolean): Promise<SpaceInfo> {
+  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/pinned`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: "Failed to pin space" }));
+    throw new Error(data.error || "Failed to pin space");
+  }
+  return res.json();
+}
+
 export async function completeSpace(
   spaceId: string,
   opts?: { mergeMethod?: string; squashMessage?: string },

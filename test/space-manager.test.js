@@ -96,6 +96,21 @@ describe("SpaceManager lifecycle", () => {
     );
   });
 
+  it("pins a space independently and emits the updated space", () => {
+    const space = manager.createSpace(repoDir, { name: "Pinned space" });
+    const updates = [];
+    manager.on("space:updated", (updated) => updates.push(updated));
+
+    const pinned = manager.setSpacePinned(space.id, true);
+    assert.equal(pinned.pinned, true);
+    assert.equal(manager.getSpace(space.id).pinned, true);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].id, space.id);
+    assert.equal(updates[0].pinned, true);
+
+    assert.throws(() => manager.setSpacePinned("missing", true), /not found/);
+  });
+
   it("auto-commits dirty worktrees, squash-merges, and persists completion metadata", () => {
     const space = manager.createSpace(repoDir, { name: "Complete me" });
     writeFileSync(join(space.worktreePath, "feature.txt"), "from the space\n");

@@ -43,6 +43,8 @@ export interface SpaceInfo {
   createdAt: number;
   lastActivityAt: number;
   chatCount: number;
+  /** True when the user pinned this space to the top of the inbox */
+  pinned?: boolean;
   mergeCommit?: string | null;
   mergeMethod?: MergeMethod | null;
   mergedAt?: number | null;

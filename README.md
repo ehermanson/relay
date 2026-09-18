@@ -17,6 +17,8 @@ Run Relay on your dev machine, open it from your laptop or phone, and keep up wi
 
 ### Spaces
 
+The inbox shows each named space once, alongside standalone chats. Space rows summarize working chats, requests for input, and unread activity; open a space to return to your last-viewed chat. Pin spaces independently, then Complete to merge or Archive to close without merging.
+
 <img src="relay-space.png" alt="Relay spaces view" width="800" />
 
 ## What Relay Is
