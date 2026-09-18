@@ -23,7 +23,7 @@ import {
   readSync,
   closeSync,
 } from "fs";
-import { join, resolve } from "path";
+import { basename, join, resolve } from "path";
 import { homedir } from "os";
 import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
@@ -122,7 +122,6 @@ import type {
   ExitMessage,
   ActivityMessage,
   UserMessage,
-  TranscriptMessage,
   InstanceStatus,
   LastMessagePreview,
   InstanceInfo,
@@ -150,6 +149,8 @@ import type {
   SystemEventMessage,
   SystemEventType,
   EditToolInput,
+  AgentInfo,
+  AgentUpdateMessage,
 } from "#core/types.js";
 import {
   captureManagedSessionForProvider,
@@ -160,8 +161,20 @@ import {
   isProviderAvailable,
   listAvailableProviders,
   parseTranscriptForProvider,
+  readAgentHistoryForProvider,
+  readAgentModelForProvider,
   resolveManagedTranscriptPathForProvider,
 } from "#core/provider-registry.js";
+import {
+  buildAgentResultInfo,
+  buildAgentSpawnInfo,
+  buildTaskNotificationInfo,
+  classifyUserEnvelope,
+  collectAgentsFromHistory,
+  findAgentKeyByProviderId,
+  mergeAgentInfo,
+  type UserMessageOrigin,
+} from "#core/agent-messages.js";
 import {
   AUTO_CONTINUE_MSG,
   buildCustomInstructionsPrompt,
@@ -192,6 +205,7 @@ import {
   TASK_TOOLS,
   FILE_WRITE_TOOLS,
   FILE_WRITE_GROUP,
+  isAgentDelegationTool,
 } from "#core/tools.js";
 import { buildSessionInitEvent } from "#core/session-init.js";
 import {
@@ -255,6 +269,12 @@ interface WatchState {
   pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
   pendingProviderCalls: Map<string, { name: string; arguments?: string }>;
   providerCommandIds: Set<string>;
+  /** Codex collaboration dedup + agent-path state, carried across watched entries. */
+  codexCollabIds: Set<string>;
+  codexCollabResultIds: Set<string>;
+  codexAgentPaths: Map<string, string>;
+  /** True once the codex maps above have been seeded from the pre-EOF transcript. */
+  codexMappingsSeeded?: boolean;
   stats: SessionStats;
 }
 
@@ -299,6 +319,19 @@ interface Instance {
   tasks?: Map<string, TaskItem>;
   /** Accumulated file change state for file_list activity rendering */
   files?: Map<string, FileChange>;
+  /**
+   * Delegated agents seen for this chat, keyed by Relay agent key. Merged from
+   * every `agent_update` (live and replay) so child-history reads can resolve
+   * the provider-native id without booting the session.
+   */
+  agents?: Map<string, AgentInfo>;
+  /**
+   * Agents learned only from child transcripts (grandchildren announced in a
+   * subagent's own JSONL). Lookup-only for `readAgentHistory` so nested
+   * delegation stays resolvable; never surfaced by `getAgents()` — the chat's
+   * own history is the source of truth for the agents it lists.
+   */
+  nestedAgents?: Map<string, AgentInfo>;
   /** Monotonic revision for file-state refreshes to guard async enrichment */
   fileStateRevision: number;
   /** Queued retry message when tool approval arrives while process is still running */
@@ -358,7 +391,8 @@ export interface InstanceManagerEvents {
     instanceId: string,
     message: import("#core/types.js").QueuedRemovedMessage,
   ];
-  "instance:transcript": [instanceId: string, message: TranscriptMessage];
+  /** Sparse upsert of a delegated agent (replayable, broadcast like activity). */
+  "instance:agent_update": [instanceId: string, message: AgentUpdateMessage];
   /** A bulk mutation touched many chats at once — re-send the whole list. */
   "instances:changed": [];
   "scan:complete": [];
@@ -1256,9 +1290,12 @@ function getGitInfo(dir: string): { branch: string; isWorktree: boolean } | null
 function extractLastMessage(history: HistoryEntry[]): LastMessagePreview | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
     const msg = history[i].message;
-    // Skip transcript messages — they shouldn't be the sidebar preview
-    if (msg.type === "transcript") continue;
+    // Skip agent lifecycle messages — they shouldn't be the sidebar preview
+    if (msg.type === "agent_update") continue;
+    if (msg.type === "user" && (msg as UserMessage).agentId) continue;
+    if (msg.type === "output" && (msg as OutputMessage).agentId) continue;
     if (msg.type === "user" && (msg as UserMessage).text) {
+      if ((msg as UserMessage).author?.kind === "agent") continue;
       return {
         text: (msg as UserMessage).text,
         from: "user",
@@ -1287,6 +1324,9 @@ function createWatchState(
     pendingTaskCreates: new Map(),
     pendingProviderCalls: new Map(),
     providerCommandIds: new Set(),
+    codexCollabIds: new Set(),
+    codexCollabResultIds: new Set(),
+    codexAgentPaths: new Map(),
     stats: existingStats
       ? { ...existingStats }
       : {
@@ -3740,6 +3780,7 @@ export class InstanceManager extends EventEmitter {
       instance.history = history;
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
       instance.files = parsed.files.size > 0 ? parsed.files : undefined;
+      this.rebuildInstanceAgents(instance, history);
 
       const parsedStats = hasSessionStats(parsed.stats) ? parsed.stats : undefined;
       if (parsedStats) {
@@ -3755,6 +3796,118 @@ export class InstanceManager extends EventEmitter {
     }
 
     return this.buildHistoryView(history, parsed.files.size > 0 ? parsed.files : undefined);
+  }
+
+  // ===========================================================================
+  // Delegated agents
+  // ===========================================================================
+
+  /**
+   * Fold the transcript's agents and overlay whatever the live map holds.
+   * Live is the patch over history: the JSONL lags the SDK stream slightly,
+   * so a live `running`/`completed` must win over the transcript's older state.
+   */
+  private foldInstanceAgents(
+    history: HistoryEntry[],
+    live: Map<string, AgentInfo> | undefined,
+  ): Map<string, AgentInfo> {
+    const agents = collectAgentsFromHistory(history);
+    if (live) {
+      for (const [key, info] of live) {
+        agents.set(key, mergeAgentInfo(agents.get(key), info));
+      }
+    }
+    return agents;
+  }
+
+  /** Replace the instance's agent map with history folded under the live map. */
+  private rebuildInstanceAgents(instance: Instance, history: HistoryEntry[]): void {
+    const agents = this.foldInstanceAgents(history, instance.process ? instance.agents : undefined);
+    instance.agents = agents.size > 0 ? agents : undefined;
+  }
+
+  private mergeInstanceAgent(instance: Instance, patch: AgentInfo): void {
+    if (!patch?.agentId) return;
+    if (!instance.agents) instance.agents = new Map();
+    instance.agents.set(patch.agentId, mergeAgentInfo(instance.agents.get(patch.agentId), patch));
+  }
+
+  /**
+   * Delegated agents known for a chat, keyed by Relay agent key. Always folds
+   * the (cached, passive) history and overlays the live map, so the result is
+   * the same whether or not the chat has been hydrated. Grandchildren learned
+   * from child transcripts are deliberately excluded.
+   */
+  getAgents(id: string): AgentInfo[] {
+    const instance = this.instances.get(id);
+    if (!instance) throw new Error(`Instance ${id} not found`);
+    const agents = this.foldInstanceAgents(this.getHistory(id), instance.agents);
+    return Array.from(agents.values()).map((agent) => ({ ...agent }));
+  }
+
+  /**
+   * Read a delegated agent's detailed transcript from disk. `agentId` is the
+   * Relay key; the provider-native id is resolved from the agent state seen
+   * for this chat. Never boots/resumes a session. Returns null when the chat
+   * or agent is unknown or no transcript is available.
+   */
+  async readAgentHistory(id: string, agentId: string): Promise<HistoryEntry[] | null> {
+    const context = this.getAgentReadContext(id, agentId);
+    if (!context) return null;
+    const instance = this.instances.get(id)!;
+    const history = await readAgentHistoryForProvider(instance.info.provider, context);
+    if (!history) return null;
+    // Grandchildren remain lookup-only, without polluting the chat's agent list.
+    for (const entry of history) {
+      if (entry.message.type !== "agent_update") continue;
+      const patch = entry.message.agent;
+      if (!patch?.agentId || instance.agents?.has(patch.agentId)) continue;
+      if (!instance.nestedAgents) instance.nestedAgents = new Map();
+      instance.nestedAgents.set(
+        patch.agentId,
+        mergeAgentInfo(instance.nestedAgents.get(patch.agentId), patch),
+      );
+    }
+    return history;
+  }
+
+  /** Lightweight metadata for collapsed cards. No full child history is read. */
+  readAgentModel(id: string, agentId: string): string | undefined {
+    const context = this.getAgentReadContext(id, agentId);
+    if (!context) return undefined;
+    return readAgentModelForProvider(this.instances.get(id)!.info.provider, context);
+  }
+
+  private getAgentReadContext(id: string, agentId: string) {
+    const instance = this.instances.get(id);
+    if (!instance) return null;
+
+    let agent = instance.agents?.get(agentId) ?? instance.nestedAgents?.get(agentId);
+    if (!agent) {
+      const agents = this.foldInstanceAgents(this.getHistory(id), instance.agents);
+      const key = agents.has(agentId) ? agentId : findAgentKeyByProviderId(agents, agentId);
+      agent = key ? agents.get(key) : undefined;
+    }
+
+    const transcriptPath =
+      instance.jsonlPath ??
+      instance.providerBinding?.transcriptPath ??
+      instance.externalState?.jsonlPath;
+    const sessionId =
+      instance.sessionId ?? instance.info.sessionId ?? instance.providerBinding?.providerSessionId;
+
+    if (!agent) return null;
+    return {
+      providerDirs: this.providerDirs,
+      transcriptPath,
+      sessionId,
+      workingDirectory: instance.actualCwd || instance.info.workingDirectory,
+      agentId,
+      providerAgentId: agent?.providerAgentId,
+      // Cached by (path, mtime, size): expanding the same card twice must not
+      // re-parse the child transcript.
+      parseClaudeTranscript: (path: string) => this.parseProviderTranscript("claude", path),
+    };
   }
 
   /**
@@ -3846,6 +3999,7 @@ export class InstanceManager extends EventEmitter {
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
       instance.files = parsed.files.size > 0 ? parsed.files : undefined;
       instance.fileStateRevision += 1;
+      this.rebuildInstanceAgents(instance, instance.history);
 
       const parsedStats = hasSessionStats(parsed.stats) ? parsed.stats : undefined;
       if (parsedStats) {
@@ -5492,6 +5646,8 @@ export class InstanceManager extends EventEmitter {
       files: Map<string, FileChange>;
       stats: SessionStats;
       cwd?: string;
+      transcriptPath: string;
+      agents: Map<string, AgentInfo>;
     } = {
       pendingTools: new Map<string, string>(),
       pendingAskInputs: new Map<string, string[]>(),
@@ -5499,6 +5655,8 @@ export class InstanceManager extends EventEmitter {
       tasks: new Map<string, TaskItem>(),
       files: new Map<string, FileChange>(),
       stats: { ...zeroStats },
+      transcriptPath: filePath,
+      agents: new Map<string, AgentInfo>(),
     };
 
     const fullParseStart = boundaryLineIdx > 0 ? boundaryLineIdx : 0;
@@ -5514,7 +5672,16 @@ export class InstanceManager extends EventEmitter {
           cwd = entry.cwd;
           ctx.cwd = cwd;
         }
-        history.push(...this.convertJsonlEntryLightweight(entry, ctx));
+        const converted = this.convertJsonlEntryLightweight(entry, ctx);
+        // Fold agent state as we go so later pre-boundary entries (and the
+        // post-boundary pass) can resolve provider ids / tool-use ids to keys.
+        for (const converted_ of converted) {
+          if (converted_.message.type === "agent_update") {
+            const patch = converted_.message.agent;
+            ctx.agents.set(patch.agentId, mergeAgentInfo(ctx.agents.get(patch.agentId), patch));
+          }
+        }
+        history.push(...converted);
       } catch {
         // skip malformed lines
       }
@@ -5530,7 +5697,16 @@ export class InstanceManager extends EventEmitter {
           cwd = entry.cwd;
           ctx.cwd = cwd;
         }
-        history.push(...this.convertJsonlEntry(entry, ctx));
+        const converted = this.convertJsonlEntry(entry, ctx);
+        // Fold agent state as we go so later entries (task notifications
+        // without a tool-use id) can resolve provider ids to Relay keys.
+        for (const converted_ of converted) {
+          if (converted_.message.type === "agent_update") {
+            const patch = converted_.message.agent;
+            ctx.agents.set(patch.agentId, mergeAgentInfo(ctx.agents.get(patch.agentId), patch));
+          }
+        }
+        history.push(...converted);
       } catch {
         // skip malformed lines
       }
@@ -5637,13 +5813,36 @@ export class InstanceManager extends EventEmitter {
       pendingAskInputs?: Map<string, string[]>;
       pendingTaskCreates?: Map<string, { subject: string; activeForm?: string }>;
       tasks?: Map<string, TaskItem>;
+      transcriptPath?: string;
+      lightweight?: boolean;
     },
     results: HistoryEntry[],
     toolResultMeta?: { nonExecutionKind?: string; userFeedback?: string },
+    /** Structured `toolUseResult` from the JSONL entry (per-tool shape). */
+    toolUseResult?: unknown,
   ): void {
     const toolName = ctx.pendingTools?.get(block.tool_use_id || "");
     const isTaskTool = TASK_TOOLS.has(toolName || "");
     const blockContent = extractToolResultText(block.content);
+
+    // Delegation result: same agent_update as the live path, from the
+    // transcript's structured toolUseResult. Child-history availability is
+    // not stamped here — the child-history route's 404 is the signal.
+    if (isAgentDelegationTool(toolName) && block.tool_use_id) {
+      const agent = buildAgentResultInfo(block.tool_use_id, toolUseResult, {
+        isError: block.is_error,
+        contentText: blockContent,
+        endedAt: timestamp,
+      });
+      results.push({
+        timestamp,
+        message: { type: "agent_update", agent } as AgentUpdateMessage,
+      });
+    }
+
+    // Pre-boundary lightweight pass: agent lifecycle is preserved above, but
+    // ordinary tool-detail activities and task-list rebuilds are elided.
+    if (ctx.lightweight) return;
 
     if (isTaskTool) {
       if (toolName === "TaskCreate") {
@@ -5709,6 +5908,16 @@ export class InstanceManager extends EventEmitter {
       /** Set on SDKAssistantMessage when the turn was cut short by an interrupt. */
       aborted?: boolean;
       data?: Record<string, unknown>;
+      /** Harness-injected user entry (peer report, task notification, reminder). */
+      isMeta?: boolean;
+      /** Provenance of a user-role entry (SDK `SDKMessageOrigin`). */
+      origin?: UserMessageOrigin;
+      /** Structured tool output for the tool_result in this user entry. */
+      toolUseResult?: unknown;
+      /** On `progress` entries: the spawning tool_use of the subagent that produced it. */
+      parentToolUseID?: string;
+      /** Queued-command attachments carry coordinator notes in child transcripts. */
+      attachment?: Record<string, unknown>;
       message?: {
         role?: string;
         model?: string;
@@ -5740,11 +5949,17 @@ export class InstanceManager extends EventEmitter {
       files?: Map<string, FileChange>;
       stats?: SessionStats;
       cwd?: string;
+      transcriptPath?: string;
+      /** Agents seen so far (lookup-only): resolves task ids back to Relay keys. */
+      agents?: ReadonlyMap<string, AgentInfo>;
     },
   ): HistoryEntry[] {
     const rawTimestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
     const timestamp = isNaN(rawTimestamp) ? Date.now() : rawTimestamp;
 
+    if (entry.type === "attachment" && entry.attachment) {
+      return this.convertAttachmentEntry(entry.attachment, timestamp);
+    }
     if (entry.type === "system" && entry.subtype === "compact_boundary") {
       return [
         {
@@ -5768,37 +5983,77 @@ export class InstanceManager extends EventEmitter {
       ];
     }
     if (entry.type === "user" && entry.message?.content) {
-      return this.convertUserEntry(entry.message.content, timestamp, ctx);
+      return this.convertUserEntry(entry, timestamp, ctx);
     }
     if (entry.type === "assistant" && entry.message?.content) {
       return this.convertAssistantEntry(entry.message, timestamp, ctx, entry.aborted);
     }
     if (entry.type === "progress" && entry.data) {
-      return this.convertProgressEntry(entry.data, timestamp);
+      return this.convertProgressEntry(entry.data, timestamp, entry.parentToolUseID);
     }
     return [];
   }
 
+  /**
+   * `attachment` entries appear in subagent transcripts; a `queued_command`
+   * with a coordinator origin is the orchestrator's follow-up note to the child.
+   */
+  private convertAttachmentEntry(
+    attachment: Record<string, unknown>,
+    timestamp: number,
+  ): HistoryEntry[] {
+    if (attachment.type !== "queued_command" || typeof attachment.prompt !== "string") return [];
+    const origin =
+      attachment.origin && typeof attachment.origin === "object"
+        ? (attachment.origin as UserMessageOrigin)
+        : undefined;
+    const classified = classifyUserEnvelope(attachment.prompt, origin);
+    if (classified.kind !== "agent") return [];
+    if (!classified.body) return [];
+    return [
+      {
+        timestamp,
+        message: {
+          type: "user",
+          text: classified.body,
+          author: { kind: "agent", name: classified.name },
+        } as UserMessage,
+      },
+    ];
+  }
+
   /** Parse a user JSONL entry into history entries. */
   private convertUserEntry(
-    content:
-      | string
-      | Array<{
-          type: string;
-          text?: string;
-          tool_use_id?: string;
-          is_error?: boolean;
-          content?: string;
-        }>,
+    entry: {
+      isMeta?: boolean;
+      origin?: UserMessageOrigin;
+      toolUseResult?: unknown;
+      message?: {
+        content?:
+          | string
+          | Array<{
+              type: string;
+              text?: string;
+              tool_use_id?: string;
+              is_error?: boolean;
+              content?: string;
+            }>;
+      };
+    },
     timestamp: number,
     ctx?: {
       pendingTools?: Map<string, string>;
       pendingAskInputs?: Map<string, string[]>;
       pendingTaskCreates?: Map<string, { subject: string; activeForm?: string }>;
       tasks?: Map<string, TaskItem>;
+      transcriptPath?: string;
+      agents?: ReadonlyMap<string, AgentInfo>;
+      /** Pre-boundary pass: preserve agent lifecycle, elide ordinary tool detail. */
+      lightweight?: boolean;
     },
   ): HistoryEntry[] {
     const results: HistoryEntry[] = [];
+    const content = entry.message?.content ?? "";
     let text = "";
     if (typeof content === "string") {
       text = content;
@@ -5833,25 +6088,84 @@ export class InstanceManager extends EventEmitter {
                     : undefined;
                 })()
               : undefined;
-          this.handleToolResultBlock(c, timestamp, ctx, results, toolResultMeta);
+          this.handleToolResultBlock(
+            c,
+            timestamp,
+            ctx,
+            results,
+            toolResultMeta,
+            entry.toolUseResult,
+          );
         }
       }
       text = parts.join("\n");
     }
+
+    // Classify authorship BEFORE stripping internal tags: the task-notification
+    // and agent-message envelopes are themselves "internal" XML, but they carry
+    // agent lifecycle/report content Relay must keep.
+    const classified = text.trim() ? classifyUserEnvelope(text, entry.origin) : null;
+    if (classified?.kind === "task-notification") {
+      // Not every background task is an agent — `local_bash` tasks emit the same
+      // <task-notification> with a Bash tool-use id — so mirror the live SDK's
+      // `resolveTaskAgentKey`: trust the tool-use id only when it names an
+      // already-known agent, otherwise resolve the task id (recorded as the
+      // async-launch's providerAgentId) against the agents folded so far. A task
+      // that matches neither is not a delegated agent and is dropped.
+      const agents = ctx?.agents ?? new Map();
+      const agentKey =
+        (classified.toolUseId && agents.has(classified.toolUseId)
+          ? classified.toolUseId
+          : undefined) ?? findAgentKeyByProviderId(agents, classified.taskId);
+      if (agentKey) {
+        results.push({
+          timestamp,
+          message: {
+            type: "agent_update",
+            agent: buildTaskNotificationInfo(agentKey, classified, { endedAt: timestamp }),
+          } as AgentUpdateMessage,
+        });
+      }
+      return results;
+    }
+    if (classified?.kind === "agent") {
+      if (classified.body) {
+        results.push({
+          timestamp,
+          message: {
+            type: "user",
+            text: classified.body,
+            author: { kind: "agent", name: classified.name },
+          } as UserMessage,
+        });
+      }
+      return results;
+    }
+    if (classified?.kind === "internal") return results;
+
     // Strip internal CLI tags; skip if nothing meaningful remains
     text = stripInternalTags(text);
     if (text && !text.startsWith("[Request interrupted")) {
       const transcriptMatch = TRANSCRIPT_AVAILABLE_RE.exec(text);
       if (transcriptMatch) {
+        // Legacy background-agent hand-off ("Full transcript available at:
+        // <path>"): surface it as an agent result. The key is the transcript
+        // file's stem so replays produce a stable id; no delegation call is
+        // known, so the card has no origin to anchor to.
         const transcript = extractTranscriptResult(transcriptMatch[1]);
         if (transcript) {
+          const stem = basename(transcriptMatch[1]).replace(/\.[^.]+$/, "");
+          const agent: AgentInfo = {
+            agentId: `transcript:${stem}`,
+            relation: "child",
+            name: transcript.title,
+            status: "completed",
+            result: transcript.result,
+            endedAt: timestamp,
+          };
           results.push({
             timestamp,
-            message: {
-              type: "transcript",
-              title: transcript.title,
-              result: transcript.result,
-            } as TranscriptMessage,
+            message: { type: "agent_update", agent } as AgentUpdateMessage,
           });
         }
       } else {
@@ -5872,6 +6186,9 @@ export class InstanceManager extends EventEmitter {
       subtype?: string;
       cwd?: string;
       timestamp?: string;
+      isMeta?: boolean;
+      origin?: UserMessageOrigin;
+      toolUseResult?: unknown;
       message?: {
         model?: string;
         usage?: {
@@ -5885,11 +6202,19 @@ export class InstanceManager extends EventEmitter {
           | Array<{
               type: string;
               text?: string;
+              name?: string;
+              id?: string;
+              input?: Record<string, unknown>;
             }>;
       };
     },
     ctx?: {
       stats?: SessionStats;
+      pendingTools?: Map<string, string>;
+      pendingTaskCreates?: Map<string, { subject: string; activeForm?: string }>;
+      tasks?: Map<string, TaskItem>;
+      transcriptPath?: string;
+      agents?: ReadonlyMap<string, AgentInfo>;
     },
   ): HistoryEntry[] {
     const rawTimestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
@@ -5905,7 +6230,12 @@ export class InstanceManager extends EventEmitter {
       ];
     }
     if (entry.type === "user" && entry.message?.content) {
-      return this.convertUserEntry(entry.message.content, timestamp);
+      // Pass ctx so delegation tool_results and <task-notification> envelopes
+      // still resolve to agents across a compaction boundary — a synchronous
+      // agent that ran entirely pre-boundary would otherwise vanish. The
+      // `lightweight` flag keeps ordinary tool-detail rebuilds elided (the maps
+      // are shared by reference, so folded state still reaches the full pass).
+      return this.convertUserEntry(entry, timestamp, ctx ? { ...ctx, lightweight: true } : ctx);
     }
     if (entry.type === "assistant" && entry.message) {
       return this.convertAssistantConversationEntry(entry.message, timestamp, ctx);
@@ -6050,11 +6380,15 @@ export class InstanceManager extends EventEmitter {
         | Array<{
             type: string;
             text?: string;
+            name?: string;
+            id?: string;
+            input?: Record<string, unknown>;
           }>;
     },
     timestamp: number,
     ctx?: {
       stats?: SessionStats;
+      pendingTools?: Map<string, string>;
     },
   ): HistoryEntry[] {
     const results: HistoryEntry[] = [];
@@ -6089,6 +6423,23 @@ export class InstanceManager extends EventEmitter {
         timestamp,
         message: { type: "output", text: "", isWaiting: true } as OutputMessage,
       });
+
+      // Preserve delegation lifecycle across the compaction boundary: register
+      // the spawning tool_use so its result resolves as an agent, and announce
+      // the agent (same shape as the full parse). Other tool_uses stay elided.
+      for (const block of content) {
+        if (block.type !== "tool_use" || !block.id || !block.name) continue;
+        if (ctx?.pendingTools) ctx.pendingTools.set(block.id, block.name);
+        if (isAgentDelegationTool(block.name)) {
+          results.push({
+            timestamp,
+            message: {
+              type: "agent_update",
+              agent: buildAgentSpawnInfo(block.id, block.input, { startedAt: timestamp }),
+            } as AgentUpdateMessage,
+          });
+        }
+      }
     }
 
     if (ctx?.stats && message.usage && message.model) {
@@ -6242,38 +6593,56 @@ export class InstanceManager extends EventEmitter {
           inputDescription: extractInputDescription(block.name || "Unknown", block.input),
         } as ActivityMessage,
       });
+
+      // Delegation: announce the agent right after the tool_use it anchors to
+      // (same shape as the live path).
+      if (isAgentDelegationTool(block.name) && block.id) {
+        results.push({
+          timestamp,
+          message: {
+            type: "agent_update",
+            agent: buildAgentSpawnInfo(block.id, block.input, { startedAt: timestamp }),
+          } as AgentUpdateMessage,
+        });
+      }
     }
   }
 
   /** Parse a progress JSONL entry (bash_progress / agent_progress). */
-  private convertProgressEntry(data: Record<string, unknown>, timestamp: number): HistoryEntry[] {
+  private convertProgressEntry(
+    data: Record<string, unknown>,
+    timestamp: number,
+    /** Spawning tool_use id when the progress belongs to a subagent — becomes `agentId`. */
+    parentToolUseId?: string,
+  ): HistoryEntry[] {
     const dataType = data.type as string | undefined;
     if (dataType === "bash_progress") {
       const elapsed = data.elapsed_seconds as number | undefined;
       const output = data.output as string | undefined;
       if (elapsed != null) {
-        return [
-          {
-            timestamp,
-            message: {
-              type: "activity",
-              activity: "tool_use",
-              tool: "Bash",
-              description: `Running... ${Math.round(elapsed)}s`,
-              detail: output ? (output.length > 300 ? output.slice(-300) : output) : undefined,
-            } as ActivityMessage,
-          },
-        ];
+        const activity: ActivityMessage = {
+          type: "activity",
+          activity: "tool_use",
+          tool: "Bash",
+          description: `Running... ${Math.round(elapsed)}s`,
+          detail: output ? (output.length > 300 ? output.slice(-300) : output) : undefined,
+        };
+        if (parentToolUseId) activity.agentId = parentToolUseId;
+        return [{ timestamp, message: activity }];
       }
     } else if (dataType === "agent_progress") {
-      return this.convertAgentProgress(data, timestamp);
+      return this.convertAgentProgress(data, timestamp, parentToolUseId);
     }
     // hook_progress: skip
     return [];
   }
 
   /** Extract tool_use activities from an agent_progress event. */
-  private convertAgentProgress(data: Record<string, unknown>, timestamp: number): HistoryEntry[] {
+  private convertAgentProgress(
+    data: Record<string, unknown>,
+    timestamp: number,
+    parentToolUseId?: string,
+  ): HistoryEntry[] {
     const message = data.message as Record<string, unknown> | undefined;
     if (!message) return [];
     const innerMessage = message.message as Record<string, unknown> | undefined;
@@ -6286,18 +6655,17 @@ export class InstanceManager extends EventEmitter {
       if (block.type === "tool_use") {
         const tool = (block.name as string) || "Unknown";
         const input = block.input as Record<string, unknown> | undefined;
-        entries.push({
-          timestamp,
-          message: {
-            type: "activity",
-            activity: "tool_use",
-            tool,
-            description: describeToolUse(tool, input),
-            detail: describeToolDetail(tool, input),
-            input: buildToolActivityInput(tool, input, block.id as string | undefined),
-            inputDescription: extractInputDescription(tool, input),
-          } as ActivityMessage,
-        });
+        const activity: ActivityMessage = {
+          type: "activity",
+          activity: "tool_use",
+          tool,
+          description: describeToolUse(tool, input),
+          detail: describeToolDetail(tool, input),
+          input: buildToolActivityInput(tool, input, block.id as string | undefined),
+          inputDescription: extractInputDescription(tool, input),
+        };
+        if (parentToolUseId) activity.agentId = parentToolUseId;
+        entries.push({ timestamp, message: activity });
       }
     }
     return entries;
@@ -6377,6 +6745,51 @@ export class InstanceManager extends EventEmitter {
     return entryTime <= instance.processHandledUntil;
   }
 
+  /**
+   * Populate the codex watcher's agent-path / collab-dedup maps from the
+   * transcript written before the watcher attached (it starts at EOF). Runs at
+   * most once per watch session; output is discarded — only the map mutations
+   * (agent_path → child thread id, seen collab call ids) are kept so a later
+   * FINAL_ANSWER resolves its author and a call spanning EOF still dedupes.
+   */
+  private seedCodexWatcherMappings(instance: Instance): void {
+    const ws = instance.watchState;
+    if (!ws) return;
+    ws.codexMappingsSeeded = true; // best-effort: never retry, even on failure
+    try {
+      const content = readFileSync(ws.jsonlPath, "utf-8");
+      const seedCtx = {
+        pendingCalls: new Map<string, { name: string; arguments?: string }>(),
+        commandIds: new Set<string>(),
+        collabIds: (ws.codexCollabIds ??= new Set()),
+        collabResultIds: (ws.codexCollabResultIds ??= new Set()),
+        agentPaths: (ws.codexAgentPaths ??= new Map()),
+        tasks: new Map<string, TaskItem>(),
+        files: new Map<string, FileChange>(),
+        stats: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+        cwd: instance.actualCwd || instance.info.workingDirectory,
+      };
+      for (const raw of content.split("\n")) {
+        // Only collaboration/agent lines mutate the maps; skip the rest to avoid
+        // JSON-parsing every line of a large rollout. "gent"/"ollab" match both
+        // cases (SubAgentActivity, CollabAgentToolCall, agent_path, collaboration).
+        if (!raw || (!raw.includes("gent") && !raw.includes("ollab") && !raw.includes("spawn"))) {
+          continue;
+        }
+        try {
+          convertCodexTranscriptEntry(JSON.parse(raw) as Record<string, unknown>, seedCtx);
+        } catch {
+          // skip malformed lines
+        }
+      }
+    } catch (err) {
+      this.baseConfig.logger.debug(
+        `[Watcher] Failed to seed codex mappings for ${instance.info.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   private applyWatcherEntry(
     instanceId: string,
     instance: Instance,
@@ -6414,12 +6827,25 @@ export class InstanceManager extends EventEmitter {
     if (!instance.tasks) instance.tasks = new Map();
     if (!instance.files) instance.files = new Map();
 
+    // Watching starts at EOF, so an agent spawned before Relay attached left its
+    // agent-path/collab mappings only in the pre-EOF transcript. Seed them once
+    // (best-effort) or a later child report can't resolve its author.
+    if (instance.info.provider === "codex" && !instance.watchState.codexMappingsSeeded) {
+      this.seedCodexWatcherMappings(instance);
+    }
+
     const prevStats = { ...instance.watchState.stats };
     const converted =
       instance.info.provider === "codex"
         ? convertCodexTranscriptEntry(entry as Record<string, unknown>, {
             pendingCalls: instance.watchState.pendingProviderCalls,
             commandIds: (instance.watchState.providerCommandIds ??= new Set()),
+            // Persist collab dedup + agent-path state across watched entries;
+            // spawn tool_use and its result (or a child report and the agent
+            // path that resolves its author) arrive on separate JSONL lines.
+            collabIds: (instance.watchState.codexCollabIds ??= new Set()),
+            collabResultIds: (instance.watchState.codexCollabResultIds ??= new Set()),
+            agentPaths: (instance.watchState.codexAgentPaths ??= new Map()),
             tasks: instance.tasks,
             files: instance.files,
             stats: instance.watchState.stats,
@@ -6432,6 +6858,7 @@ export class InstanceManager extends EventEmitter {
             files: instance.files,
             stats: instance.watchState.stats,
             cwd: instance.actualCwd || instance.info.workingDirectory,
+            agents: instance.agents,
           });
     if (statsChanged(prevStats, instance.watchState.stats)) {
       instance.info.stats = { ...instance.watchState.stats };
@@ -6444,6 +6871,17 @@ export class InstanceManager extends EventEmitter {
 
       this.pushHistory(instance, msg);
       instance.info.lastActivityAt = Date.now();
+
+      // Child-attributed frames belong to the agent's nested transcript and
+      // never drive the chat's own status/title/pending state.
+      if (msg.type === "output" && msg.agentId) {
+        this.emit("instance:output", instanceId, msg);
+        continue;
+      }
+      if (msg.type === "activity" && msg.agentId) {
+        this.emit("instance:activity", instanceId, msg);
+        continue;
+      }
 
       if (msg.type === "output") {
         const output = msg as OutputMessage;
@@ -6474,8 +6912,13 @@ export class InstanceManager extends EventEmitter {
         }
         this.setStatus(instance, "processing");
         this.emit("instance:activity", instanceId, activity);
-      } else if (msg.type === "transcript") {
-        this.emit("instance:transcript", instanceId, msg as TranscriptMessage);
+      } else if (msg.type === "agent_update") {
+        const update = msg as AgentUpdateMessage;
+        this.mergeInstanceAgent(instance, update.agent);
+        // Managed sessions already emitted this from the live stream.
+        if (!instance.process) {
+          this.emit("instance:agent_update", instanceId, update);
+        }
       } else if (msg.type === "user") {
         this.syncPendingInteractiveState(instance, msg);
         this.emitPendingStateIfChanged(instance, pendingStateBefore);
@@ -7786,6 +8229,16 @@ export class InstanceManager extends EventEmitter {
         this.pushHistory(live, message);
         live.info.lastActivityAt = Date.now();
 
+        // A child agent's output belongs to its nested transcript: record and
+        // broadcast it, but never let it drive the chat's turn state. A
+        // background child keeps streaming after the root turn goes idle —
+        // flipping to `processing` here would leave the chat stuck there.
+        if (message.agentId) {
+          this.dbSave(live);
+          this.emit("instance:output", id, message);
+          return;
+        }
+
         if (message.isWaiting) {
           if (live.watchState) {
             try {
@@ -7844,6 +8297,17 @@ export class InstanceManager extends EventEmitter {
         if (this.shuttingDown || live.process !== proc) return;
         this.noteManagedProcessActivity(live);
         live.providerBinding = mergeProviderBinding(live.providerBinding, proc.getRuntimeBinding());
+        // Child-attributed activity: same rule as output — history + broadcast
+        // only. No status flip, plan-file capture, permission state, or
+        // pending-interaction sync (child permissions arrive via
+        // permissionRequest with relayAgentId).
+        if (message.agentId) {
+          this.pushHistory(live, message);
+          live.info.lastActivityAt = Date.now();
+          this.dbSave(live);
+          this.emit("instance:activity", id, message);
+          return;
+        }
         const pendingStateBefore = this.pendingStateSignature(live);
         if (message.activity === "task_list" && message.tasks) {
           if (!live.tasks) live.tasks = new Map();
@@ -8268,9 +8732,50 @@ export class InstanceManager extends EventEmitter {
       ((request: ProviderRequest) => {
         void this.enqueueInstanceMutation(id, (live) => {
           if (this.shuttingDown || live.process !== proc) return;
+          // The driver maps provider agent ids it has seen; fall back to the
+          // instance's merged agent state (which also holds replayed agents).
+          if (!request.relayAgentId && request.agentId && live.agents) {
+            const relayAgentId = findAgentKeyByProviderId(live.agents, request.agentId);
+            if (relayAgentId) request = { ...request, relayAgentId };
+          }
           live.info.pendingPermission = request;
           this.emitInstanceStatus(live);
         }).catch((err) => this.logQueuedMutationError("permissionRequest handler", id, err));
+      }) as (...args: unknown[]) => void,
+    );
+
+    // Delegated-agent lifecycle: sparse upserts, replayable like activity.
+    proc.on(
+      "agentUpdate" as keyof import("#core/provider.js").ProviderSessionEvents,
+      ((message: AgentUpdateMessage) => {
+        void this.enqueueInstanceMutation(id, (live) => {
+          if (this.shuttingDown || live.process !== proc) return;
+          this.noteManagedProcessActivity(live);
+          this.mergeInstanceAgent(live, message.agent);
+          this.pushHistory(live, message);
+          live.info.lastActivityAt = Date.now();
+          this.dbSave(live);
+          this.emit("instance:agent_update", id, message);
+        }).catch((err) => this.logQueuedMutationError("agentUpdate handler", id, err));
+      }) as (...args: unknown[]) => void,
+    );
+
+    // Provider-surfaced user-role messages Relay did not send: agent-to-agent
+    // notes (author.kind === "agent") and child agents' own frames (agentId).
+    proc.on(
+      "userMessage" as keyof import("#core/provider.js").ProviderSessionEvents,
+      ((message: UserMessage) => {
+        void this.enqueueInstanceMutation(id, (live) => {
+          if (this.shuttingDown || live.process !== proc) return;
+          // Guard: never let a provider frame masquerade as the human.
+          if (!message.agentId && message.author?.kind !== "agent") return;
+          this.noteManagedProcessActivity(live);
+          const stamped: UserMessage = { ...message, instanceId: id };
+          this.pushHistory(live, stamped);
+          live.info.lastActivityAt = Date.now();
+          this.dbSave(live);
+          this.emit("instance:user", id, stamped);
+        }).catch((err) => this.logQueuedMutationError("userMessage handler", id, err));
       }) as (...args: unknown[]) => void,
     );
 
@@ -8874,7 +9379,11 @@ export class InstanceManager extends EventEmitter {
     // (skip trivial messages like "ok", "done", "commit this", etc.)
     for (let i = instance.history.length - 1; i >= 0; i--) {
       const msg = instance.history[i].message;
-      if (msg.type === "transcript") continue;
+      if (msg.type === "agent_update") continue;
+      // Agent-authored notes and child-agent frames are not the user's intent.
+      if (msg.type === "user" && ((msg as UserMessage).author?.kind === "agent" || (msg as UserMessage).agentId)) {
+        continue;
+      }
       if (msg.type === "user" && (msg as UserMessage).text && !(msg as UserMessage).internal) {
         const text = (msg as UserMessage).text;
         if (isTrivialMessage(text)) continue;
@@ -8955,12 +9464,15 @@ export class InstanceManager extends EventEmitter {
       instance.history = instance.history.slice(-MAX_HISTORY);
     }
 
-    // Track last meaningful message for dashboard preview (skip transcripts + internal)
-    if (message.type === "transcript") return;
+    // Track last meaningful message for dashboard preview (skip agent updates,
+    // internal messages, and anything attributed to a child agent)
+    if (message.type === "agent_update") return;
     if (
       message.type === "user" &&
       (message as UserMessage).text &&
-      !(message as UserMessage).internal
+      !(message as UserMessage).internal &&
+      !(message as UserMessage).agentId &&
+      (message as UserMessage).author?.kind !== "agent"
     ) {
       instance.info.lastMessage = {
         text: (message as UserMessage).text,
@@ -8969,7 +9481,7 @@ export class InstanceManager extends EventEmitter {
       };
     } else if (message.type === "output") {
       const output = message as OutputMessage;
-      if (output.text && output.text.trim() && !output.isWaiting) {
+      if (output.text && output.text.trim() && !output.isWaiting && !output.agentId) {
         instance.info.lastMessage = {
           text: output.text,
           from: "assistant",

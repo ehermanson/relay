@@ -1,14 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { AlertTriangle, Clock, Cog } from "lucide-react";
 import type { LiveActivity } from "@/lib/chat-types";
-
-function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${minutes}m ${remainder}s`;
-}
+import { formatElapsed } from "@/lib/utils";
 
 interface LiveStatusStripProps {
   activity: LiveActivity | null;

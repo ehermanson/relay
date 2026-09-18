@@ -7,6 +7,7 @@ import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Bot,
   Bug,
   Columns2,
   EllipsisVertical,
@@ -58,6 +59,9 @@ interface SidecarTogglesProps {
   isOpen: boolean;
   tasksCount: number;
   filesCount: number;
+  /** Delegated agents in this chat; the toggle renders only when the provider supports agent activity. */
+  agentsCount?: number;
+  hasAgentsContent?: boolean;
   hasPlanContent: boolean;
   hasReviewContent: boolean;
   hasStats: boolean;
@@ -83,6 +87,8 @@ function SidecarToggles({
   isOpen,
   tasksCount,
   filesCount,
+  agentsCount = 0,
+  hasAgentsContent = false,
   hasPlanContent,
   hasReviewContent,
   hasStats,
@@ -95,7 +101,12 @@ function SidecarToggles({
   const hasTasksContent = tasksCount > 0;
   const hasFilesContent = filesCount > 0;
   const hasAny =
-    hasTasksContent || hasFilesContent || hasPlanContent || hasReviewContent || hasStats;
+    hasTasksContent ||
+    hasAgentsContent ||
+    hasFilesContent ||
+    hasPlanContent ||
+    hasReviewContent ||
+    hasStats;
   if (!loading && !hasAny) return null;
 
   // A tab button is "toggled on" when it's the showing tab (active + open).
@@ -122,6 +133,19 @@ function SidecarToggles({
                 >
                   <ListChecks size={15} strokeWidth={2} />
                   <CountBadge count={tasksCount} />
+                </Button>
+              </Tooltip>
+            )}
+            {hasAgentsContent && (
+              <Tooltip content={isShowing("agents") ? "Hide agents" : "Show agents"}>
+                <Button
+                  variant="icon"
+                  toggled={isShowing("agents")}
+                  onClick={() => onSelectTab("agents")}
+                  className="relative shrink-0"
+                >
+                  <Bot size={15} strokeWidth={2} />
+                  {agentsCount > 0 && <CountBadge count={agentsCount} />}
                 </Button>
               </Tooltip>
             )}
@@ -208,6 +232,8 @@ interface InstanceHeaderProps {
   isOpen: boolean;
   tasksCount: number;
   filesCount: number;
+  agentsCount?: number;
+  hasAgentsContent?: boolean;
   hasPlanContent: boolean;
   hasReviewContent: boolean;
   hasStats: boolean;
@@ -335,6 +361,8 @@ export function InstanceHeader({
   isOpen,
   tasksCount,
   filesCount,
+  agentsCount = 0,
+  hasAgentsContent = false,
   hasPlanContent,
   hasReviewContent,
   hasStats,
@@ -530,6 +558,8 @@ export function InstanceHeader({
             isOpen={isOpen}
             tasksCount={tasksCount}
             filesCount={filesCount}
+            agentsCount={agentsCount}
+            hasAgentsContent={hasAgentsContent}
             hasPlanContent={hasPlanContent}
             hasReviewContent={hasReviewContent}
             hasStats={hasStats}
@@ -654,6 +684,8 @@ export function InstanceHeader({
           isOpen={isOpen}
           tasksCount={tasksCount}
           filesCount={filesCount}
+          agentsCount={agentsCount}
+          hasAgentsContent={hasAgentsContent}
           hasPlanContent={hasPlanContent}
           hasReviewContent={hasReviewContent}
           hasStats={hasStats}

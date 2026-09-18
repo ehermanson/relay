@@ -30,6 +30,9 @@ import type {
   UserInputQuestion,
   SystemEventMessage,
   ProviderRateLimitStatus,
+  AgentInfo,
+  AgentUpdateMessage,
+  UserMessage,
 } from "#core/types.js";
 import type { CoreConfig } from "#core/config.js";
 import type { ProviderSession } from "#core/provider.js";
@@ -43,7 +46,18 @@ import {
   FILE_WRITE_TOOLS,
   buildToolResultActivity,
   extractToolResultText,
+  isAgentDelegationTool,
 } from "#core/tools.js";
+import {
+  buildAgentResultInfo,
+  buildAgentSpawnInfo,
+  buildTaskNotificationInfo,
+  classifyUserEnvelope,
+  findAgentKeyByProviderId,
+  mapTaskStatus,
+  mergeAgentInfo,
+  type UserMessageOrigin,
+} from "#core/agent-messages.js";
 import { buildSessionInitEvent } from "#core/session-init.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { extFromPath } from "#core/paths.js";
@@ -71,7 +85,8 @@ function countPatchLines(diff: string): { additions: number; deletions: number }
 interface SDKUserMessage {
   type: "user";
   message: { role: "user"; content: Array<{ type: "text"; text: string }> };
-  parent_tool_use_id: null;
+  /** Spawning tool_use id when the frame belongs to a subagent; null for the root conversation. */
+  parent_tool_use_id: string | null;
   session_id: string;
 }
 
@@ -182,6 +197,12 @@ interface SDKOptions {
   permissionMode?: string;
   allowDangerouslySkipPermissions?: boolean;
   includePartialMessages?: boolean;
+  /**
+   * Forward subagent text/thinking as assistant/user frames carrying
+   * `parent_tool_use_id`. Without it only child tool_use/tool_result frames
+   * arrive, so nested transcripts would have no prose.
+   */
+  forwardSubagentText?: boolean;
   canUseTool?: CanUseTool;
   env?: Record<string, string | undefined>;
   allowedTools?: string[];
@@ -282,6 +303,33 @@ interface PendingStreamMessage {
   textOrder: number[];
   hasToolUse: boolean;
   hasThinking: boolean;
+}
+
+/**
+ * Per-agent streaming bookkeeping. The SDK interleaves root and subagent
+ * frames on one stream (child frames carry `parent_tool_use_id`), so every
+ * accumulator is keyed by agent — a shared one would merge concurrent agents'
+ * text into each other and into the orchestrator's turn.
+ */
+interface AgentStreamState {
+  pending: PendingStreamMessage | null;
+  /** Text for the current message was already emitted via streaming deltas. */
+  hasStreamedText: boolean;
+  /** Thinking blocks already emitted for the current message (partials re-send the array). */
+  emittedThinkingCount: number;
+}
+
+/** Stream-state key for the root conversation (frames without `parent_tool_use_id`). */
+const ROOT_STREAM_KEY = "root";
+
+function newAgentStreamState(): AgentStreamState {
+  return { pending: null, hasStreamedText: false, emittedThinkingCount: 0 };
+}
+
+/** Relay agent key for a frame: the spawning tool_use id, or undefined for root. */
+function frameAgentKey(msg: Record<string, unknown>): string | undefined {
+  const parent = msg.parent_tool_use_id;
+  return typeof parent === "string" && parent ? parent : undefined;
 }
 
 // =============================================================================
@@ -684,15 +732,12 @@ export async function createSdkSession(
 
 class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _isProcessing = false;
-  private _hasStreamedText = false;
   private _lastMessageHadToolUse = false;
   /**
    * True when the last assistant message ended by calling ExitPlanMode. That is
    * a deliberate STOP point awaiting user plan approval
    */
   private _lastMessageWasExitPlanMode = false;
-  /** Number of thinking blocks already emitted for the current message turn. */
-  private _emittedThinkingCount = 0;
   /** True until the first user message is sent — suppresses replay emissions. */
   private _isResumeReplay = false;
   /** Set from the init event when the CLI advertises interrupt_cancel_queued_v1. */
@@ -713,8 +758,17 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private pendingPermission: PendingPermission | null = null;
   private allowedToolSet: Set<string>;
   private _runtimeMode: ProviderRuntimeMode = "approval-required";
-  private pendingStreamMessage: PendingStreamMessage | null = null;
+  /** Streaming state per agent key (ROOT_STREAM_KEY for the main conversation). */
+  private streamStates = new Map<string, AgentStreamState>();
   private _autoContinueCount = 0;
+  /**
+   * Delegated agents seen this session, keyed by Relay agent key (spawning
+   * tool_use id). Merged from every emitted agent_update so later frames can
+   * resolve provider ids (task_id / agentID) back to the Relay key.
+   */
+  private agents = new Map<string, AgentInfo>();
+  /** tool_use id → Relay agent key of the agent that issued the call (for result attribution). */
+  private toolUseAgent = new Map<string, string>();
   /** Late SDK tool_result errors for permission streams we already auto-approved. */
   private ignoredPermissionErrorToolUseIds = new Set<string>();
 
@@ -758,6 +812,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       model: options.model,
       effort: options.reasoningEffort as SDKOptions["effort"],
       includePartialMessages: true,
+      forwardSubagentText: true,
       env: process.env as Record<string, string | undefined>,
       pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
     };
@@ -873,10 +928,12 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     }
 
     this._isProcessing = true;
-    this._hasStreamedText = false;
+    // Reset only the root accumulator: a background child (run_in_background)
+    // may still be mid-message across the user's turns, and clearing its
+    // stream state would drop the text it has streamed so far.
+    this.streamStates.set(ROOT_STREAM_KEY, newAgentStreamState());
     this._lastMessageHadToolUse = false;
     this._lastMessageWasExitPlanMode = false;
-    this._emittedThinkingCount = 0;
     this._isResumeReplay = false;
     this._autoContinueCount = 0;
     this.logger.info(`[SdkSession] Sending: "${message.slice(0, 50)}..."`);
@@ -1192,6 +1249,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       tool: toolName,
       description: describeToolUse(toolName, input),
       agentId: callbackOptions.agentID,
+      // Map Claude's native agentID back to the Relay key so the UI can badge
+      // the right agent card. Unknown stays unknown.
+      relayAgentId: findAgentKeyByProviderId(this.agents, callbackOptions.agentID),
     };
     this.emit("permissionRequest", request);
 
@@ -1334,9 +1394,157 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       case "local_command_output":
         // Lifecycle — skip
         break;
+      case "task_started":
+      case "task_progress":
+      case "task_notification":
+      case "task_updated":
+        this.handleTaskEvent(subtype, msg);
+        break;
       default:
         this.logger.debug(`[SdkSession] Unhandled system subtype: ${subtype}`);
     }
+  }
+
+  // ===========================================================================
+  // Delegated agents
+  // ===========================================================================
+
+  /**
+   * Merge and emit a sparse agent update. Every emission also updates the
+   * session's agent map so later frames can resolve provider ids
+   * (`task_id` / `agentID`, stored as `providerAgentId`) back to Relay keys.
+   * `raw` is a small provenance stub, never the provider payload — the
+   * tool_use_result / system message would otherwise be duplicated
+   * byte-for-byte across the WS, replay ring, and client raw store.
+   */
+  private emitAgentUpdate(
+    patch: AgentInfo,
+    raw?: { tool?: string; toolUseId?: string; subtype?: string },
+  ): void {
+    this.agents.set(patch.agentId, mergeAgentInfo(this.agents.get(patch.agentId), patch));
+    const update: AgentUpdateMessage = { type: "agent_update", agent: patch };
+    if (raw !== undefined) update.raw = raw;
+    this.emit("agentUpdate", update);
+  }
+
+  /**
+   * Resolve the Relay key for a task_* event (or `<task-notification>`).
+   * Background tasks are not all agents — `local_bash` tasks emit the same
+   * events — so an event is only treated as an agent when its `tool_use_id`
+   * is an already-known agent key, its `task_id` maps to one, or the event
+   * itself says it is an agent (`subagent_type`, or a `task_type` naming an
+   * agent/workflow). The bare `task_id` is never used as a key.
+   */
+  private resolveTaskAgentKey(msg: {
+    task_id?: unknown;
+    tool_use_id?: unknown;
+    subagent_type?: unknown;
+    task_type?: unknown;
+  }): string | undefined {
+    const taskId = typeof msg.task_id === "string" && msg.task_id ? msg.task_id : undefined;
+    const toolUseId =
+      typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
+    if (toolUseId && this.agents.has(toolUseId)) return toolUseId;
+    const known = findAgentKeyByProviderId(this.agents, taskId);
+    if (known) return known;
+    const taskType = typeof msg.task_type === "string" ? msg.task_type.toLowerCase() : "";
+    const isAgentTask =
+      (typeof msg.subagent_type === "string" && !!msg.subagent_type) ||
+      taskType.includes("agent") ||
+      taskType.includes("workflow");
+    return isAgentTask ? toolUseId : undefined;
+  }
+
+  private readTaskUsage(raw: unknown): AgentInfo["usage"] | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const u = raw as Record<string, unknown>;
+    const usage: NonNullable<AgentInfo["usage"]> = {};
+    if (typeof u.total_tokens === "number") usage.totalTokens = u.total_tokens;
+    if (typeof u.tool_uses === "number") usage.toolUses = u.tool_uses;
+    if (typeof u.duration_ms === "number") usage.durationMs = u.duration_ms;
+    return Object.keys(usage).length ? usage : undefined;
+  }
+
+  /** Map the SDK's background-task lifecycle events onto agent_update. */
+  private handleTaskEvent(subtype: string, msg: Record<string, unknown>): void {
+    const taskId = typeof msg.task_id === "string" ? msg.task_id : undefined;
+    const toolUseId = typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
+    const agentKey = this.resolveTaskAgentKey(msg);
+    if (!agentKey) return;
+
+    if (subtype === "task_notification") {
+      this.emitAgentUpdate(
+        buildTaskNotificationInfo(
+          agentKey,
+          {
+            taskId,
+            toolUseId,
+            status: mapTaskStatus(typeof msg.status === "string" ? msg.status : undefined),
+            summary: typeof msg.summary === "string" && msg.summary ? msg.summary : undefined,
+            outputFile: typeof msg.output_file === "string" ? msg.output_file : undefined,
+            usage: this.readTaskUsage(msg.usage),
+          },
+          { endedAt: Date.now() },
+        ),
+        { subtype },
+      );
+      return;
+    }
+
+    const patch: AgentInfo = { agentId: agentKey };
+    if (taskId) patch.providerAgentId = taskId;
+    if (toolUseId) patch.originToolUseId = toolUseId;
+
+    switch (subtype) {
+      case "task_started": {
+        patch.relation = "child";
+        patch.status = "running";
+        patch.startedAt = Date.now();
+        if (typeof msg.description === "string" && msg.description) {
+          patch.description = msg.description;
+        }
+        if (typeof msg.subagent_type === "string" && msg.subagent_type) {
+          patch.role = msg.subagent_type;
+        }
+        if (typeof msg.prompt === "string" && msg.prompt) patch.assignment = msg.prompt;
+        if (msg.skip_transcript === true) patch.statusDetail = "background";
+        break;
+      }
+      case "task_progress": {
+        patch.status = "running";
+        const summary = typeof msg.summary === "string" && msg.summary ? msg.summary : undefined;
+        const lastTool =
+          typeof msg.last_tool_name === "string" && msg.last_tool_name
+            ? msg.last_tool_name
+            : undefined;
+        if (summary ?? lastTool) patch.lastActivity = summary ?? lastTool;
+        if (typeof msg.description === "string" && msg.description && !this.agents.get(agentKey)?.description) {
+          patch.description = msg.description;
+        }
+        if (typeof msg.subagent_type === "string" && msg.subagent_type) {
+          patch.role = msg.subagent_type;
+        }
+        const usage = this.readTaskUsage(msg.usage);
+        if (usage) patch.usage = usage;
+        break;
+      }
+      case "task_updated": {
+        const rawPatch =
+          msg.patch && typeof msg.patch === "object" ? (msg.patch as Record<string, unknown>) : {};
+        if (typeof rawPatch.status === "string") patch.status = mapTaskStatus(rawPatch.status);
+        if (typeof rawPatch.description === "string" && rawPatch.description) {
+          patch.description = rawPatch.description;
+        }
+        if (typeof rawPatch.error === "string" && rawPatch.error) {
+          patch.statusDetail = rawPatch.error;
+        }
+        if (typeof rawPatch.end_time === "number") patch.endedAt = rawPatch.end_time;
+        if (rawPatch.is_backgrounded === true) patch.lastActivity = "Running in background";
+        break;
+      }
+    }
+
+    this.emitAgentUpdate(patch, { subtype });
   }
 
   private handleAssistant(msg: Record<string, unknown>): void {
@@ -1344,10 +1552,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // The JSONL parser already built the history from these — skip to avoid duplicates.
     if (this._isResumeReplay) return;
 
-    this._lastRawAssistantMsg = msg;
-    const ts = typeof msg.timestamp === "string" ? msg.timestamp : undefined;
-    this._lastMsgTimestamp = ts ? new Date(ts).getTime() : undefined;
-    this._lastMsgAborted = msg.aborted === true;
+    // Child frames (subagent output forwarded with parent_tool_use_id) are
+    // attributed to their agent and must not touch the root turn's bookkeeping.
+    const agentKey = frameAgentKey(msg);
+    if (!agentKey) {
+      this._lastRawAssistantMsg = msg;
+      const ts = typeof msg.timestamp === "string" ? msg.timestamp : undefined;
+      this._lastMsgTimestamp = ts ? new Date(ts).getTime() : undefined;
+      this._lastMsgAborted = msg.aborted === true;
+    }
     const message = msg.message as
       | {
           content?: Array<{
@@ -1370,18 +1583,27 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
     if (!message?.content) return;
 
-    // Accumulate usage
-    if (message.usage && message.model) {
-      this.accumulateUsage(message.model, message.usage);
+    if (agentKey) {
+      // The child's model is only visible on its own assistant frames.
+      if (message.model && this.agents.get(agentKey)?.model !== message.model) {
+        this.emitAgentUpdate({ agentId: agentKey, model: message.model, status: "running" });
+      }
+    } else {
+      // Accumulate usage (root only — the turn result already folds in subagent totals)
+      if (message.usage && message.model) {
+        this.accumulateUsage(message.model, message.usage);
+      }
+
+      // Track whether this message contained tool_use for auto-continue fallback
+      this._lastMessageHadToolUse = message.content.some((block) => block.type === "tool_use");
+      // Track on ExitPlanMode terminal tool_use so auto-continue can skip it - the
+      // turn must go idle and wait for the user to approve the plan.
+      this._lastMessageWasExitPlanMode = message.content.some(
+        (block) => block.type === "tool_use" && block.name === "ExitPlanMode",
+      );
     }
 
-    // Track whether this message contained tool_use for auto-continue fallback
-    this._lastMessageHadToolUse = message.content.some((block) => block.type === "tool_use");
-    // Track on ExitPlanMode terminal tool_use so auto-continue can skip it - the
-    // turn must go idle and wait for the user to approve the plan.
-    this._lastMessageWasExitPlanMode = message.content.some(
-      (block) => block.type === "tool_use" && block.name === "ExitPlanMode",
-    );
+    const stream = this.streamState(agentKey);
 
     // Count thinking blocks in this partial message so we only emit new ones.
     // With includePartialMessages the SDK re-sends the full content array on
@@ -1389,37 +1611,45 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     let thinkingIndex = 0;
     for (const block of message.content) {
       if (block.type === "thinking" && block.thinking) {
-        if (thinkingIndex++ < this._emittedThinkingCount) continue;
-        this._emittedThinkingCount = thinkingIndex;
+        if (thinkingIndex++ < stream.emittedThinkingCount) continue;
+        stream.emittedThinkingCount = thinkingIndex;
         const activity: ActivityMessage = {
           type: "activity",
           activity: "thinking",
           description: "Reasoning...",
           detail: capDetail(block.thinking),
         };
+        if (agentKey) activity.agentId = agentKey;
         this.emit("activity", activity);
       } else if (block.type === "tool_use" && block.name) {
         // Reset auto-continue counter on productive progress — the limit should
         // only fire on consecutive empty turns, not during active tool loops.
-        this._autoContinueCount = 0;
-        if (block.id) this.pendingTools.set(block.id, block.name);
-        this.handleToolUse(block.name, block.input, block.id);
+        if (!agentKey) this._autoContinueCount = 0;
+        if (block.id) {
+          this.pendingTools.set(block.id, block.name);
+          if (agentKey) this.toolUseAgent.set(block.id, agentKey);
+        }
+        this.handleToolUse(block.name, block.input, block.id, agentKey);
       } else if (block.type === "tool_result") {
         this.handleToolResult(block as unknown as Record<string, unknown>);
       } else if (block.type === "text" && block.text) {
         // Emit text only as a fallback when no streaming occurred.
         // With includePartialMessages, the SDK sends partial assistant messages
         // interleaved with stream_event deltas. If we emit text here while
-        // streaming is active (pendingStreamMessage exists), flushPendingStreamText()
+        // streaming is active (pending exists), flushPendingStreamText()
         // will also emit the accumulated text on message_stop → duplicate.
-        if (!this._hasStreamedText && !this.pendingStreamMessage) {
-          this._hasStreamedText = true;
+        // `hasStreamedText` is set only by the stream flush (and reset on the
+        // next message_start): a frame-only path — e.g. forwarded child text
+        // that never gets child stream_events — must emit every message, not
+        // just the first.
+        if (!stream.hasStreamedText && !stream.pending) {
           const output: OutputMessage = {
             type: "output",
             text: block.text,
             isWaiting: false,
             raw: msg,
           };
+          if (agentKey) output.agentId = agentKey;
           this.emit("output", output);
         }
       }
@@ -1432,11 +1662,14 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (!event) return;
 
     const eventType = event.type as string;
+    // Root and subagent deltas interleave on one stream; every accumulator is
+    // per agent so a child's text never lands in the orchestrator's message.
+    const agentKey = frameAgentKey(msg);
 
     if (eventType === "content_block_start") {
       const index = typeof event.index === "number" ? event.index : 0;
       const block = event.content_block as { type?: string } | undefined;
-      const state = this.ensurePendingStreamMessage();
+      const state = this.ensurePendingStreamMessage(agentKey);
       if (block?.type === "text") {
         if (!state.textByIndex.has(index)) {
           state.textByIndex.set(index, "");
@@ -1453,7 +1686,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       if (!delta) return;
 
       if (delta.type === "text_delta" && delta.text) {
-        const state = this.ensurePendingStreamMessage();
+        const state = this.ensurePendingStreamMessage(agentKey);
         if (!state.textByIndex.has(index)) {
           state.textByIndex.set(index, "");
           state.textOrder.push(index);
@@ -1461,21 +1694,19 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         state.textByIndex.set(index, (state.textByIndex.get(index) || "") + delta.text);
       }
       if (delta.type === "thinking_delta" || delta.type === "signature_delta") {
-        this.ensurePendingStreamMessage().hasThinking = true;
+        this.ensurePendingStreamMessage(agentKey).hasThinking = true;
       }
       if (delta.type === "input_json_delta") {
-        this.ensurePendingStreamMessage().hasToolUse = true;
+        this.ensurePendingStreamMessage(agentKey).hasToolUse = true;
       }
     } else if (eventType === "message_start") {
-      // Message started — ensure we're in processing state and reset stream flag
-      this._hasStreamedText = false;
-      this._emittedThinkingCount = 0;
-      this.pendingStreamMessage = null;
-      if (!this._isProcessing) {
+      // Message started — reset only this agent's stream state
+      this.streamStates.set(agentKey ?? ROOT_STREAM_KEY, newAgentStreamState());
+      if (!agentKey && !this._isProcessing) {
         this._isProcessing = true;
       }
     } else if (eventType === "message_stop") {
-      this.flushPendingStreamText();
+      this.flushPendingStreamText(agentKey);
     }
   }
 
@@ -1574,21 +1805,34 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     this.finishTurn();
   }
 
-  private ensurePendingStreamMessage(): PendingStreamMessage {
-    if (!this.pendingStreamMessage) {
-      this.pendingStreamMessage = {
+  /** Stream state for an agent key (root when undefined), created on demand. */
+  private streamState(agentKey: string | undefined): AgentStreamState {
+    const key = agentKey ?? ROOT_STREAM_KEY;
+    let state = this.streamStates.get(key);
+    if (!state) {
+      state = newAgentStreamState();
+      this.streamStates.set(key, state);
+    }
+    return state;
+  }
+
+  private ensurePendingStreamMessage(agentKey: string | undefined): PendingStreamMessage {
+    const state = this.streamState(agentKey);
+    if (!state.pending) {
+      state.pending = {
         textByIndex: new Map(),
         textOrder: [],
         hasToolUse: false,
         hasThinking: false,
       };
     }
-    return this.pendingStreamMessage;
+    return state.pending;
   }
 
-  private flushPendingStreamText(): void {
-    const pending = this.pendingStreamMessage;
-    this.pendingStreamMessage = null;
+  private flushPendingStreamText(agentKey: string | undefined): void {
+    const state = this.streamState(agentKey);
+    const pending = state.pending;
+    state.pending = null;
     if (!pending) return;
 
     const text = pending.textOrder
@@ -1602,7 +1846,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       text,
       isWaiting: false,
     };
-    this._hasStreamedText = true;
+    if (agentKey) output.agentId = agentKey;
+    state.hasStreamedText = true;
     this.emit("output", output);
   }
 
@@ -1617,6 +1862,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         tool: "Bash",
         description: `Running... ${Math.round(elapsed)}s`,
       };
+      const agentKey = frameAgentKey(msg);
+      if (agentKey) activity.agentId = agentKey;
       this.emit("activity", activity);
     }
   }
@@ -1847,9 +2094,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     toolName: string,
     input: Record<string, unknown> | undefined,
     toolUseId: string | undefined,
+    agentKey?: string,
   ): void {
-    // Task tools
-    if (TASK_TOOLS.has(toolName)) {
+    // Task tools. A child agent's todo bookkeeping must not clobber the chat's
+    // task list, so for child frames these fall through to a plain activity.
+    if (TASK_TOOLS.has(toolName) && !agentKey) {
       if (toolName === "TodoWrite" && input) {
         this.applyTodoWrite(input);
       } else if (toolName === "TaskCreate" && input && toolUseId) {
@@ -1918,7 +2167,17 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       inputDescription: extractInputDescription(toolName, input),
       raw: { tool: toolName, toolUseId, input: activityInput },
     };
+    if (agentKey) activity.agentId = agentKey;
     this.emit("activity", activity);
+
+    // Delegation: announce the agent right after the tool_use it anchors to.
+    // The frame's own parent (if any) becomes parentAgentId — nested delegation.
+    if (isAgentDelegationTool(toolName) && toolUseId) {
+      this.emitAgentUpdate(
+        buildAgentSpawnInfo(toolUseId, input, { parentAgentId: agentKey, startedAt: Date.now() }),
+        { tool: toolName, toolUseId },
+      );
+    }
   }
 
   /** Emit a provider_status update when the fast-mode disabled reason changes.
@@ -1936,13 +2195,24 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   }
 
   private handleUserMessage(msg: Record<string, unknown>): void {
+    // Resumed sessions replay every earlier user frame (tool results, peer
+    // notes, task notifications). History already holds them; re-processing
+    // would duplicate agent notes and stamp bogus `endedAt`s on agent_updates.
+    if (this._isResumeReplay) return;
     const message = (msg as Record<string, unknown>).message;
     if (!message || typeof message !== "object" || Array.isArray(message)) return;
+    const agentKey = frameAgentKey(msg);
     const content = (message as Record<string, unknown>).content;
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
+    const blocks: unknown[] =
+      typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+    const textParts: string[] = [];
+    for (const block of blocks) {
       if (!block || typeof block !== "object" || Array.isArray(block)) continue;
       const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        textParts.push(b.text);
+        continue;
+      }
       if (b.type !== "tool_result") continue;
       const toolUseId = typeof b.tool_use_id === "string" ? b.tool_use_id : undefined;
       if (!toolUseId) continue;
@@ -1956,15 +2226,64 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
           this.pendingToolResultMeta.set(toolUseId, { nonExecutionKind, userFeedback });
         }
       }
-      this.handleToolResult(b);
+      this.handleToolResult(b, msg.tool_use_result);
+    }
+
+    const text = textParts.join("\n").trim();
+    if (!text) return;
+
+    if (agentKey) {
+      // A child's own user-role frames (its assignment, coordinator notes)
+      // belong to the child's transcript, never the main stream.
+      const classified = classifyUserEnvelope(text, msg.origin as UserMessageOrigin | undefined);
+      if (classified.kind === "internal" || classified.kind === "task-notification") return;
+      const userMessage: UserMessage = {
+        type: "user",
+        text: classified.kind === "agent" ? classified.body : text,
+        agentId: agentKey,
+      };
+      if (classified.kind === "agent") {
+        userMessage.author = { kind: "agent", name: classified.name };
+      }
+      this.emit("userMessage", userMessage);
+      return;
+    }
+
+    // Root user-role text. The human's own messages are already in history
+    // (InstanceManager emits them on send), so only agent-authored envelopes
+    // and task notifications produce anything here.
+    const classified = classifyUserEnvelope(text, msg.origin as UserMessageOrigin | undefined);
+    if (classified.kind === "agent") {
+      const userMessage: UserMessage = {
+        type: "user",
+        text: classified.body,
+        author: {
+          kind: "agent",
+          name: classified.name,
+          agentId: findAgentKeyByProviderId(this.agents, classified.senderTaskId),
+        },
+      };
+      this.emit("userMessage", userMessage);
+    } else if (classified.kind === "task-notification") {
+      const agentKeyForTask = this.resolveTaskAgentKey({
+        task_id: classified.taskId,
+        tool_use_id: classified.toolUseId,
+      });
+      if (!agentKeyForTask) return;
+      this.emitAgentUpdate(
+        buildTaskNotificationInfo(agentKeyForTask, classified, { endedAt: Date.now() }),
+        { subtype: "task_notification" },
+      );
     }
   }
 
-  private handleToolResult(block: Record<string, unknown>): void {
+  private handleToolResult(block: Record<string, unknown>, toolUseResult?: unknown): void {
     const toolUseId = block.tool_use_id as string;
     const toolName = this.pendingTools.get(toolUseId);
     const isError = block.is_error as boolean | undefined;
     const content = extractToolResultText(block.content);
+    const agentKey = this.toolUseAgent.get(toolUseId);
+    this.toolUseAgent.delete(toolUseId);
 
     if (
       isError &&
@@ -1977,7 +2296,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     }
     this.ignoredPermissionErrorToolUseIds.delete(toolUseId);
 
-    if (TASK_TOOLS.has(toolName || "")) {
+    if (TASK_TOOLS.has(toolName || "") && !agentKey) {
       if (toolName === "TaskCreate") {
         const idMatch = content.match(/Task #(\d+)/);
         const pending = this.pendingTaskCreates.get(toolUseId);
@@ -1995,10 +2314,25 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       return;
     }
 
+    // Delegation result: the structured tool_use_result is the subagent's final
+    // report plus run totals (or the async-launch handshake). Update the agent
+    // first, then still emit the tool_result — it is the orchestrator's view.
+    if (isAgentDelegationTool(toolName)) {
+      this.emitAgentUpdate(
+        buildAgentResultInfo(toolUseId, toolUseResult, {
+          isError,
+          contentText: content,
+          endedAt: Date.now(),
+        }),
+        { tool: toolName, toolUseId },
+      );
+    }
+
     // For non-task tools, emit a tool_result activity
     const meta = this.pendingToolResultMeta.get(toolUseId);
     this.pendingToolResultMeta.delete(toolUseId);
     const activity = buildToolResultActivity(isError, toolName, content, meta, toolUseId);
+    if (agentKey) activity.agentId = agentKey;
     this.emit("activity", activity);
   }
 

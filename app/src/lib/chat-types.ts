@@ -90,10 +90,29 @@ export interface ActivityGroupChatItem {
   activities: MergedActivity[];
 }
 
-export interface AgentTranscriptChatItem {
-  kind: "agent-transcript";
-  title: string;
-  result: string;
+/**
+ * Inserted card for a delegated agent whose origin tool_use is unknown (no
+ * `originToolUseId`, or none found in the stream at first sighting). Anchored
+ * agents render in place of their tool_use instead and never get this item.
+ * Inserted once per agent — updates mutate `State.agents`, not this item.
+ */
+export interface AgentCardChatItem {
+  kind: "agent-card";
+  agentId: string;
+  timestamp?: number;
+}
+
+/**
+ * Inbound agent-to-agent message (`UserMessage.author.kind === "agent"`).
+ * Rendered as a left-aligned note, never as a human bubble.
+ */
+export interface AgentNoteChatItem {
+  kind: "agent-note";
+  text: string;
+  /** Sender display name as reported by the provider. */
+  name?: string;
+  /** Relay agent key of the sender when it is a known agent of this chat. */
+  agentId?: string;
   timestamp?: number;
 }
 
@@ -105,7 +124,8 @@ export type ChatItem =
   | ModelSwitchChatItem
   | ThinkingBlockChatItem
   | ActivityGroupChatItem
-  | AgentTranscriptChatItem;
+  | AgentCardChatItem
+  | AgentNoteChatItem;
 
 // ── RenderRow variants (processed for the virtualizer) ──────────────
 
@@ -161,11 +181,19 @@ export interface ThinkingBlockRow {
   text: string;
 }
 
-export interface AgentTranscriptRow {
+export interface AgentCardRow {
   id: string;
-  kind: "agent-transcript";
-  title: string;
-  result: string;
+  kind: "agent-card";
+  agentId: string;
+  timestamp?: number;
+}
+
+export interface AgentNoteRow {
+  id: string;
+  kind: "agent-note";
+  text: string;
+  name?: string;
+  agentId?: string;
   timestamp?: number;
 }
 
@@ -197,7 +225,8 @@ export type RenderRow =
   | CompactBoundaryRow
   | ModelSwitchRow
   | ThinkingBlockRow
-  | AgentTranscriptRow
+  | AgentCardRow
+  | AgentNoteRow
   | ResponseDividerRow
   | ToolContainerRow;
 
