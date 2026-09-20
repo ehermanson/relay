@@ -23,12 +23,14 @@ interface ViewHeaderProps {
 export function ViewHeader({ children, className, style }: ViewHeaderProps) {
   return (
     <div
-      // Pinned opaque edge: iOS 26+ standalone PWAs paint a Liquid Glass
-      // scroll-edge blur under the status bar that bleeds onto the header.
-      // A sticky top-0 element with a solid background makes WebKit replace
-      // that blur with a solid fill. Keep it opaque (no transparency) and
-      // pinned; do not remove viewport-fit=cover or the body safe-area padding.
-      className={`sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-border/70 bg-bg px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
+      // Pinned opaque top edge. On iOS 26+ standalone PWAs this sticky top-0
+      // element owns env(safe-area-inset-top) (via the pt calc) and carries a
+      // solid background, which makes WebKit replace its top scroll-edge blur
+      // with a solid fill instead of smearing the header. The body drops its
+      // own top padding for these views (body.immersive-top-inset) so this
+      // header reaches the true viewport top edge. env() resolves to 0 off
+      // iOS/standalone, so desktop and in-browser spacing are unchanged.
+      className={`sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-border/70 bg-bg px-4 pb-2.5 pt-[calc(env(safe-area-inset-top,0px)_+_0.625rem)] max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:pb-2 max-[768px]:pt-[calc(env(safe-area-inset-top,0px)_+_0.5rem)]${className ? ` ${className}` : ""}`}
       style={style}
     >
       {children}

@@ -336,6 +336,14 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
+/* Chat/space views hand the top inset to their pinned in-view header so it
+   reaches the viewport's true top edge — this is what makes iOS 26+ replace
+   the header's scroll-edge blur with a solid fill (WebKit bug 301756).
+   See use-immersive-top-inset.ts + view-header.tsx. */
+body.immersive-top-inset {
+  padding-top: 0;
+}
+
 html {
   scroll-behavior: smooth;
   /* Matches body — shows through briefly below the shell when the keyboard
