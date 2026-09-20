@@ -2720,7 +2720,13 @@ describe("multi-agent thread scoping", () => {
     notify(child, "item/started", {
       threadId: "thread-unknown",
       turnId: "turn-x",
-      item: { type: "commandExecution", id: "cmd-x", command: "rm -rf /", cwd: "/", status: "inProgress" },
+      item: {
+        type: "commandExecution",
+        id: "cmd-x",
+        command: "rm -rf /",
+        cwd: "/",
+        status: "inProgress",
+      },
     });
     notify(child, "item/completed", {
       threadId: "thread-unknown",
@@ -2735,7 +2741,11 @@ describe("multi-agent thread scoping", () => {
     assert.ok(outputs.every(([o]) => !String(o.text).includes("should not appear")));
     assert.ok(activities.every(([a]) => a.toolUseId !== "cmd-x"));
     assert.equal(agentUpdates.length, 0);
-    assert.equal(session.isProcessing, true, "unknown thread's turn/completed must not finish the root turn");
+    assert.equal(
+      session.isProcessing,
+      true,
+      "unknown thread's turn/completed must not finish the root turn",
+    );
     session.close();
   });
 
@@ -2829,12 +2839,14 @@ describe("multi-agent thread scoping", () => {
       },
     });
     await tick();
-    const updates = agentUpdates.map(([u]) => u.agent).filter((a) => a.agentId === "thread-child-3");
+    const updates = agentUpdates
+      .map(([u]) => u.agent)
+      .filter((a) => a.agentId === "thread-child-3");
     assert.equal(updates.length, 3);
     assert.equal(updates[0].status, "running");
     assert.equal(updates[0].originToolUseId, "call_spawn_3");
     assert.equal(updates[0].name, "jev_research");
-    assert.equal(updates[1].lastActivity, "Message exchanged");
+    assert.equal(updates[1].lastActivity, undefined, "message receipts preserve useful activity");
     assert.equal(updates[2].status, "stopped");
     assert.equal(updates[2].statusDetail, "interrupted");
     session.close();
@@ -2870,7 +2882,9 @@ describe("multi-agent thread scoping", () => {
       },
     });
     await tick();
-    const updates = agentUpdates.map(([u]) => u.agent).filter((a) => a.agentId === "thread-child-4");
+    const updates = agentUpdates
+      .map(([u]) => u.agent)
+      .filter((a) => a.agentId === "thread-child-4");
     assert.deepEqual(
       updates.map((u) => u.status),
       ["running", "stopped", undefined],
@@ -2904,7 +2918,11 @@ describe("multi-agent thread scoping", () => {
       },
     });
     await tick();
-    const byId = (id) => agentUpdates.map(([u]) => u.agent).filter((a) => a.agentId === id).at(-1);
+    const byId = (id) =>
+      agentUpdates
+        .map(([u]) => u.agent)
+        .filter((a) => a.agentId === id)
+        .at(-1);
     assert.equal(byId("thread-a").status, "completed");
     assert.equal(byId("thread-a").result, "Final report text");
     assert.ok(typeof byId("thread-a").endedAt === "number");
@@ -2933,7 +2951,11 @@ describe("multi-agent thread scoping", () => {
       turn: { id: "turn-w1", items: [], status: "completed", error: null },
     });
     await tick();
-    const latest = () => agentUpdates.map(([u]) => u.agent).filter((a) => a.agentId === "thread-w").at(-1);
+    const latest = () =>
+      agentUpdates
+        .map(([u]) => u.agent)
+        .filter((a) => a.agentId === "thread-w")
+        .at(-1);
     assert.equal(latest().status, "waiting");
     assert.equal(latest().lastActivity, "Turn finished");
 
@@ -2953,7 +2975,11 @@ describe("multi-agent thread scoping", () => {
       turn: { id: "turn-w2", items: [], status: "completed", error: null },
     });
     await tick();
-    assert.equal(latest().status, undefined, "a trailing turn end does not revive a completed agent");
+    assert.equal(
+      latest().status,
+      undefined,
+      "a trailing turn end does not revive a completed agent",
+    );
     assert.equal(latest().lastActivity, "Turn finished");
     session.close();
   });
@@ -2997,14 +3023,24 @@ describe("multi-agent thread scoping", () => {
       JSON.stringify({
         jsonrpc: "2.0",
         id: resume.id,
-        result: { thread: { id: "thread-new", cwd: "/tmp/project", path: "/tmp/new.jsonl", turns: [] } },
+        result: {
+          thread: { id: "thread-new", cwd: "/tmp/project", path: "/tmp/new.jsonl", turns: [] },
+        },
       }) + "\n",
     );
     await tick(50);
 
     assert.equal(session.getRuntimeBinding().providerSessionId, "thread-new");
-    const rootText = outputs.map(([o]) => o).filter((o) => !o.agentId).map((o) => o.text).join("");
-    assert.equal(rootText, "resumed root text", "root notifications for the re-keyed id are not dropped");
+    const rootText = outputs
+      .map(([o]) => o)
+      .filter((o) => !o.agentId)
+      .map((o) => o.text)
+      .join("");
+    assert.equal(
+      rootText,
+      "resumed root text",
+      "root notifications for the re-keyed id are not dropped",
+    );
     assert.equal(agentUpdates.length, 0, "the re-keyed root is never treated as a child");
     session.close();
   });

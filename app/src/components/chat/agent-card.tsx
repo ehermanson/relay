@@ -2,12 +2,7 @@ import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChevronRight, ShieldAlert } from "lucide-react";
 import type { AgentInfo } from "@shared/types";
-import {
-  deriveAgentLastActivity,
-  getAgentSubtitle,
-  getAgentTitle,
-  isAgentActive,
-} from "@/lib/agents";
+import { getAgentLastActivity, getAgentSubtitle, getAgentTitle, isAgentActive } from "@/lib/agents";
 import { AgentStatusBadge } from "@/components/chat/agent-status-badge";
 import { AgentAvatar } from "@/components/chat/agent-avatar";
 import { AgentDetail } from "@/components/chat/agent-detail";
@@ -33,7 +28,12 @@ interface AgentCardProps {
  * Nested transcript, chat id, provider and the pending-request owner all come
  * from `AgentCardsContext` — every surface that renders cards provides it.
  */
-export function AgentCard({ agent, fallbackResult, defaultExpanded = false, depth = 0 }: AgentCardProps) {
+export function AgentCard({
+  agent,
+  fallbackResult,
+  defaultExpanded = false,
+  depth = 0,
+}: AgentCardProps) {
   const ctx = useAgentCards();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const hasBeenExpanded = useRef(defaultExpanded);
@@ -50,7 +50,7 @@ export function AgentCard({ agent, fallbackResult, defaultExpanded = false, dept
   // While active it's the live activity; a failure shows why; once finished we
   // show the agent's purpose (its description), never a truncated dump of the
   // report — the full report is one expand away in the Result section.
-  const lastActivity = agent.lastActivity ?? deriveAgentLastActivity(items);
+  const lastActivity = getAgentLastActivity(agent, items);
   let preview: string | undefined;
   let previewIsError = false;
   if (agent.status === "failed") {

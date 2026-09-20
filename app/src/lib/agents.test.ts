@@ -9,6 +9,7 @@ import {
   findRequestAgentId,
   formatAgentDuration,
   getAgentModelLabel,
+  getAgentLastActivity,
   getAgentSubtitle,
   getAgentTitle,
   isMainStreamAgent,
@@ -162,6 +163,28 @@ describe("deriveAgentLastActivity", () => {
     expect(deriveAgentLastActivity(items)).toBe("Edit b.ts");
     expect(deriveAgentLastActivity([])).toBeUndefined();
     expect(deriveAgentLastActivity(undefined)).toBeUndefined();
+  });
+});
+
+describe("agent activity previews", () => {
+  it("replaces legacy message receipts with actual work and falls back to assignment", () => {
+    const items: ChatItem[] = [
+      { kind: "activity-group", activities: [toolUse("t", "Read floor.ts")] },
+    ];
+    for (const lastActivity of ["Message exchanged", "Received a message"]) {
+      const agent: AgentInfo = {
+        agentId: "a",
+        name: "floor",
+        lastActivity,
+        assignment: "Fix floor geometry",
+      };
+      expect(getAgentLastActivity(agent, items)).toBe("Read floor.ts");
+      expect(getAgentLastActivity(agent, undefined)).toBeUndefined();
+      expect(getAgentSubtitle(agent)).toBe("Fix floor geometry");
+    }
+    expect(getAgentLastActivity({ agentId: "a", lastActivity: "Running tests" }, items)).toBe(
+      "Running tests",
+    );
   });
 });
 

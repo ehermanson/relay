@@ -26,13 +26,13 @@ export function getAgentTitle(agent: AgentInfo): string {
 
 /**
  * Secondary line under the title. Avoids repeating whatever the title already
- * shows: when the title is the name, this is the description (or role).
+ * shows: when the title is the name, this is the description, assignment, or role.
  */
 export function getAgentSubtitle(agent: AgentInfo): string | undefined {
   const title = getAgentTitle(agent);
-  const candidates = [agent.description, agent.role];
+  const candidates = [agent.description, agent.assignment, agent.role];
   for (const candidate of candidates) {
-    const trimmed = candidate?.trim();
+    const trimmed = candidate?.replace(/\s+/g, " ").trim();
     if (trimmed && trimmed !== title) return trimmed;
   }
   return undefined;
@@ -163,12 +163,26 @@ export function deriveAgentLastActivity(items: ChatItem[] | undefined): string |
   return undefined;
 }
 
+/** Ignore old transport-only labels still present in hydrated agent state. */
+export function getAgentLastActivity(
+  agent: AgentInfo,
+  items: ChatItem[] | undefined,
+): string | undefined {
+  const activity = agent.lastActivity?.trim();
+  if (activity && activity !== "Message exchanged" && activity !== "Received a message") {
+    return activity;
+  }
+  return deriveAgentLastActivity(items);
+}
+
 /**
  * Relay agent key of a pending provider request, when the server tagged it.
  * `relayAgentId` is the documented field; a request that only carries the
  * provider-native `agentId` is matched against `providerAgentId` by callers.
  */
-export function getRequestRelayAgentId(request: ProviderRequest | null | undefined): string | undefined {
+export function getRequestRelayAgentId(
+  request: ProviderRequest | null | undefined,
+): string | undefined {
   if (!request) return undefined;
   const relay = (request as { relayAgentId?: unknown }).relayAgentId;
   return typeof relay === "string" && relay ? relay : undefined;

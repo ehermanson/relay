@@ -953,7 +953,12 @@ function parentRolloutLines() {
     {
       timestamp: "2026-09-17T20:07:39.000Z",
       type: "session_meta",
-      payload: { id: PARENT_ID, timestamp: "2026-09-17T20:07:39.000Z", cwd: "/tmp/project", cli_version: "0.154.0" },
+      payload: {
+        id: PARENT_ID,
+        timestamp: "2026-09-17T20:07:39.000Z",
+        cwd: "/tmp/project",
+        cli_version: "0.154.0",
+      },
     },
     {
       timestamp: "2026-09-17T20:07:56.141Z",
@@ -1009,7 +1014,10 @@ function parentRolloutLines() {
         author: "/root/jev_research",
         recipient: "/root",
         content: [
-          { type: "input_text", text: "Message Type: MESSAGE\nTask name: /root\nSender: /root/jev_research\nPayload:\n" },
+          {
+            type: "input_text",
+            text: "Message Type: MESSAGE\nTask name: /root\nSender: /root/jev_research\nPayload:\n",
+          },
           { type: "encrypted_content", encrypted_content: FAKE_ENCRYPTED },
         ],
       },
@@ -1038,7 +1046,11 @@ function parentRolloutLines() {
     {
       timestamp: "2026-09-17T20:09:20.360Z",
       type: "response_item",
-      payload: { type: "function_call_output", call_id: "call_wait", output: "{\"status\":\"timeout\"}" },
+      payload: {
+        type: "function_call_output",
+        call_id: "call_wait",
+        output: '{"status":"timeout"}',
+      },
     },
     {
       timestamp: "2026-09-17T20:15:53.791Z",
@@ -1072,7 +1084,12 @@ describe("multi-agent replay (parent rollout)", () => {
     const dir = mkdtempSync(join(tmpdir(), "relay-codex-agents-"));
     try {
       const filePath = join(dir, `rollout-2026-09-17T16-07-39-${PARENT_ID}.jsonl`);
-      writeFileSync(filePath, parentRolloutLines().map((l) => JSON.stringify(l)).join("\n"));
+      writeFileSync(
+        filePath,
+        parentRolloutLines()
+          .map((l) => JSON.stringify(l))
+          .join("\n"),
+      );
       const result = parseCodexTranscript(filePath);
       const messages = result.history.map((h) => h.message);
 
@@ -1082,17 +1099,24 @@ describe("multi-agent replay (parent rollout)", () => {
         "no encrypted blob anywhere in replayed history",
       );
 
-      const spawnUse = messages.find((m) => m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_use");
+      const spawnUse = messages.find(
+        (m) => m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_use",
+      );
       assert.ok(spawnUse, "spawn tool_use present");
       assert.equal(spawnUse.tool, "spawn_agent");
       assert.equal(spawnUse.description, "Spawning agent");
       assert.deepEqual(spawnUse.input, { task_name: "jev_research" });
       assert.equal(
-        messages.filter((m) => m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_use").length,
+        messages.filter(
+          (m) => m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_use",
+        ).length,
         1,
         "SubAgentActivity(started) does not duplicate the spawn tool_use",
       );
-      const spawnResult = messages.find((m) => m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_result");
+      const spawnResult = messages.find(
+        (m) =>
+          m.type === "activity" && m.toolUseId === "call_spawn" && m.activity === "tool_result",
+      );
       assert.ok(spawnResult, "function_call_output yields the tool_result");
 
       const updates = messages.filter((m) => m.type === "agent_update").map((m) => m.agent);
@@ -1102,8 +1126,11 @@ describe("multi-agent replay (parent rollout)", () => {
       assert.equal(updates[0].status, "running");
       assert.equal(updates[0].name, "jev_research");
       assert.equal(updates[0].relation, "child");
-      assert.ok(updates.some((a) => a.lastActivity === "Message exchanged"));
-      assert.ok(updates.some((a) => a.lastActivity === "Sent a message"), "encrypted MESSAGE bumps lastActivity only");
+      assert.ok(updates.every((a) => a.lastActivity !== "Message exchanged"));
+      assert.ok(
+        updates.some((a) => a.lastActivity === "Sent a message"),
+        "encrypted MESSAGE bumps lastActivity only",
+      );
       const final = updates.find((a) => a.result);
       assert.ok(final, "FINAL_ANSWER produces a result");
       assert.equal(final.status, "completed");
@@ -1117,17 +1144,28 @@ describe("multi-agent replay (parent rollout)", () => {
         "encrypted MESSAGE never becomes a user bubble",
       );
 
-      const waitUses = messages.filter((m) => m.type === "activity" && m.toolUseId === "call_wait" && m.activity === "tool_use");
+      const waitUses = messages.filter(
+        (m) => m.type === "activity" && m.toolUseId === "call_wait" && m.activity === "tool_use",
+      );
       assert.equal(waitUses.length, 1, "wait function_call and CollabAgentToolCall dedupe by id");
       assert.equal(waitUses[0].tool, "wait_agent");
       assert.equal(waitUses[0].description, "Waiting for agents");
-      const waitResults = messages.filter((m) => m.type === "activity" && m.toolUseId === "call_wait" && m.activity === "tool_result");
-      assert.equal(waitResults.length, 1, "CollabAgentToolCall and function_call_output yield one tool_result");
+      const waitResults = messages.filter(
+        (m) => m.type === "activity" && m.toolUseId === "call_wait" && m.activity === "tool_result",
+      );
+      assert.equal(
+        waitResults.length,
+        1,
+        "CollabAgentToolCall and function_call_output yield one tool_result",
+      );
 
       // Not a sub-agent rollout: the user-role response_item is never read as an assignment.
       assert.equal(result.firstUserPrompt, undefined);
       for (const m of messages.filter((m) => m.type === "agent_update")) {
-        assert.ok(m.raw === undefined || (typeof m.raw.type === "string" && m.raw.agents_states === undefined));
+        assert.ok(
+          m.raw === undefined ||
+            (typeof m.raw.type === "string" && m.raw.agents_states === undefined),
+        );
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1151,7 +1189,11 @@ describe("multi-agent replay (parent rollout)", () => {
       {
         timestamp: "2026-09-17T20:09:20.360Z",
         type: "response_item",
-        payload: { type: "function_call_output", call_id: "call_wait_2", output: "{\"status\":\"timeout\"}" },
+        payload: {
+          type: "function_call_output",
+          call_id: "call_wait_2",
+          output: '{"status":"timeout"}',
+        },
       },
       eventItem("2026-09-17T20:09:20.362Z", PARENT_ID, {
         type: "CollabAgentToolCall",
@@ -1163,7 +1205,9 @@ describe("multi-agent replay (parent rollout)", () => {
         agents_states: {},
       }),
     ];
-    const messages = entries.flatMap((e) => convertCodexTranscriptEntry(e, ctx)).map((r) => r.message);
+    const messages = entries
+      .flatMap((e) => convertCodexTranscriptEntry(e, ctx))
+      .map((r) => r.message);
     assert.equal(messages.filter((m) => m.activity === "tool_use").length, 1);
     assert.equal(messages.filter((m) => m.activity === "tool_result").length, 1);
   });
@@ -1190,7 +1234,11 @@ describe("multi-agent replay (parent rollout)", () => {
     assert.equal(a.status, "completed");
     assert.equal(a.result, "All done.");
     assert.equal(b.status, "failed");
-    assert.ok(!JSON.stringify(messages.filter((m) => m.type === "agent_update").map((m) => m.raw)).includes("All done."));
+    assert.ok(
+      !JSON.stringify(messages.filter((m) => m.type === "agent_update").map((m) => m.raw)).includes(
+        "All done.",
+      ),
+    );
   });
 
   it("renders a plaintext MESSAGE report as an agent-authored user message", () => {
@@ -1226,7 +1274,11 @@ describe("multi-agent replay (parent rollout)", () => {
     assert.equal(results.length, 1);
     assert.equal(results[0].message.type, "user");
     assert.equal(results[0].message.text, "Halfway there, two files left.");
-    assert.deepEqual(results[0].message.author, { kind: "agent", name: "jev_research", agentId: CHILD_ID });
+    assert.deepEqual(results[0].message.author, {
+      kind: "agent",
+      name: "jev_research",
+      agentId: CHILD_ID,
+    });
   });
 
   it("maps a camelCase collabAgentToolCall spawn with model onto an agent_update", () => {
@@ -1317,9 +1369,15 @@ describe("readCodexAgentHistory", () => {
           type: "message",
           role: "user",
           content: [
-            { type: "input_text", text: "<recommended_plugins>\nHere is a list…\n</recommended_plugins>" },
+            {
+              type: "input_text",
+              text: "<recommended_plugins>\nHere is a list…\n</recommended_plugins>",
+            },
             { type: "input_text", text: "# AGENTS.md instructions for /tmp/project\n…" },
-            { type: "input_text", text: "<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>" },
+            {
+              type: "input_text",
+              text: "<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>",
+            },
           ],
         },
       },
@@ -1334,7 +1392,9 @@ describe("readCodexAgentHistory", () => {
         payload: {
           type: "message",
           role: "user",
-          content: [{ type: "input_text", text: "Research whether Jev fits our prompt classifier." }],
+          content: [
+            { type: "input_text", text: "Research whether Jev fits our prompt classifier." },
+          ],
         },
       },
       {
@@ -1345,7 +1405,10 @@ describe("readCodexAgentHistory", () => {
           author: "/root",
           recipient: "/root/jev_research",
           content: [
-            { type: "input_text", text: "Message Type: NEW_TASK\nTask name: /root/jev_research\nSender: /root\nPayload:\n" },
+            {
+              type: "input_text",
+              text: "Message Type: NEW_TASK\nTask name: /root/jev_research\nSender: /root\nPayload:\n",
+            },
             { type: "encrypted_content", encrypted_content: FAKE_ENCRYPTED },
           ],
         },
@@ -1379,7 +1442,9 @@ describe("readCodexAgentHistory", () => {
       mkdirSync(join(dir, "sessions", "2026", "09", "17"), { recursive: true });
       writeFileSync(
         join(dir, "sessions", "2026", "09", "17", `rollout-2026-09-17T16-07-56-${CHILD_ID}.jsonl`),
-        childRolloutLines().map((l) => JSON.stringify(l)).join("\n"),
+        childRolloutLines()
+          .map((l) => JSON.stringify(l))
+          .join("\n"),
       );
 
       const history = await readCodexAgentHistory(dir, CHILD_ID);
@@ -1394,7 +1459,11 @@ describe("readCodexAgentHistory", () => {
       assert.equal(first.agent.role, "researcher");
       assert.equal(first.agent.model, "gpt-5.3-codex-spark");
       assert.equal(first.agent.assignment, "Research whether Jev fits our prompt classifier.");
-      assert.equal(first.agent.parentAgentId, undefined, "direct child of the root has no parentAgentId");
+      assert.equal(
+        first.agent.parentAgentId,
+        undefined,
+        "direct child of the root has no parentAgentId",
+      );
       assert.equal(first.agent.relation, "child");
 
       const assignment = history[1].message;
@@ -1406,7 +1475,11 @@ describe("readCodexAgentHistory", () => {
       const rest = history.slice(2).map((h) => h.message);
       assert.ok(rest.length >= 3, "command tool_use/result + agent message");
       for (const message of rest) {
-        assert.notEqual(message.type, "agent_update", "interactions with the parent are not agents of this transcript");
+        assert.notEqual(
+          message.type,
+          "agent_update",
+          "interactions with the parent are not agents of this transcript",
+        );
         assert.equal(message.agentId, CHILD_ID, `${message.type} attributed to child`);
       }
       assert.ok(rest.some((m) => m.type === "output" && m.text === "Jev looks viable."));
@@ -1472,7 +1545,9 @@ describe("readCodexAgentHistory", () => {
       writeFileSync(filePath, [...lines, extra].map((l) => JSON.stringify(l)).join("\n"));
       const third = await readCodexAgentHistory(dir, CACHED);
       assert.notEqual(third, first);
-      assert.ok(third.some((h) => h.message.type === "output" && h.message.text === "Second thought."));
+      assert.ok(
+        third.some((h) => h.message.type === "output" && h.message.text === "Second thought."),
+      );
 
       // A vanished rollout drops the cached path and returns null again.
       rmSync(filePath);

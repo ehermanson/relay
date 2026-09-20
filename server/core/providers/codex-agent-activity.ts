@@ -78,7 +78,9 @@ export function mapCodexAgentStatus(status: string | undefined): AgentLifecycle 
  * shape (`{ agent_thread_id, agent_path, status }` — whose `status` may itself
  * be either of the first two).
  */
-export function parseCodexAgentStatus(value: unknown): Pick<CodexCollabAgentState, "status" | "statusDetail"> {
+export function parseCodexAgentStatus(
+  value: unknown,
+): Pick<CodexCollabAgentState, "status" | "statusDetail"> {
   if (typeof value === "string") return value ? { status: value } : {};
   const record = asRecord(value);
   if (!record) return {};
@@ -132,7 +134,9 @@ export interface CodexSubAgentActivity {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function pickString(record: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -262,7 +266,8 @@ export function normalizeCodexCollabToolCall(item: unknown): CodexCollabToolCall
       agentsStates[threadId] = {
         ...agentsStates[threadId],
         agentThreadId: threadId,
-        agentPath: agentsStates[threadId]?.agentPath ?? pickString(agent!, "agent_path", "agentPath"),
+        agentPath:
+          agentsStates[threadId]?.agentPath ?? pickString(agent!, "agent_path", "agentPath"),
       };
     }
   }
@@ -305,8 +310,7 @@ export function sanitizeCodexCollabRaw(item: unknown): unknown {
   if (!record) return item;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
-    out[key] =
-      typeof value === "string" && isCodexEncryptedText(value) ? "[encrypted]" : value;
+    out[key] = typeof value === "string" && isCodexEncryptedText(value) ? "[encrypted]" : value;
   }
   return out;
 }
@@ -362,15 +366,18 @@ export function buildCodexCollabToolUse(
     tool: normalized,
     toolUseId,
     description: describeCodexCollabTool(normalized),
-    detail: target ? codexAgentNameFromPath(target) ?? target : undefined,
+    detail: target ? (codexAgentNameFromPath(target) ?? target) : undefined,
     input,
-    inputDescription: target ? codexAgentNameFromPath(target) ?? target : undefined,
+    inputDescription: target ? (codexAgentNameFromPath(target) ?? target) : undefined,
     ...(raw !== undefined ? { raw } : {}),
   };
 }
 
 /** Root-thread `tool_result` for a completed collaboration item. */
-export function buildCodexCollabToolResult(call: CodexCollabToolCall, raw?: unknown): ActivityMessage {
+export function buildCodexCollabToolResult(
+  call: CodexCollabToolCall,
+  raw?: unknown,
+): ActivityMessage {
   const failed = call.status === "failed" || call.status === "declined";
   return {
     type: "activity",
@@ -461,7 +468,11 @@ export function buildCodexCollabAgentUpdates(call: CodexCollabToolCall, now: num
       if (call.reasoningEffort) info.reasoningEffort = call.reasoningEffort;
       if (call.prompt) info.assignment = call.prompt;
     }
-    if (call.tool === "resume_agent" || call.tool === "send_input" || call.tool === "followup_task") {
+    if (
+      call.tool === "resume_agent" ||
+      call.tool === "send_input" ||
+      call.tool === "followup_task"
+    ) {
       if (call.model) info.model = call.model;
       if (call.reasoningEffort) info.reasoningEffort = call.reasoningEffort;
     }
@@ -478,19 +489,13 @@ export function buildCodexCollabAgentUpdates(call: CodexCollabToolCall, now: num
     } else if (isFailedCollabCall(call)) {
       info.lastActivity = `${describeCodexCollabTool(call.tool)} failed`;
     }
-    if (call.tool === "send_message" || call.tool === "send_input") {
-      info.lastActivity = "Received a message";
-    }
     updates.push(info);
   }
   return updates;
 }
 
 /** Agent update for a `SubAgentActivity` item (spawn / interaction / interrupt / completion). */
-export function buildCodexSubAgentUpdate(
-  activity: CodexSubAgentActivity,
-  now: number,
-): AgentInfo {
+export function buildCodexSubAgentUpdate(activity: CodexSubAgentActivity, now: number): AgentInfo {
   const info: AgentInfo = {
     agentId: activity.agentThreadId,
     providerAgentId: activity.agentThreadId,
@@ -505,7 +510,8 @@ export function buildCodexSubAgentUpdate(
       info.startedAt = now;
       break;
     case "interacted":
-      info.lastActivity = "Message exchanged";
+      // Transport activity says nothing about the child's work. Preserve its
+      // last useful activity instead of replacing it with a message receipt.
       break;
     case "interrupted":
       info.status = "stopped";

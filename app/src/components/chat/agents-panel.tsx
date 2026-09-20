@@ -5,7 +5,7 @@ import type { ChatItem } from "@/lib/chat-types";
 import {
   buildAgentAnchorIndex,
   buildAgentTree,
-  deriveAgentLastActivity,
+  getAgentLastActivity,
   getAgentSubtitle,
   getAgentTitle,
   isAgentActive,
@@ -42,7 +42,13 @@ function buildSummary(agents: Record<string, AgentInfo>): SummaryChip[] {
     if (a.resultIsError && (a.status === "completed" || a.status === undefined)) key = "failed";
     counts[key] = (counts[key] ?? 0) + 1;
   }
-  const order: { key: AgentLifecycle | "unknown"; label: string; color: string; dot: string; pulse?: boolean }[] = [
+  const order: {
+    key: AgentLifecycle | "unknown";
+    label: string;
+    color: string;
+    dot: string;
+    pulse?: boolean;
+  }[] = [
     { key: "running", label: "running", color: "text-claude", dot: "bg-claude", pulse: true },
     { key: "waiting", label: "needs input", color: "text-warning", dot: "bg-warning", pulse: true },
     { key: "failed", label: "failed", color: "text-error", dot: "bg-error" },
@@ -53,7 +59,13 @@ function buildSummary(agents: Record<string, AgentInfo>): SummaryChip[] {
   ];
   return order
     .filter((o) => counts[o.key] > 0)
-    .map((o) => ({ label: o.label, count: counts[o.key], color: o.color, dot: o.dot, pulse: o.pulse }));
+    .map((o) => ({
+      label: o.label,
+      count: counts[o.key],
+      color: o.color,
+      dot: o.dot,
+      pulse: o.pulse,
+    }));
 }
 
 function AgentRow({
@@ -75,7 +87,7 @@ function AgentRow({
   const ctx = useAgentCards();
   const modelLabel = useAgentModelLabel(ctx?.instanceId, agent, provider);
   const active = isAgentActive(agent.status);
-  const lastActivity = agent.lastActivity ?? deriveAgentLastActivity(items);
+  const lastActivity = getAgentLastActivity(agent, items);
   // Live activity while working; purpose (not a report dump) once finished.
   let detailLine: string | undefined;
   if (agent.status === "failed") detailLine = agent.statusDetail ?? subtitle;
@@ -97,7 +109,11 @@ function AgentRow({
           <span className="flex items-center gap-1.5">
             <span className="truncate text-[0.8125rem] font-medium text-text">{title}</span>
             {hasPendingRequest && (
-              <ShieldAlert size={11} className="shrink-0 text-warning" aria-label="Needs approval" />
+              <ShieldAlert
+                size={11}
+                className="shrink-0 text-warning"
+                aria-label="Needs approval"
+              />
             )}
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.6875rem]">
@@ -153,8 +169,13 @@ export const AgentsPanel = memo(function AgentsPanel({
       {summary.length > 0 && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 px-3.5 py-2.5">
           {summary.map((chip) => (
-            <span key={chip.label} className={`inline-flex items-center gap-1.5 text-[0.6875rem] ${chip.color}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${chip.dot} ${chip.pulse ? "animate-pulse-dot" : ""}`} />
+            <span
+              key={chip.label}
+              className={`inline-flex items-center gap-1.5 text-[0.6875rem] ${chip.color}`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${chip.dot} ${chip.pulse ? "animate-pulse-dot" : ""}`}
+              />
               <span className="tabular-nums font-medium">{chip.count}</span>
               <span className="text-muted/70">{chip.label}</span>
             </span>
