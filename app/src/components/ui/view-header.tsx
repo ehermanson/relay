@@ -23,12 +23,7 @@ interface ViewHeaderProps {
 export function ViewHeader({ children, className, style }: ViewHeaderProps) {
   return (
     <div
-      // Pinned opaque edge: iOS 26+ standalone PWAs paint a Liquid Glass
-      // scroll-edge blur under the status bar that bleeds onto the header.
-      // A sticky top-0 element with a solid background makes WebKit replace
-      // that blur with a solid fill. Keep it opaque (no transparency) and
-      // pinned; do not remove viewport-fit=cover or the body safe-area padding.
-      className={`sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-border/70 bg-bg px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
+      className={`flex shrink-0 items-center gap-3 border-b border-border/70 px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
       style={style}
     >
       {children}
