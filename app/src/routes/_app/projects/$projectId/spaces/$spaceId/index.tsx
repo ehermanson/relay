@@ -5,7 +5,6 @@ import { createFileRoute, redirect, useNavigate, useParams } from "@tanstack/rea
 import { toast } from "sonner";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useProjectContext } from "@/context/project-context";
-import { useImmersiveTopInset } from "@/hooks/use-immersive-top-inset";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useTerminalMessages } from "@/hooks/use-terminal-messages";
 import { useTerminalShortcut } from "@/hooks/use-terminal-shortcut";
@@ -43,9 +42,6 @@ import type { TerminalScope } from "@shared/types";
 const PENDING_NEW_CHAT_TAB_ID = "__pending_space_new_chat__";
 
 export function SpaceView() {
-  // The space header owns the top safe-area inset so iOS 26+ fills the top edge
-  // solid instead of blurring the header. See use-immersive-top-inset.ts.
-  useImmersiveTopInset();
   const {
     projectId: routeProjectId,
     spaceId,
