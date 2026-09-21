@@ -23,6 +23,17 @@ export function capDetail(text: string): string {
 /** Tools that manage tasks/todos — intercepted for sidecar task tracking. */
 export const TASK_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"]);
 
+/**
+ * Claude tools that delegate work to a subagent. `Agent` is the current name,
+ * `Task` the legacy one. Deliberately excludes the TaskCreate/TaskUpdate family
+ * (those are todo bookkeeping, see TASK_TOOLS).
+ */
+export const AGENT_DELEGATION_TOOLS = new Set(["Agent", "Task"]);
+
+export function isAgentDelegationTool(toolName: string | undefined): boolean {
+  return !!toolName && AGENT_DELEGATION_TOOLS.has(toolName);
+}
+
 /** Tools that write files — intercepted for sidecar file tracking. */
 export const FILE_WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 

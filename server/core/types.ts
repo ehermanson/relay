@@ -43,6 +43,8 @@ export interface SpaceInfo {
   createdAt: number;
   lastActivityAt: number;
   chatCount: number;
+  /** True when the user pinned this space to the top of the inbox */
+  pinned?: boolean;
   mergeCommit?: string | null;
   mergeMethod?: MergeMethod | null;
   mergedAt?: number | null;
@@ -343,7 +345,15 @@ export interface ProviderRequest {
   files?: string[];
   server?: string;
   raw?: Record<string, unknown>;
+  /** Provider-native agent id of the requesting agent (Claude `agentID`), when the request came from a subagent. */
   agentId?: string;
+  /**
+   * Relay agent key (`AgentInfo.agentId`) of the requesting agent when the
+   * provider-native id could be mapped to a known agent of this chat. The UI
+   * badges the matching agent card with the pending request; absent means the
+   * request belongs to the chat's main agent or the mapping is unknown.
+   */
+  relayAgentId?: string;
 }
 
 export interface ProviderRequestResponse {
@@ -437,6 +447,13 @@ export interface ProviderCapabilities {
    * UI verbatim — the UI must NOT branch on provider name to derive it.
    */
   composerHints?: { helpText: string };
+  /**
+   * The provider reports delegated agent work (subagents / teammates) through
+   * Relay's shared agent contract: `agent_update` messages plus `agentId`
+   * attribution on output/activity messages. When true the UI renders in-chat
+   * agent cards and the Agents sidecar; when false/absent neither appears.
+   */
+  supportsAgentActivity?: boolean;
 }
 
 export type ProviderInstallMethod = "npm" | "brew" | "bun" | "pnpm" | "native" | "manual";
@@ -925,8 +942,28 @@ export interface OutputMessage {
   modelTimestamp?: number;
   /** True when this turn was cut short by a user interrupt before completion. */
   aborted?: boolean;
+  /**
+   * Delegated-agent attribution. When set, this text was produced by the
+   * child agent with this Relay agent key (see `AgentInfo.agentId`) and must be
+   * rendered inside that agent's nested transcript, never in the main stream.
+   */
+  agentId?: string;
   /** Raw SDK/provider message for debug display. */
   raw?: unknown;
+}
+
+/**
+ * Who authored a user-role message. Provider transports deliver agent-to-agent
+ * reports (peer/teammate messages, task notifications) inside user envelopes,
+ * so the transport role alone must never decide displayed authorship. Absent
+ * `author` means human (legacy/compat).
+ */
+export interface MessageAuthor {
+  kind: "human" | "agent";
+  /** Relay agent key when the sender is a known agent of this chat (see AgentInfo.agentId). */
+  agentId?: string;
+  /** Sender display name as reported by the provider (reported speech, not authority). */
+  name?: string;
 }
 
 export interface UserMessage {
@@ -938,6 +975,15 @@ export interface UserMessage {
   eventSequence?: number;
   /** If true, this message was injected programmatically (e.g. auto-continue after restart) and should be hidden from the chat UI. */
   internal?: boolean;
+  /**
+   * Authorship. `kind: "agent"` marks an inbound agent-to-agent message (a
+   * peer or child reporting to the orchestrator); the UI renders it as an
+   * agent note, never as a human bubble. `text` carries only the meaningful
+   * body — provider instruction wrappers are stripped server-side.
+   */
+  author?: MessageAuthor;
+  /** Delegated-agent attribution: this user-role message belongs to the child agent's own transcript (e.g. its assignment prompt). */
+  agentId?: string;
   /** True when this message was queued while the agent was processing and hasn't been delivered yet. */
   queued?: boolean;
   /** Stable id for a queued message so it can be removed/edited before dispatch. */
@@ -1071,7 +1117,89 @@ export interface ActivityMessage {
     nonExecutionKind?: string;
     userFeedback?: string;
   };
+  /**
+   * Delegated-agent attribution. When set, this activity was performed by the
+   * child agent with this Relay agent key and belongs in its nested transcript.
+   */
+  agentId?: string;
   /** Raw SDK/provider message for debug display. */
+  raw?: unknown;
+}
+
+// =============================================================================
+// Delegated agent work (shared across providers)
+// =============================================================================
+
+/**
+ * Lifecycle of a delegated agent as far as the provider has told us.
+ * `unknown` is legitimate — never guess a terminal state from silence.
+ */
+export type AgentLifecycle =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "unknown";
+
+/**
+ * How this agent relates to the chat's main agent. `child` = spawned by (a
+ * descendant of) this chat's agent; `teammate` = a provider-declared team
+ * member; `peer` = another session that messaged this one. Only set from
+ * provider-exposed relationships — never inferred from names.
+ */
+export type AgentRelation = "child" | "teammate" | "peer";
+
+/**
+ * Shared representation of one delegated agent. Emitted via `agent_update`
+ * as a sparse upsert: every field except `agentId` is optional and omitted
+ * fields leave the previous value untouched. Unknown metadata stays absent.
+ */
+export interface AgentInfo {
+  /**
+   * Relay-stable key, opaque to the UI. Attributed messages reference it via
+   * `agentId`. Claude: the spawning tool_use id; Codex: the child thread id.
+   */
+  agentId: string;
+  /** Provider-native agent identity (Claude agentId, Codex thread id) when known; used for history lookups and request matching. */
+  providerAgentId?: string;
+  /** Relay key of the agent that spawned this one when it is itself a child (nested delegation). Absent = direct child of the chat's agent. */
+  parentAgentId?: string;
+  /** toolUseId of the delegation call in the parent transcript; the in-chat card anchors here. */
+  originToolUseId?: string;
+  relation?: AgentRelation;
+  /** Assignment/name given by the orchestrator (Claude `name`, Codex `agentNickname`). */
+  name?: string;
+  /** Provider role/type (Claude `subagent_type`, Codex `agentRole`). */
+  role?: string;
+  /** Short human description of the assignment (Claude `description`). */
+  description?: string;
+  /** Full assignment prompt when available. */
+  assignment?: string;
+  /** Model the child is running when the provider reports it. */
+  model?: string;
+  reasoningEffort?: string;
+  status?: AgentLifecycle;
+  /** Free-text status detail, e.g. a failure reason or "interrupted". */
+  statusDetail?: string;
+  startedAt?: number;
+  endedAt?: number;
+  /** Brief latest-activity summary (last tool / progress line). */
+  lastActivity?: string;
+  /** Final report text returned to the orchestrator, when known. */
+  result?: string;
+  resultIsError?: boolean;
+  usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
+}
+
+/** Sparse upsert of one delegated agent. Replayable (part of history). */
+export interface AgentUpdateMessage {
+  type: "agent_update";
+  agent: AgentInfo;
+  instanceId?: string;
+  eventSequence?: number;
+  /** Raw provider message for debug display. */
   raw?: unknown;
 }
 
@@ -1115,14 +1243,6 @@ export interface InstanceHistoryMessage {
   replayMode?: "full" | "delta";
   latestSequence?: number;
   replayEpoch?: number;
-}
-
-export interface TranscriptMessage {
-  type: "transcript";
-  title: string;
-  result: string;
-  instanceId?: string;
-  eventSequence?: number;
 }
 
 export interface ScanCompleteMessage {
@@ -1289,7 +1409,7 @@ export type ServerMessage =
   | ProviderGlobalStateListMessage
   | ProviderGlobalStateMessage
   | InstanceHistoryMessage
-  | TranscriptMessage
+  | AgentUpdateMessage
   | ScanCompleteMessage
   | ProjectsChangedMessage
   | TasksChangedMessage

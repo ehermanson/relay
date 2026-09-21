@@ -3,6 +3,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import type {
   ActivityMessage,
+  AgentInfo,
+  AgentUpdateMessage,
   EditToolInput,
   FileChange,
   HistoryEntry,
@@ -21,6 +23,22 @@ import {
   buildCodexGenericToolUse,
   extractCodexToolOutput,
 } from "#core/providers/codex-tool-activity.js";
+import {
+  buildCodexCollabAgentUpdates,
+  buildCodexCollabToolResult,
+  buildCodexCollabToolUse,
+  buildCodexCollabToolUseFromCall,
+  buildCodexSubAgentUpdate,
+  codexAgentNameFromPath,
+  codexAgentUpdateProvenance,
+  isCodexCollabFunctionName,
+  normalizeCodexCollabToolCall,
+  normalizeCodexCollabToolName,
+  normalizeCodexSubAgentActivity,
+  parseCodexAgentReport,
+  sanitizeCodexCollabArguments,
+} from "#core/providers/codex-agent-activity.js";
+import { isSubagentSessionMeta } from "#core/providers/codex-discovery.js";
 
 const MAX_HISTORY = 1000;
 const TOOL_OUTPUT_MARKER = "\nOutput:\n";
@@ -35,6 +53,19 @@ interface CodexReplayContext {
   pendingCalls: Map<string, CodexPendingCall>;
   /** Deduplicate native command events against direct exec_command calls in this turn. */
   commandIds?: Set<string>;
+  /** Collaboration call ids whose tool_use was already emitted (function_call vs typed item). */
+  collabIds?: Set<string>;
+  /** Collaboration call ids whose tool_result was already emitted (function_call_output vs typed item). */
+  collabResultIds?: Set<string>;
+  /** Agent path (`/root/<name>`) → child thread id, from SubAgentActivity / CollabAgentToolCall. */
+  agentPaths?: Map<string, string>;
+  /**
+   * True when `session_meta` marks this rollout as a sub-agent's. Only then is
+   * the first non-injected user-role `response_item` read (as the assignment).
+   */
+  isSubagent?: boolean;
+  /** First real (non-injected) user-role `response_item` message — a sub-agent's assignment. */
+  firstUserPrompt?: string;
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
   stats: SessionStats;
@@ -45,10 +76,47 @@ interface CodexTranscriptParseResult {
   cwd: string;
   /** Session start from `session_meta`, when present. */
   createdAt?: number;
+  /** Raw `session_meta.payload`, when present (sub-agent spawn metadata lives here). */
+  sessionMeta?: Record<string, unknown>;
+  /** First non-injected user-role `response_item` message (see CodexReplayContext). */
+  firstUserPrompt?: string;
   tasks: Map<string, TaskItem>;
   files: Map<string, FileChange>;
   history: HistoryEntry[];
   stats: SessionStats;
+}
+
+/**
+ * Codex front-loads its own user-role injections before the first real turn.
+ * Anything starting with one of these is context, never the assignment. The
+ * list is deliberately conservative: an unrecognized injection is shown as the
+ * assignment rather than a real assignment being hidden — but only inside
+ * sub-agent rollouts (see `CodexReplayContext.isSubagent`).
+ */
+const CODEX_INJECTED_USER_PREFIXES = [
+  "<recommended_plugins>",
+  "# AGENTS.md",
+  "<environment_context>",
+  "<user_instructions>",
+  "<space-context>",
+  "<permissions instructions>",
+  "<collaboration_mode>",
+  "<turn_aborted>",
+  "<skill",
+];
+
+function isCodexInjectedUserText(text: string): boolean {
+  const trimmed = text.trimStart();
+  if (!trimmed) return true;
+  if (CODEX_INJECTED_USER_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return true;
+  return isInternalInjectedUserText(trimmed);
+}
+
+function agentUpdateEntry(timestamp: number, agent: AgentInfo, raw?: unknown): HistoryEntry {
+  return {
+    timestamp,
+    message: { type: "agent_update", agent, ...(raw !== undefined ? { raw } : {}) } as AgentUpdateMessage,
+  };
 }
 
 function createZeroStats(): SessionStats {
@@ -355,7 +423,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-/** Join the text parts of a v2 thread-item `content` array (`[{type:"Text"|"text", text}]`). */
+/**
+ * Join the text parts of a content array: v2 thread items (`[{type:"Text"|"text", text}]`)
+ * and `response_item` messages (`[{type:"input_text"|"output_text", text}]`) alike —
+ * any part with a string `text` counts; image/audio parts contribute nothing.
+ */
 function joinItemContentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -442,12 +514,82 @@ export function convertCodexTranscriptEntry(
         : null;
     if (!payload) return results;
 
+    // User-role `response_item` messages are never turns (they include Codex's
+    // own injections; the filtered event_msg stream is the source of visible
+    // user turns). The single exception: in a sub-agent rollout the first one
+    // that isn't a known injection is the child's assignment, which exists
+    // nowhere else in plaintext. Recorded only, never emitted here.
+    if (payload.type === "message" && payload.role === "user") {
+      if (ctx.isSubagent && ctx.firstUserPrompt === undefined) {
+        const text = stripInjectedWrapper(joinItemContentText(payload.content));
+        if (text.trim() && !isCodexInjectedUserText(text)) ctx.firstUserPrompt = text;
+      }
+      return results;
+    }
+
+    // Child ↔ parent reports. FINAL_ANSWER carries the child's result in
+    // plaintext; MESSAGE / NEW_TASK bodies are usually encrypted, and
+    // ciphertext is never shown — only the fact that a message was sent.
+    if (payload.type === "agent_message") {
+      const report = parseCodexAgentReport(payload);
+      if (!report) return results;
+      const agentId = ctx.agentPaths?.get(report.author);
+      const name = codexAgentNameFromPath(report.author);
+      // No `raw` on these entries: the payload carries encrypted_content.
+      if (report.messageType === "FINAL_ANSWER") {
+        if (!agentId) return results;
+        const agent: AgentInfo = { agentId, status: "completed", endedAt: timestamp };
+        if (report.payload) agent.result = report.payload;
+        results.push(agentUpdateEntry(timestamp, agent));
+        return results;
+      }
+      if (report.payload) {
+        results.push({
+          timestamp,
+          message: {
+            type: "user",
+            text: report.payload,
+            author: { kind: "agent", ...(name ? { name } : {}), ...(agentId ? { agentId } : {}) },
+          } as UserMessage,
+        });
+      } else if (agentId) {
+        results.push(agentUpdateEntry(timestamp, { agentId, lastActivity: "Sent a message" }));
+      }
+      return results;
+    }
+
     if (
       (payload.type === "function_call" || payload.type === "custom_tool_call") &&
       typeof payload.name === "string"
     ) {
       const rawArguments =
         typeof payload.arguments === "string" ? payload.arguments : payload.input;
+
+      // Collaboration tools (spawn_agent, send_message, wait_agent, …). The
+      // `message` argument is encrypted in 0.154 rollouts, so the input is
+      // sanitized down to plaintext fields (task_name, target, timeout_ms).
+      if (
+        payload.namespace === "collaboration" ||
+        (typeof payload.namespace !== "string" && isCodexCollabFunctionName(payload.name))
+      ) {
+        const callId = typeof payload.call_id === "string" ? payload.call_id : undefined;
+        const tool = normalizeCodexCollabToolName(payload.name);
+        if (callId) {
+          ctx.pendingCalls.set(callId, { name: tool });
+          if (ctx.collabIds?.has(callId)) return results;
+          (ctx.collabIds ??= new Set()).add(callId);
+        }
+        // No `raw`: the function_call arguments carry the encrypted message.
+        results.push({
+          timestamp,
+          message: buildCodexCollabToolUse(
+            tool,
+            callId ?? `codex-collab-${timestamp}`,
+            sanitizeCodexCollabArguments(rawArguments),
+          ),
+        });
+        return results;
+      }
       if (payload.name === "exec_command" && typeof payload.call_id === "string") {
         (ctx.commandIds ??= new Set()).add(payload.call_id);
       }
@@ -555,6 +697,12 @@ export function convertCodexTranscriptEntry(
       const call = callId ? ctx.pendingCalls.get(callId) : undefined;
       if (callId) ctx.pendingCalls.delete(callId);
       if (call?.name === "update_plan") return results;
+      // A collaboration call's result may also be synthesized from its typed
+      // `CollabAgentToolCall` item (either order); emit exactly one per call id.
+      if (callId && ctx.collabIds?.has(callId)) {
+        if (ctx.collabResultIds?.has(callId)) return results;
+        (ctx.collabResultIds ??= new Set()).add(callId);
+      }
       results.push({
         timestamp,
         message: { ...buildToolResultActivity(call, payload.output), toolUseId: callId },
@@ -578,6 +726,50 @@ export function convertCodexTranscriptEntry(
     // and their parsed metadata; the outer ExecuteCode row remains inspectable.
     if (payload.type === "item_completed") {
       const item = asRecord(payload.item);
+
+      // Multi-agent items → the same tool_use + agent_update sequence as live.
+      // Ids coincide with the collaboration function_call ids (spawn_agent's
+      // call_id is SubAgentActivity(started).id), so dedupe the tool_use.
+      const collabCall = normalizeCodexCollabToolCall(item);
+      if (collabCall) {
+        for (const state of Object.values(collabCall.agentsStates)) {
+          if (state.agentPath && state.agentThreadId) {
+            (ctx.agentPaths ??= new Map()).set(state.agentPath, state.agentThreadId);
+          }
+        }
+        // No `raw` on collab entries: `prompt` may be encrypted.
+        if (!ctx.collabIds?.has(collabCall.id)) {
+          (ctx.collabIds ??= new Set()).add(collabCall.id);
+          results.push({ timestamp, message: buildCodexCollabToolUseFromCall(collabCall) });
+        }
+        const provenance = codexAgentUpdateProvenance(item);
+        for (const update of buildCodexCollabAgentUpdates(collabCall, timestamp)) {
+          results.push(agentUpdateEntry(timestamp, update, provenance));
+        }
+        // Exactly one tool_result per call id. A pending function_call means its
+        // function_call_output (richer: carries the output) will produce it;
+        // otherwise synthesize one here unless the output already did.
+        if (!ctx.pendingCalls.has(collabCall.id) && !ctx.collabResultIds?.has(collabCall.id)) {
+          (ctx.collabResultIds ??= new Set()).add(collabCall.id);
+          results.push({ timestamp, message: buildCodexCollabToolResult(collabCall) });
+        }
+        return results;
+      }
+      const subAgent = normalizeCodexSubAgentActivity(item);
+      if (subAgent) {
+        if (subAgent.agentPath) {
+          (ctx.agentPaths ??= new Map()).set(subAgent.agentPath, subAgent.agentThreadId);
+        }
+        results.push(
+          agentUpdateEntry(
+            timestamp,
+            buildCodexSubAgentUpdate(subAgent, timestamp),
+            codexAgentUpdateProvenance(item),
+          ),
+        );
+        return results;
+      }
+
       if (item?.type === "CommandExecution" && typeof item.id === "string") {
         const rawCommand = item.command;
         const command =
@@ -848,6 +1040,7 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
 
   let cwd = "";
   let createdAt: number | undefined;
+  let sessionMeta: Record<string, unknown> | undefined;
   const history: HistoryEntry[] = [];
   const ctx: CodexReplayContext = {
     pendingCalls: new Map(),
@@ -862,6 +1055,10 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
       const entry = JSON.parse(line) as Record<string, unknown>;
       if (!cwd && entry.type === "session_meta") {
         const payload = asRecord(entry.payload);
+        if (payload && !sessionMeta) {
+          sessionMeta = payload;
+          ctx.isSubagent = isSubagentSessionMeta(payload);
+        }
         if (payload && typeof payload.cwd === "string") {
           cwd = payload.cwd;
           ctx.cwd = cwd;
@@ -886,9 +1083,194 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
   return {
     cwd,
     createdAt,
+    sessionMeta,
+    firstUserPrompt: ctx.firstUserPrompt,
     tasks: ctx.tasks,
     files: ctx.files,
     history,
     stats: ctx.stats,
   };
+}
+
+// =============================================================================
+// Sub-agent history (file-based, read-only)
+// =============================================================================
+
+/** Sub-agent spawn metadata from a child rollout's `session_meta.payload`. */
+export interface CodexSubagentMeta {
+  threadId: string;
+  parentThreadId?: string;
+  /** Thread id the rollout was recorded under (`session_id`) — the root for depth-1 children. */
+  sessionThreadId?: string;
+  depth?: number;
+  agentPath?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  model?: string;
+}
+
+export function extractCodexSubagentMeta(
+  payload: Record<string, unknown> | undefined,
+): CodexSubagentMeta | null {
+  if (!payload || typeof payload.id !== "string") return null;
+  const spawn = asRecord(asRecord(asRecord(payload.source)?.subagent)?.thread_spawn);
+  const str = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+  return {
+    threadId: payload.id,
+    parentThreadId: str(spawn?.parent_thread_id) ?? str(payload.parent_thread_id),
+    sessionThreadId: str(payload.session_id),
+    depth: typeof spawn?.depth === "number" ? spawn.depth : undefined,
+    agentPath: str(spawn?.agent_path) ?? str(payload.agent_path),
+    agentNickname: str(spawn?.agent_nickname) ?? str(payload.agent_nickname),
+    agentRole: str(spawn?.agent_role) ?? str(payload.agent_role),
+    model: str(payload.model),
+  };
+}
+
+// Locating a rollout walks all of `~/.codex/sessions`; parsing one can mean
+// tens of MB. Both are cached: thread id → path (validated with existsSync on
+// every hit, dropped on a miss) and path → parsed history keyed by mtime+size,
+// so a child still being written is re-read only when the file changes.
+const agentRolloutPathCache = new Map<string, string>();
+const agentHistoryCache = new Map<
+  string,
+  { mtimeMs: number; size: number; history: HistoryEntry[] }
+>();
+const AGENT_HISTORY_CACHE_MAX = 64;
+
+export function resolveCodexAgentRolloutPath(codexDir: string, threadId: string): string | undefined {
+  const key = `${codexDir}\0${threadId}`;
+  const cached = agentRolloutPathCache.get(key);
+  if (cached) {
+    if (existsSync(cached)) return cached;
+    agentRolloutPathCache.delete(key);
+  }
+  const found = findCodexTranscriptPath(codexDir, threadId);
+  if (found) agentRolloutPathCache.set(key, found);
+  return found;
+}
+
+/** Test hook: forget cached rollout paths and parsed histories. */
+export function clearCodexAgentHistoryCache(): void {
+  agentRolloutPathCache.clear();
+  agentHistoryCache.clear();
+}
+
+/**
+ * Detailed history of one Codex sub-agent, read from its own rollout file
+ * (`rollout-*-<threadId>.jsonl`). Never touches the app-server: no
+ * `thread/read`, no resume, no boot. Returns null when no rollout exists.
+ *
+ * Every message is attributed with `agentId: threadId`; the first entry is an
+ * `agent_update` built from `session_meta` (name from the orchestrator's task
+ * name, role, model when recorded) followed by the child's assignment as an
+ * agent-authored user message. Grandchildren spawned by this agent surface as
+ * their own `agent_update`s with `parentAgentId = threadId`.
+ */
+export async function readCodexAgentHistory(
+  codexDir: string,
+  threadId: string,
+  options?: { rootThreadId?: string },
+): Promise<HistoryEntry[] | null> {
+  const filePath = resolveCodexAgentRolloutPath(codexDir, threadId);
+  if (!filePath) return null;
+
+  let stat: { mtimeMs: number; size: number };
+  try {
+    stat = statSync(filePath);
+  } catch {
+    agentRolloutPathCache.delete(`${codexDir}\0${threadId}`);
+    return null;
+  }
+  const cacheKey = `${filePath}\0${options?.rootThreadId ?? ""}`;
+  const cached = agentHistoryCache.get(cacheKey);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.history;
+  }
+
+  const history = buildCodexAgentHistory(filePath, threadId, options?.rootThreadId);
+  if (agentHistoryCache.size >= AGENT_HISTORY_CACHE_MAX) {
+    const oldest = agentHistoryCache.keys().next().value;
+    if (oldest !== undefined) agentHistoryCache.delete(oldest);
+  }
+  agentHistoryCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, history });
+  return history;
+}
+
+function buildCodexAgentHistory(
+  filePath: string,
+  threadId: string,
+  rootThreadIdOption: string | undefined,
+): HistoryEntry[] {
+  const parsed = parseCodexTranscript(filePath);
+  const meta = extractCodexSubagentMeta(parsed.sessionMeta);
+  const parentThreadId = meta?.parentThreadId;
+  const rootThreadId = rootThreadIdOption ?? meta?.sessionThreadId;
+  const startedAt = parsed.createdAt ?? parsed.history[0]?.timestamp ?? Date.now();
+
+  const self: AgentInfo = {
+    agentId: threadId,
+    providerAgentId: threadId,
+    relation: "child",
+  };
+  const name = codexAgentNameFromPath(meta?.agentPath) ?? meta?.agentNickname;
+  if (name) self.name = name;
+  if (meta?.agentRole) self.role = meta.agentRole;
+  const model = meta?.model ?? parsed.stats.model;
+  if (model) self.model = model;
+  if (parentThreadId && rootThreadId && parentThreadId !== rootThreadId) {
+    self.parentAgentId = parentThreadId;
+  }
+  if (parsed.firstUserPrompt) self.assignment = parsed.firstUserPrompt;
+
+  // Provenance only — the full session_meta carries instructions/context text.
+  const history: HistoryEntry[] = [
+    agentUpdateEntry(startedAt, self, { type: "session_meta", id: threadId }),
+  ];
+  if (parsed.firstUserPrompt) {
+    history.push({
+      timestamp: startedAt,
+      message: {
+        type: "user",
+        text: parsed.firstUserPrompt,
+        agentId: threadId,
+        author: { kind: "agent" },
+      } as UserMessage,
+    });
+  }
+
+  const isAncestor = (id: string | undefined) =>
+    !!id && (id === parentThreadId || id === rootThreadId);
+
+  for (const entry of parsed.history) {
+    const message = entry.message;
+    if (message.type === "agent_update") {
+      // The child's own file records interactions with its parent as
+      // SubAgentActivity(agent_path: "/root"); those are not agents of this
+      // transcript. Anything else is a grandchild → nest it under this agent.
+      if (isAncestor(message.agent.agentId)) continue;
+      history.push({
+        ...entry,
+        message: { ...message, agent: { parentAgentId: threadId, ...message.agent } },
+      });
+      continue;
+    }
+    if (message.type === "user") {
+      const author = message.author;
+      const cleanAuthor =
+        author && isAncestor(author.agentId) ? { ...author, agentId: undefined } : author;
+      history.push({
+        ...entry,
+        message: { ...message, agentId: threadId, ...(cleanAuthor ? { author: cleanAuthor } : {}) },
+      });
+      continue;
+    }
+    if (message.type === "output" || message.type === "activity") {
+      history.push({ ...entry, message: { ...message, agentId: threadId } });
+      continue;
+    }
+    history.push(entry);
+  }
+
+  return history;
 }

@@ -4,7 +4,7 @@ import { useDoneSectionDisclosure, useDoneTransitionPulse } from "./use-done-sec
 import type { InboxEntry } from "@/lib/inbox";
 
 function entries(...ids: string[]): InboxEntry[] {
-  return ids.map((id) => ({ instance: { id } }) as InboxEntry);
+  return ids.map((id) => ({ id, kind: "chat", instance: { id } }) as InboxEntry);
 }
 
 describe("useDoneSectionDisclosure", () => {

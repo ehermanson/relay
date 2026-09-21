@@ -20,6 +20,8 @@ import type {
   ProviderRuntimeMode,
   SystemEventMessage,
   UserInputQuestion,
+  AgentUpdateMessage,
+  UserMessage,
 } from "#core/types.js";
 import type { CoreConfig } from "#core/config.js";
 import type { ProviderSession } from "#core/provider.js";
@@ -53,6 +55,10 @@ export interface ClaudeProcessEvents {
   permissionRequest: [ProviderRequest];
   /** CLI sessions never emit this — included for ProviderSession compatibility. */
   titleUpdate: [string];
+  /** CLI sessions never emit this — included for ProviderSession compatibility. */
+  agentUpdate: [AgentUpdateMessage];
+  /** CLI sessions never emit this — included for ProviderSession compatibility. */
+  userMessage: [UserMessage];
 }
 
 export interface ClaudeProcess {

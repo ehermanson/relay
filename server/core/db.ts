@@ -54,6 +54,7 @@ export interface SpaceRow {
   status: string;
   created_at: number;
   last_activity_at: number;
+  pinned?: number;
   merge_commit: string | null;
   merge_method: string | null;
   merged_at: number | null;
@@ -237,6 +238,7 @@ function normalizeSpaceRow(row: SpaceRow): SpaceRow {
   normalized.git_branch ??= null;
   normalized.worktree_path ??= null;
   normalized.status ??= "active";
+  normalized.pinned ??= 0;
   normalized.merge_commit ??= null;
   normalized.merge_method ??= null;
   normalized.merged_at ??= null;
@@ -514,6 +516,7 @@ export class SessionDB {
   private stmtUpdateSpaceStatus!: StatementSync;
   private stmtUpdateSpaceActivity!: StatementSync;
   private stmtUpdateSpaceName!: StatementSync;
+  private stmtUpdateSpacePinned!: StatementSync;
   private stmtDeleteSpace!: StatementSync;
   private stmtGetSpaceChatCount!: StatementSync;
   private stmtUpdateSessionSpaceId!: StatementSync;
@@ -692,6 +695,7 @@ ${buildSearchIndexSchemaSql()},
       this.ensureRuntimeModeColumns();
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
+      this.ensureSpacePinColumn();
       this.db.exec(`INSERT INTO schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION})`);
       return;
     }
@@ -706,6 +710,7 @@ ${buildSearchIndexSchemaSql()},
       this.ensureRuntimeModeColumns();
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
+      this.ensureSpacePinColumn();
       return;
     }
 
@@ -716,6 +721,7 @@ ${buildSearchIndexSchemaSql()},
     this.ensureSuggestionsColumns();
     this.ensureRuntimeModeColumns();
     this.ensureChatFlagColumns();
+    this.ensureSpacePinColumn();
     this.db.exec(`UPDATE schema_version SET version = ${CURRENT_SCHEMA_VERSION}`);
   }
 
@@ -853,6 +859,7 @@ ${buildSearchIndexSchemaSql()},
         status TEXT NOT NULL DEFAULT 'active',
         created_at INTEGER NOT NULL,
         last_activity_at INTEGER NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
         merge_commit TEXT,
         merge_method TEXT,
         merged_at INTEGER,
@@ -985,6 +992,14 @@ ${buildSearchIndexSchemaSql()},
     };
     ensureFor("sessions");
     ensureFor("managed_sessions");
+  }
+
+  /** Add the independently persisted per-space pin flag. */
+  private ensureSpacePinColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(spaces)").all() as Array<{ name?: string }>;
+    if (!columns.some((column) => column.name === "pinned")) {
+      this.db.exec("ALTER TABLE spaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   private ensureSuggestionsColumns(): void {
@@ -1413,9 +1428,9 @@ ${buildSearchIndexSchemaSql()},
 
     // Space statements
     this.stmtUpsertSpace = this.db.prepare(`
-      INSERT INTO spaces (id, project_directory, name, git_branch, worktree_path, is_default, status, created_at, last_activity_at,
+      INSERT INTO spaces (id, project_directory, name, git_branch, worktree_path, is_default, status, created_at, last_activity_at, pinned,
         merge_commit, merge_method, merged_at, target_branch, remote_status, pr_url)
-      VALUES (@id, @project_directory, @name, @git_branch, @worktree_path, @is_default, @status, @created_at, @last_activity_at,
+      VALUES (@id, @project_directory, @name, @git_branch, @worktree_path, @is_default, @status, @created_at, @last_activity_at, @pinned,
         @merge_commit, @merge_method, @merged_at, @target_branch, @remote_status, @pr_url)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -1447,6 +1462,7 @@ ${buildSearchIndexSchemaSql()},
     this.stmtUpdateSpaceName = this.db.prepare(
       "UPDATE spaces SET name = ?, last_activity_at = ? WHERE id = ?",
     );
+    this.stmtUpdateSpacePinned = this.db.prepare("UPDATE spaces SET pinned = ? WHERE id = ?");
     this.stmtDeleteSpace = this.db.prepare("DELETE FROM spaces WHERE id = ?");
     this.stmtGetSpaceChatCount = this.db.prepare(`
       SELECT
@@ -2051,6 +2067,12 @@ ${buildSearchIndexSchemaSql()},
 
   updateSpaceName(id: string, name: string, timestamp: number): void {
     this.stmtUpdateSpaceName.run(name, timestamp, id);
+  }
+
+  /** Set a space pin without coupling it to routine space persistence. */
+  setSpacePinned(id: string, pinned: boolean): boolean {
+    const result = this.stmtUpdateSpacePinned.run(pinned ? 1 : 0, id);
+    return Number(result.changes) > 0;
   }
 
   deleteSpace(id: string): void {

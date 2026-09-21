@@ -466,6 +466,51 @@ describe("HTTP Routes — Additional Coverage", () => {
     });
   });
 
+  describe("POST /api/spaces/:id/pinned", () => {
+    it("persists and returns the updated space", async () => {
+      const session = auth.createSession();
+      const projectDir = join(tempDir, "pin-space-project");
+      mkdirSync(projectDir);
+      const space = manager.getSpaceManager().getOrCreateDefaultSpace(projectDir);
+
+      const res = await request(server, "POST", `/api/spaces/${space.id}/pinned`, {
+        headers: { Cookie: `session=${session.id}` },
+        body: { pinned: true },
+      });
+
+      assert.equal(res.status, 200);
+      assert.equal(res.body.id, space.id);
+      assert.equal(res.body.pinned, true);
+      assert.equal(manager.getSpaceManager().getSpace(space.id).pinned, true);
+    });
+
+    it("returns 404 for an unknown space", async () => {
+      const session = auth.createSession();
+      const res = await request(server, "POST", "/api/spaces/missing/pinned", {
+        headers: { Cookie: `session=${session.id}` },
+        body: { pinned: true },
+      });
+      assert.equal(res.status, 404);
+    });
+
+    it("rejects a non-boolean pin without changing the persisted value", async () => {
+      const session = auth.createSession();
+      const projectDir = join(tempDir, "malformed-pin-space-project");
+      mkdirSync(projectDir);
+      const space = manager.getSpaceManager().getOrCreateDefaultSpace(projectDir);
+      manager.getSpaceManager().setSpacePinned(space.id, true);
+
+      const res = await request(server, "POST", `/api/spaces/${space.id}/pinned`, {
+        headers: { Cookie: `session=${session.id}` },
+        body: { pinned: "false" },
+      });
+
+      assert.equal(res.status, 400);
+      assert.match(res.body.error, /boolean/);
+      assert.equal(manager.getSpaceManager().getSpace(space.id).pinned, true);
+    });
+  });
+
   describe("GET /api/file", () => {
     it("requires authentication", async () => {
       const res = await request(server, "GET", "/api/file?path=/tmp/test.png");

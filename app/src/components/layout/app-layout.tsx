@@ -119,7 +119,7 @@ export function AppLayout() {
           open={mobileSidebarOpen}
           onOpenChange={setMobileSidebarOpen}
           edgeSwipeOpen
-          containerClassName="p-2 pt-[calc(env(safe-area-inset-top,0px)+0.5rem)]"
+          containerClassName="p-2 pt-[calc(var(--app-top-inset)+0.5rem)]"
           panelClassName="min-h-0 w-[85vw] max-w-sm"
         >
           <div className="app-shell-sidebar flex min-h-0 flex-1 flex-col">

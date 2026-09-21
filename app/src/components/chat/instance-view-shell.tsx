@@ -146,6 +146,9 @@ export function InstanceViewShell() {
                   reviewContent={reviewContent}
                   stats={shared.instance.stats}
                   items={shared.items}
+                  agents={shared.agents}
+                  agentItems={shared.agentItems}
+                  pendingRequest={shared.instance.pendingPermission ?? null}
                   provider={shared.instance.provider}
                   providerStatus={shared.instance.providerStatus}
                   providerGlobalState={currentProviderGlobalState}
@@ -172,6 +175,9 @@ export function InstanceViewShell() {
             reviewContent={reviewContent}
             stats={shared.instance.stats}
             items={shared.items}
+            agents={shared.agents}
+            agentItems={shared.agentItems}
+            pendingRequest={shared.instance.pendingPermission ?? null}
             provider={shared.instance.provider}
             providerStatus={shared.instance.providerStatus}
             providerGlobalState={currentProviderGlobalState}

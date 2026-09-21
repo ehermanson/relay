@@ -3,10 +3,19 @@ import { Check } from "lucide-react";
 import { Progress } from "../ui/progress";
 import { Spinner } from "../ui/spinner";
 import type { ChatItem } from "@/hooks/use-instance-messages";
-import type { TaskItem, FileChange, SessionStats, ProviderStatusSummary } from "@shared/types";
+import type {
+  AgentInfo,
+  TaskItem,
+  FileChange,
+  ProviderRequest,
+  SessionStats,
+  ProviderStatusSummary,
+} from "@shared/types";
+import { findRequestAgentId } from "@/lib/agents";
 import { MarkdownContent } from "./markdown-content";
 import { FilesPanel } from "./files-panel";
 import { ContextPanel } from "./context-panel";
+import { AgentsPanel } from "./agents-panel";
 import { SidecarShell, type SidecarTabDef } from "./sidecar-shell";
 import { MobileSidecarOverlay } from "../ui/mobile-sidecar-overlay";
 import "./sidecar.css";
@@ -140,6 +149,7 @@ import type { ProviderGlobalState, ProviderKind } from "@shared/types";
 
 const TAB_LABELS: Record<SidecarTab, string> = {
   tasks: "Tasks",
+  agents: "Agents",
   files: "Files",
   plan: "Plan",
   context: "Context",
@@ -153,6 +163,14 @@ interface SidecarProps {
   planContent?: string | null;
   stats?: SessionStats | null;
   items?: ChatItem[];
+  /**
+   * Delegated agents for the Agents tab (rendered only when the tab is in
+   * `tabs`). The reducer replaces both maps on change, so the memo compares
+   * them by reference.
+   */
+  agents?: Record<string, AgentInfo>;
+  agentItems?: Record<string, ChatItem[]>;
+  pendingRequest?: ProviderRequest | null;
   provider?: ProviderKind;
   providerStatus?: ProviderStatusSummary;
   providerGlobalState?: ProviderGlobalState;
@@ -187,6 +205,9 @@ export const Sidecar = memo(
     planContent,
     stats,
     items,
+    agents,
+    agentItems,
+    pendingRequest,
     provider,
     providerStatus,
     providerGlobalState,
@@ -202,6 +223,8 @@ export const Sidecar = memo(
     isMobileOverlay,
   }: SidecarProps) {
     const hasTasks = tasks && tasks.length > 0;
+    const agentCount = agents ? Object.keys(agents).length : 0;
+    const hasAgents = agentCount > 0;
     const hasFiles = files && files.length > 0;
     const hasPlan = !!planContent;
     const hasStats = !!stats && (stats.inputTokens > 0 || stats.outputTokens > 0);
@@ -230,12 +253,24 @@ export const Sidecar = memo(
         const def: SidecarTabDef & { key: SidecarTab } = { key: tab, label: TAB_LABELS[tab] };
         if (tab === "tasks" && tasks) def.count = tasks.length;
         if (tab === "files" && files) def.count = files.length;
+        if (tab === "agents" && agentCount > 0) def.count = agentCount;
         return def;
       });
-    }, [tabs, tasks, files]);
+    }, [tabs, tasks, files, agentCount]);
 
     const renderTabContent = (key: string) => {
       if (key === "tasks" && hasTasks) return <TasksPanel tasks={tasks} />;
+      if (key === "agents" && hasAgents && agents)
+        return (
+          <AgentsPanel
+            agents={agents}
+            agentItems={agentItems ?? {}}
+            items={items}
+            instanceId={instanceId}
+            provider={provider}
+            pendingAgentId={findRequestAgentId(pendingRequest, agents)}
+          />
+        );
       if (key === "plan" && hasPlan) return <PlanPanel content={planContent} />;
       if (key === "files" && hasFiles)
         return (
@@ -315,6 +350,9 @@ export const Sidecar = memo(
       prev.lastActivityAt === next.lastActivityAt &&
       prev.stats === next.stats &&
       prev.items === next.items &&
+      prev.agents === next.agents &&
+      prev.agentItems === next.agentItems &&
+      prev.pendingRequest === next.pendingRequest &&
       prev.provider === next.provider &&
       prev.providerStatus === next.providerStatus &&
       prev.providerGlobalState === next.providerGlobalState &&

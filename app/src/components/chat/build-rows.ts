@@ -203,12 +203,21 @@ export function buildRows(items: ChatItem[]): RenderRow[] {
             text: item.text,
           });
           break;
-        case "agent-transcript":
+        case "agent-card":
           rows.push({
-            id: `transcript-${i}`,
-            kind: "agent-transcript",
-            title: item.title,
-            result: item.result,
+            id: `agent-card-${item.agentId}`,
+            kind: "agent-card",
+            agentId: item.agentId,
+            timestamp: item.timestamp,
+          });
+          break;
+        case "agent-note":
+          rows.push({
+            id: `agent-note-${i}`,
+            kind: "agent-note",
+            text: item.text,
+            name: item.name,
+            agentId: item.agentId,
             timestamp: item.timestamp,
           });
           break;
@@ -240,8 +249,11 @@ export function estimateRowHeight(row: RenderRow, containerWidth?: number): numb
       return 48;
     case "thinking-block":
       return Math.min(420, 60 + Math.ceil(row.text.length / 80) * 16);
-    case "agent-transcript":
-      return 80;
+    case "agent-card":
+      // Collapsed card ≈ two compact lines (identity + preview) plus its frame.
+      return 56;
+    case "agent-note":
+      return Math.max(72, Math.min(400, 56 + Math.ceil(row.text.length / 70) * 20));
     case "response-divider":
       return 36;
     case "tool-container": {

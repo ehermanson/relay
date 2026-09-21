@@ -35,7 +35,7 @@ import { getProjectName } from "@/lib/project-route";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { aggregateSpaceStats, buildSpaceInstances, parseSpaceDiffFiles } from "@/lib/space-view";
 import { toastAsync } from "@/lib/async-toast";
-import { getChatRecencyTimestamp } from "@/lib/utils";
+import { readLastSpaceChat, rememberSpaceChat, selectSpaceChat } from "@/lib/space-navigation";
 import "@/components/chat/sidecar.css";
 import type { TerminalScope } from "@shared/types";
 
@@ -221,7 +221,18 @@ export function SpaceView() {
     : chatId && spaceInstances.find((instance) => instance.id === chatId)
       ? chatId
       : null;
-  const firstSpaceChatId = spaceInstances[0]?.id ?? null;
+  const firstSpaceChatId =
+    selectSpaceChat(spaceId, spaceInstances, readLastSpaceChat(spaceId)) ?? null;
+
+  useEffect(() => {
+    if (
+      activeTab &&
+      activeTab !== PENDING_NEW_CHAT_TAB_ID &&
+      spaceInstances.some((chat) => chat.id === activeTab)
+    ) {
+      rememberSpaceChat(spaceId, activeTab);
+    }
+  }, [spaceId, activeTab, spaceInstances]);
   const activeLiveInstance = activeTab
     ? (instances.find((instance) => instance.id === activeTab) ?? null)
     : null;
@@ -697,17 +708,19 @@ export function SpaceView() {
 export const Route = createFileRoute("/_app/projects/$projectId/spaces/$spaceId/")({
   loader: async ({ params }) => {
     const chats = await fetchSpaceChats(params.spaceId);
-    const fallbackChat = chats.sort(
-      (a, b) => getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a),
-    )[0];
+    const fallbackChatId = selectSpaceChat(
+      params.spaceId,
+      chats,
+      readLastSpaceChat(params.spaceId),
+    );
 
-    if (fallbackChat) {
+    if (fallbackChatId) {
       throw redirect({
         to: "/projects/$projectId/spaces/$spaceId/$chatId",
         params: {
           projectId: params.projectId,
           spaceId: params.spaceId,
-          chatId: fallbackChat.id,
+          chatId: fallbackChatId,
         },
         replace: true,
       });
