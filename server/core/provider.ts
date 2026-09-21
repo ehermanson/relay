@@ -21,6 +21,8 @@ import type {
   ProviderRequest,
   ProviderRequestResponse,
   ProviderRuntimeBinding,
+  AgentUpdateMessage,
+  UserMessage,
 } from "#core/types.js";
 
 // =============================================================================
@@ -39,6 +41,18 @@ export interface ProviderSessionEvents {
   providerError: [string];
   /** Emitted when the provider generates a title for the session (e.g. Codex thread/name/updated). */
   titleUpdate: [string];
+  /**
+   * Sparse upsert of one delegated agent (spawn, model, progress, result).
+   * Replayable — InstanceManager pushes it into history and broadcasts it
+   * like `activity`.
+   */
+  agentUpdate: [AgentUpdateMessage];
+  /**
+   * A user-role message the provider surfaced that Relay did not send itself —
+   * an agent-to-agent note (`author.kind === "agent"`) or a child agent's own
+   * user-role frame (`agentId` set). Never used for the human's own sends.
+   */
+  userMessage: [UserMessage];
 }
 
 // =============================================================================

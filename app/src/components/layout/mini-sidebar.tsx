@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Menu } from "@/components/ui/menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ChatActionsMenuContent } from "@/components/layout/chat-actions-menu";
+import { InboxSpaceItem } from "@/components/layout/inbox-space-item";
+import { capInboxEntries, isInboxEntryCurrent, type InboxChatEntry } from "@/lib/inbox";
 import { InboxAvatar, InboxChatSummary } from "@/components/layout/inbox-item";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { SidebarItem } from "@/components/layout/sidebar-item";
@@ -143,7 +145,7 @@ function MiniInboxRailItem({
   currentId,
   onRename,
 }: {
-  entry: InboxEntry;
+  entry: InboxChatEntry;
   isActive: boolean;
   currentId?: string;
   onRename: () => void;
@@ -217,7 +219,7 @@ function RenameChatDialog({
   open,
   onOpenChange,
 }: {
-  entry: InboxEntry;
+  entry: InboxChatEntry;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -269,6 +271,7 @@ function MiniInboxRail({
   doneEntries,
   projectOptions,
   currentId,
+  currentSpaceId,
   onNewChat,
 }: {
   entries: InboxEntry[];
@@ -276,22 +279,15 @@ function MiniInboxRail({
   doneEntries: InboxEntry[];
   projectOptions: InboxProjectOption[];
   currentId?: string;
+  currentSpaceId?: string;
   onNewChat: (dir: string) => void;
 }) {
   const actions = useSidebarActions();
-  // Mirror the expanded list's cap behavior: the open chat is appended when it
-  // falls past the cap — or lives in Done, which the rail doesn't list at all.
-  const visible = useMemo(() => {
-    const head = entries.slice(0, MINI_INBOX_LIMIT);
-    if (currentId && !head.some((entry) => entry.instance.id === currentId)) {
-      const current =
-        entries.find((entry) => entry.instance.id === currentId) ??
-        doneEntries.find((entry) => entry.instance.id === currentId);
-      if (current) head.push(current);
-    }
-    return head;
-  }, [entries, doneEntries, currentId]);
-  const [renaming, setRenaming] = useState<InboxEntry | null>(null);
+  const visible = useMemo(
+    () => capInboxEntries(entries, MINI_INBOX_LIMIT, currentId, currentSpaceId, doneEntries),
+    [entries, doneEntries, currentId, currentSpaceId],
+  );
+  const [renaming, setRenaming] = useState<InboxChatEntry | null>(null);
 
   return (
     <div className="mini-rail-scroll flex flex-1 flex-col items-center gap-1 overflow-y-auto">
@@ -311,15 +307,24 @@ function MiniInboxRail({
         />
       )}
 
-      {visible.map((entry) => (
-        <MiniInboxRailItem
-          key={entry.instance.id}
-          entry={entry}
-          isActive={entry.instance.id === currentId}
-          currentId={currentId}
-          onRename={() => setRenaming(entry)}
-        />
-      ))}
+      {visible.map((entry) =>
+        entry.kind === "space" ? (
+          <InboxSpaceItem
+            key={entry.id}
+            entry={entry}
+            compact
+            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
+          />
+        ) : (
+          <MiniInboxRailItem
+            key={entry.id}
+            entry={entry}
+            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
+            currentId={currentId}
+            onRename={() => setRenaming(entry)}
+          />
+        ),
+      )}
 
       {/* One dialog for the whole rail rather than one mounted per item. */}
       {renaming && (
@@ -503,6 +508,7 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
               doneEntries={inboxDoneEntries}
               projectOptions={projectOptions}
               currentId={currentId}
+              currentSpaceId={currentSpaceId}
               onNewChat={handleNewChat}
             />
           ) : (

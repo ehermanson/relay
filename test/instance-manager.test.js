@@ -2358,6 +2358,133 @@ describe("InstanceManager", () => {
     });
   });
 
+  describe("codex multi-agent watcher", () => {
+    const PARENT_ID = "01a0b0fb-61c5-73f1-a055-9fcb783d1fa4";
+    const CHILD_ID = "01a0b0fb-a1fa-7d73-964f-eee5057ea230";
+
+    function makeCodexWatchState() {
+      return {
+        jsonlPath: "/tmp/rollout.jsonl",
+        fileOffset: 0,
+        pendingTools: new Map(),
+        pendingTaskCreates: new Map(),
+        pendingProviderCalls: new Map(),
+        providerCommandIds: new Set(),
+        codexCollabIds: new Set(),
+        codexCollabResultIds: new Set(),
+        codexAgentPaths: new Map(),
+        stats: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      };
+    }
+
+    function subAgentStarted(ts) {
+      return {
+        timestamp: ts,
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          thread_id: PARENT_ID,
+          turn_id: "turn-1",
+          item: {
+            type: "SubAgentActivity",
+            id: "call_spawn",
+            kind: "started",
+            agent_thread_id: CHILD_ID,
+            agent_path: "/root/jev_research",
+          },
+        },
+      };
+    }
+
+    function finalAnswer(ts) {
+      return {
+        timestamp: ts,
+        type: "response_item",
+        payload: {
+          type: "agent_message",
+          id: "amsg_final",
+          author: "/root/jev_research",
+          recipient: "/root",
+          content: [
+            {
+              type: "input_text",
+              text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/jev_research\nPayload:\nSaved research notes.",
+            },
+          ],
+        },
+      };
+    }
+
+    it("carries codex agent-path state across separate watched entries", () => {
+      const info = manager.createInstance();
+      const instance = manager.instances.get(info.id);
+      assert.ok(instance);
+      instance.info.provider = "codex";
+      instance.process = null; // external, so instance:agent_update is emitted
+      instance.watchState = makeCodexWatchState();
+
+      const updates = [];
+      manager.on("instance:agent_update", (_id, update) => updates.push(update.agent));
+
+      // Entry 1: the spawn activity registers the agent path → child thread id.
+      manager.applyWatcherEntry(info.id, instance, subAgentStarted("2026-09-17T20:07:56.258Z"));
+      assert.equal(
+        instance.watchState.codexAgentPaths.get("/root/jev_research"),
+        CHILD_ID,
+        "agent path persisted in watch state",
+      );
+
+      // Entry 2 (a later JSONL line): the FINAL_ANSWER report resolves its author
+      // only because that mapping survived from entry 1.
+      manager.applyWatcherEntry(info.id, instance, finalAnswer("2026-09-17T20:15:53.791Z"));
+
+      const completed = updates.find((a) => a.agentId === CHILD_ID && a.status === "completed");
+      assert.ok(completed, "final report resolved to the child agent");
+      assert.equal(completed.result, "Saved research notes.");
+    });
+
+    it("seeds agent-path mappings from the pre-EOF transcript when attaching mid-flight", () => {
+      // The spawn happened before Relay attached: its SubAgentActivity lives in
+      // the transcript on disk, and the watcher starts at EOF. Without seeding,
+      // the later FINAL_ANSWER (a fresh watched entry) can't resolve its author.
+      const dir = mkdtempSync(join(tmpdir(), "relay-codex-seed-"));
+      const rolloutPath = join(dir, `rollout-2026-09-17T20-07-39-${PARENT_ID}.jsonl`);
+      const preEof = [
+        {
+          timestamp: "2026-09-17T20:07:39.000Z",
+          type: "session_meta",
+          payload: { id: PARENT_ID, timestamp: "2026-09-17T20:07:39.000Z", cwd: dir, cli_version: "0.154.0" },
+        },
+        subAgentStarted("2026-09-17T20:07:56.258Z"),
+      ];
+      writeFileSync(rolloutPath, preEof.map((l) => JSON.stringify(l)).join("\n"));
+
+      const info = manager.createInstance();
+      const instance = manager.instances.get(info.id);
+      assert.ok(instance);
+      instance.info.provider = "codex";
+      instance.process = null;
+      instance.watchState = makeCodexWatchState();
+      instance.watchState.jsonlPath = rolloutPath; // watcher attached at EOF
+
+      const updates = [];
+      manager.on("instance:agent_update", (_id, update) => updates.push(update.agent));
+
+      // Only the FINAL_ANSWER arrives as a live watched entry — the spawn is not
+      // replayed. It resolves only because seeding read the pre-EOF transcript.
+      manager.applyWatcherEntry(info.id, instance, finalAnswer("2026-09-17T20:15:53.791Z"));
+
+      assert.equal(
+        instance.watchState.codexAgentPaths.get("/root/jev_research"),
+        CHILD_ID,
+        "agent path seeded from disk",
+      );
+      const completed = updates.find((a) => a.agentId === CHILD_ID && a.status === "completed");
+      assert.ok(completed, "mid-flight final report resolved after seeding");
+      assert.equal(completed.result, "Saved research notes.");
+    });
+  });
+
   describe("model switch events", () => {
     // A minimal running process so sendMessage dispatches immediately instead
     // of queueing (isProcessing: false) or booting a real provider.

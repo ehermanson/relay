@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { SessionDB } from "../dist/server/core/db.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -106,6 +107,42 @@ describe("SessionDB", () => {
         });
       }, /nested boom/);
       assert.equal(db.transactionDepth, 0);
+    });
+
+    it("idempotently adds pinned to an existing spaces table", () => {
+      db.close();
+      const legacyPath = join(tempDir, "legacy-spaces.db");
+      const legacy = new DatabaseSync(legacyPath);
+      legacy.exec(`
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (26);
+        CREATE TABLE spaces (
+          id TEXT PRIMARY KEY,
+          project_directory TEXT NOT NULL,
+          name TEXT NOT NULL,
+          git_branch TEXT,
+          worktree_path TEXT,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          last_activity_at INTEGER NOT NULL,
+          merge_commit TEXT,
+          merge_method TEXT,
+          merged_at INTEGER,
+          target_branch TEXT,
+          remote_status TEXT,
+          pr_url TEXT
+        );
+      `);
+      legacy.close();
+
+      db = new SessionDB(legacyPath, noopLogger);
+      db.upsertSpace(makeSpaceRow());
+      assert.equal(db.getSpace("space-1")?.pinned, 0);
+      db.close();
+
+      db = new SessionDB(legacyPath, noopLogger);
+      assert.equal(db.getSpace("space-1")?.pinned, 0);
     });
   });
 
@@ -369,6 +406,21 @@ describe("SessionDB", () => {
       const row = db.getSpace("space-1");
       assert.equal(row?.name, "Renamed Space");
       assert.equal(row?.last_activity_at, 99999);
+    });
+  });
+
+  describe("setSpacePinned", () => {
+    it("persists independently and survives a routine space upsert", () => {
+      db.upsertSpace(makeSpaceRow());
+      assert.equal(db.setSpacePinned("space-1", true), true);
+      assert.equal(db.getSpace("space-1")?.pinned, 1);
+
+      db.upsertSpace(makeSpaceRow({ name: "Updated Space", last_activity_at: 3000 }));
+      assert.equal(db.getSpace("space-1")?.pinned, 1);
+
+      assert.equal(db.setSpacePinned("space-1", false), true);
+      assert.equal(db.getSpace("space-1")?.pinned, 0);
+      assert.equal(db.setSpacePinned("missing", true), false);
     });
   });
 

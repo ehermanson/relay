@@ -1532,4 +1532,666 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
   });
+
+  // ===========================================================================
+  // Delegated agents (subagents) — attribution, isolation, lifecycle
+  // ===========================================================================
+
+  describe("delegated agents", () => {
+    const CHILD_A = "toolu_agent_a";
+    const CHILD_B = "toolu_agent_b";
+
+    function streamEvent(harness, event, parentToolUseId = null) {
+      harness.fakeQuery.emit({
+        type: "stream_event",
+        session_id: "sess-1",
+        parent_tool_use_id: parentToolUseId,
+        event,
+      });
+    }
+
+    function textDelta(harness, text, parentToolUseId = null, index = 0) {
+      streamEvent(
+        harness,
+        { type: "content_block_delta", index, delta: { type: "text_delta", text } },
+        parentToolUseId,
+      );
+    }
+
+    it("enables forwardSubagentText so child prose reaches the nested transcript", async () => {
+      let captured;
+      const harness = makeHarness();
+      const session = await createSdkSession({
+        cwd: "/test/project",
+        logger: noopLogger,
+        queryFn: ({ options }) => {
+          captured = options;
+          return harness.fakeQuery;
+        },
+      });
+      assert.equal(captured.forwardSubagentText, true);
+      session.close();
+    });
+
+    it("keeps interleaved root and child streams isolated and attributes child output", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const outputs = collectEvents(session, "output");
+
+      streamEvent(harness, { type: "message_start" });
+      streamEvent(harness, { type: "message_start" }, CHILD_A);
+      streamEvent(harness, { type: "message_start" }, CHILD_B);
+      textDelta(harness, "Root ");
+      textDelta(harness, "child A says ", CHILD_A);
+      textDelta(harness, "child B says ", CHILD_B);
+      textDelta(harness, "hi", CHILD_A);
+      textDelta(harness, "text", null);
+      textDelta(harness, "yo", CHILD_B);
+      // Child A finishes first; root and B are still streaming.
+      streamEvent(harness, { type: "message_stop" }, CHILD_A);
+      // A new child-A message must not reset root or B.
+      streamEvent(harness, { type: "message_start" }, CHILD_A);
+      textDelta(harness, "second", CHILD_A);
+      streamEvent(harness, { type: "message_stop" }, CHILD_B);
+      streamEvent(harness, { type: "message_stop" });
+      streamEvent(harness, { type: "message_stop" }, CHILD_A);
+      await tick();
+
+      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => o);
+      assert.deepEqual(
+        texts.map((o) => [o.agentId, o.text]),
+        [
+          [CHILD_A, "child A says hi"],
+          [CHILD_B, "child B says yo"],
+          [undefined, "Root text"],
+          [CHILD_A, "second"],
+        ],
+      );
+      session.close();
+    });
+
+    it("does not double-emit child text when the full assistant frame follows a stream", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const outputs = collectEvents(session, "output");
+
+      streamEvent(harness, { type: "message_start" }, CHILD_A);
+      textDelta(harness, "streamed", CHILD_A);
+      streamEvent(harness, { type: "message_stop" }, CHILD_A);
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: CHILD_A,
+        message: { model: "claude-haiku-4-5", content: [{ type: "text", text: "streamed" }] },
+      });
+      // A root assistant frame with no stream still emits (fallback path), unattributed.
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: { model: "claude-opus-4-8", content: [{ type: "text", text: "root fallback" }] },
+      });
+      await tick();
+
+      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      assert.deepEqual(texts, [
+        [CHILD_A, "streamed"],
+        [undefined, "root fallback"],
+      ]);
+      session.close();
+    });
+
+    it("announces Agent tool calls, tracks the child model, and attributes child tools", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const updateEvents = collectEvents(session, "agentUpdate");
+      const updates = () => updateEvents.map(([u]) => u);
+      const activities = collectEvents(session, "activity");
+
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-8",
+          content: [
+            {
+              type: "tool_use",
+              id: CHILD_A,
+              name: "Agent",
+              input: {
+                description: "Find sidebar code",
+                subagent_type: "Explore",
+                name: "sidebar-hunter",
+                model: "sonnet",
+                prompt: "Locate the sidebar components.",
+              },
+            },
+          ],
+        },
+      });
+      // Child frames: its own tool use and thinking, plus a TodoWrite that must
+      // not touch the chat's task list.
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: CHILD_A,
+        message: {
+          model: "claude-sonnet-4-6",
+          content: [
+            { type: "thinking", thinking: "Let me look." },
+            { type: "tool_use", id: "toolu_child_grep", name: "Grep", input: { pattern: "Sidebar" } },
+            { type: "tool_use", id: "toolu_child_todo", name: "TodoWrite", input: { todos: [{ content: "x", status: "pending" }] } },
+          ],
+        },
+      });
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: CHILD_A,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_child_grep", content: "3 matches" }],
+        },
+      });
+      await tick();
+
+      const spawn = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "pending");
+      assert.ok(spawn, "spawn update emitted");
+      assert.equal(spawn.agent.originToolUseId, CHILD_A);
+      assert.equal(spawn.agent.relation, "child");
+      assert.equal(spawn.agent.name, "sidebar-hunter");
+      assert.equal(spawn.agent.role, "Explore");
+      assert.equal(spawn.agent.description, "Find sidebar code");
+      assert.equal(spawn.agent.assignment, "Locate the sidebar components.");
+      assert.equal(spawn.agent.model, "sonnet", "alias kept verbatim, not resolved");
+      assert.ok(typeof spawn.agent.startedAt === "number");
+
+      const modelUpdate = updates().find((u) => u.agent.model === "claude-sonnet-4-6");
+      assert.ok(modelUpdate, "child model reported from its assistant frame");
+      assert.equal(modelUpdate.agent.agentId, CHILD_A);
+
+      const rootToolUse = activities.find(([a]) => a.activity === "tool_use" && a.tool === "Agent");
+      assert.ok(rootToolUse, "delegation tool_use still emitted for the orchestrator");
+      assert.equal(rootToolUse[0].agentId, undefined);
+      assert.equal(rootToolUse[0].toolUseId, CHILD_A);
+
+      const childActivities = activities.map(([a]) => a).filter((a) => a.agentId === CHILD_A);
+      assert.ok(childActivities.some((a) => a.activity === "thinking"));
+      assert.ok(childActivities.some((a) => a.activity === "tool_use" && a.tool === "Grep"));
+      assert.ok(childActivities.some((a) => a.activity === "tool_result"));
+      assert.ok(childActivities.some((a) => a.activity === "tool_use" && a.tool === "TodoWrite"));
+      assert.ok(
+        !activities.some(([a]) => a.activity === "task_list"),
+        "child TodoWrite does not rewrite the chat task list",
+      );
+      session.close();
+    });
+
+    it("maps sync and async Agent results from tool_use_result", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const updateEvents = collectEvents(session, "agentUpdate");
+      const updates = () => updateEvents.map(([u]) => u);
+      const activities = collectEvents(session, "activity");
+
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-8",
+          content: [
+            { type: "tool_use", id: CHILD_A, name: "Agent", input: { prompt: "a", run_in_background: true } },
+            { type: "tool_use", id: CHILD_B, name: "Task", input: { prompt: "b", description: "Sync one" } },
+          ],
+        },
+      });
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        tool_use_result: {
+          isAsync: true,
+          status: "async_launched",
+          agentId: "a056f6543c6a3e362",
+          description: "Background one",
+          resolvedModel: "claude-opus-4-8",
+        },
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: CHILD_A, content: [{ type: "text", text: "Async agent launched successfully." }] },
+          ],
+        },
+      });
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        tool_use_result: {
+          status: "completed",
+          agentId: "ae9f3794b10b24b3c",
+          agentType: "Explore",
+          content: [{ type: "text", text: "Findings: all good." }],
+          resolvedModel: "claude-sonnet-4-6",
+          totalDurationMs: 1000,
+          totalTokens: 200,
+          totalToolUseCount: 3,
+        },
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: CHILD_B, content: [{ type: "text", text: "Findings: all good." }] },
+          ],
+        },
+      });
+      await tick();
+
+      const launched = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "running");
+      assert.ok(launched, "async launch → running");
+      assert.equal(launched.agent.providerAgentId, "a056f6543c6a3e362");
+      assert.equal(launched.agent.model, "claude-opus-4-8");
+      assert.equal(launched.agent.description, "Background one");
+
+      const done = updates().find((u) => u.agent.agentId === CHILD_B && u.agent.status === "completed");
+      assert.ok(done, "sync completion → completed");
+      assert.equal(done.agent.providerAgentId, "ae9f3794b10b24b3c");
+      assert.equal(done.agent.result, "Findings: all good.");
+      assert.deepEqual(done.agent.usage, { totalTokens: 200, toolUses: 3, durationMs: 1000 });
+      assert.ok(typeof done.agent.endedAt === "number");
+      // The tool_use_result is not duplicated onto the update; only provenance.
+      assert.deepEqual(done.raw, { tool: "Task", toolUseId: CHILD_B });
+      const spawnB = updates().find((u) => u.agent.agentId === CHILD_B && u.agent.status === "pending");
+      assert.deepEqual(spawnB.raw, { tool: "Task", toolUseId: CHILD_B });
+
+      // The orchestrator still sees both tool_results.
+      const results = activities.map(([a]) => a).filter((a) => a.activity === "tool_result");
+      assert.deepEqual(results.map((a) => a.toolUseId).sort(), [CHILD_A, CHILD_B].sort());
+      assert.ok(results.every((a) => a.agentId === undefined));
+      session.close();
+    });
+
+    it("maps task_* system events onto the agent keyed by tool_use_id, then by task_id", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const updateEvents = collectEvents(session, "agentUpdate");
+      const updates = () => updateEvents.map(([u]) => u);
+
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_started",
+        session_id: "sess-1",
+        task_id: "task-1",
+        tool_use_id: CHILD_A,
+        description: "Index the repo",
+        subagent_type: "general-purpose",
+        prompt: "Index everything.",
+      });
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_progress",
+        session_id: "sess-1",
+        task_id: "task-1",
+        description: "Index the repo",
+        last_tool_name: "Grep",
+        usage: { total_tokens: 500, tool_uses: 4, duration_ms: 2000 },
+      });
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_updated",
+        session_id: "sess-1",
+        task_id: "task-1",
+        patch: { status: "paused" },
+      });
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_notification",
+        session_id: "sess-1",
+        task_id: "task-1",
+        status: "failed",
+        output_file: "/nonexistent/task-1.output",
+        summary: "Agent \"Index the repo\" failed",
+        usage: { total_tokens: 900, tool_uses: 9, duration_ms: 9000 },
+      });
+      await tick();
+
+      const forA = updates().filter((u) => u.agent.agentId === CHILD_A).map((u) => u.agent);
+      assert.equal(forA.length, 4, "all four events resolve to the same Relay key");
+      assert.equal(forA[0].status, "running");
+      assert.equal(forA[0].providerAgentId, "task-1");
+      assert.equal(forA[0].originToolUseId, CHILD_A);
+      assert.equal(forA[0].description, "Index the repo");
+      assert.equal(forA[0].role, "general-purpose");
+      assert.equal(forA[0].assignment, "Index everything.");
+      assert.equal(forA[1].lastActivity, "Grep");
+      assert.deepEqual(forA[1].usage, { totalTokens: 500, toolUses: 4, durationMs: 2000 });
+      assert.equal(forA[2].status, "waiting");
+      assert.equal(forA[3].status, "failed");
+      assert.equal(forA[3].resultIsError, true);
+      assert.equal(forA[3].result, 'Agent "Index the repo" failed');
+      assert.equal(forA[3].historyAvailable, undefined, "availability is the history route's 404, not a flag");
+      // raw is a provenance stub, never the provider payload.
+      assert.deepEqual(
+        updates().filter((u) => u.agent.agentId === CHILD_A).map((u) => u.raw),
+        [
+          { subtype: "task_started" },
+          { subtype: "task_progress" },
+          { subtype: "task_updated" },
+          { subtype: "task_notification" },
+        ],
+      );
+      session.close();
+    });
+
+    it("does not turn background Bash tasks into agents", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const updateEvents = collectEvents(session, "agentUpdate");
+
+      // A `local_bash` task carries the Bash tool_use id — not an agent key.
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_started",
+        session_id: "sess-1",
+        task_id: "bash-task-1",
+        tool_use_id: "toolu_bash_01",
+        task_type: "local_bash",
+        description: "pnpm test",
+      });
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_progress",
+        session_id: "sess-1",
+        task_id: "bash-task-1",
+        description: "pnpm test",
+        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 100 },
+      });
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_notification",
+        session_id: "sess-1",
+        task_id: "bash-task-1",
+        tool_use_id: "toolu_bash_01",
+        status: "completed",
+        output_file: "/nonexistent/bash-task-1.output",
+        summary: "Background command finished",
+      });
+      // The same shape arriving as a user-envelope notification is dropped too.
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        origin: { kind: "task-notification" },
+        message: {
+          role: "user",
+          content:
+            "<task-notification>\n<task-id>bash-task-1</task-id>\n<tool-use-id>toolu_bash_01</tool-use-id>\n<status>completed</status>\n<summary>Background command finished</summary>\n</task-notification>",
+        },
+      });
+      // An agent-shaped task without a tool_use_id and no known task id is
+      // also not keyed by its bare task id.
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_progress",
+        session_id: "sess-1",
+        task_id: "orphan-task",
+        subagent_type: "Explore",
+        description: "Orphan",
+        usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 },
+      });
+      await tick();
+
+      assert.equal(updateEvents.length, 0, "no agent_update for a Bash task or an unresolvable task");
+      session.close();
+    });
+
+    it("keys a task by its tool_use_id when the event says it is an agent", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const updateEvents = collectEvents(session, "agentUpdate");
+      const updates = () => updateEvents.map(([u]) => u);
+
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_started",
+        session_id: "sess-1",
+        task_id: "wf-1",
+        tool_use_id: "toolu_workflow",
+        task_type: "local_workflow",
+        workflow_name: "spec",
+        description: "Run the spec workflow",
+      });
+      await tick();
+
+      assert.equal(updates().length, 1);
+      assert.equal(updates()[0].agent.agentId, "toolu_workflow");
+      assert.equal(updates()[0].agent.providerAgentId, "wf-1");
+      session.close();
+    });
+
+    it("emits every child message when child text arrives only as assistant frames", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const outputs = collectEvents(session, "output");
+
+      const childFrame = (text) =>
+        harness.fakeQuery.emit({
+          type: "assistant",
+          session_id: "sess-1",
+          parent_tool_use_id: CHILD_A,
+          message: { model: "claude-haiku-4-5", content: [{ type: "text", text }] },
+        });
+
+      // Root streams; child A only ever sends full frames; child B streams.
+      streamEvent(harness, { type: "message_start" });
+      textDelta(harness, "Root ");
+      childFrame("child first");
+      streamEvent(harness, { type: "message_start" }, CHILD_B);
+      textDelta(harness, "B streamed", CHILD_B);
+      childFrame("child second");
+      streamEvent(harness, { type: "message_stop" }, CHILD_B);
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: CHILD_B,
+        message: { model: "claude-haiku-4-5", content: [{ type: "text", text: "B streamed" }] },
+      });
+      textDelta(harness, "text");
+      streamEvent(harness, { type: "message_stop" });
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: { model: "claude-opus-4-8", content: [{ type: "text", text: "Root text" }] },
+      });
+      childFrame("child third");
+      await tick();
+
+      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      assert.deepEqual(texts, [
+        [CHILD_A, "child first"],
+        [CHILD_A, "child second"],
+        [CHILD_B, "B streamed"],
+        [undefined, "Root text"],
+        [CHILD_A, "child third"],
+      ]);
+      session.close();
+    });
+
+    it("keeps an in-flight background child stream across the user's next send()", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const outputs = collectEvents(session, "output");
+
+      streamEvent(harness, { type: "message_start" }, CHILD_A);
+      textDelta(harness, "half ", CHILD_A);
+      await tick();
+      session.send("next question");
+      textDelta(harness, "done", CHILD_A);
+      streamEvent(harness, { type: "message_stop" }, CHILD_A);
+      await tick();
+
+      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      assert.deepEqual(texts, [[CHILD_A, "half done"]]);
+      session.close();
+    });
+
+    it("ignores replayed user frames on resume until the first send", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness, { resumeSessionId: "abc-123" });
+      const userMessageEvents = collectEvents(session, "userMessage");
+      const updateEvents = collectEvents(session, "agentUpdate");
+
+      const peerFrame = () =>
+        harness.fakeQuery.emit({
+          type: "user",
+          session_id: "abc-123",
+          parent_tool_use_id: null,
+          origin: { kind: "peer", name: "worker", body: "Report from before." },
+          message: { role: "user", content: "<agent-message from=\"worker\">Report from before.</agent-message>" },
+        });
+      // Replayed during resume: already in history, must not re-emit.
+      peerFrame();
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "abc-123",
+        parent_tool_use_id: null,
+        origin: { kind: "task-notification" },
+        message: {
+          role: "user",
+          content:
+            "<task-notification>\n<task-id>t-old</task-id>\n<tool-use-id>" +
+            CHILD_A +
+            "</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>",
+        },
+      });
+      await tick();
+      assert.equal(userMessageEvents.length, 0);
+      assert.equal(updateEvents.length, 0);
+
+      // After the first send the session is live again.
+      session.send("continue");
+      peerFrame();
+      await tick();
+      assert.equal(userMessageEvents.length, 1);
+      assert.equal(userMessageEvents[0][0].text, "Report from before.");
+      session.close();
+    });
+
+    it("surfaces peer envelopes as agent-authored user messages and hides the wrapper", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const userMessageEvents = collectEvents(session, "userMessage");
+      const userMessages = () => userMessageEvents.map(([m]) => m);
+      const updateEvents = collectEvents(session, "agentUpdate");
+      const updates = () => updateEvents.map(([u]) => u);
+
+      // Learn the sender: task-1 is the provider id behind CHILD_A.
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_started",
+        session_id: "sess-1",
+        task_id: "a4320b8ef6db9c5c7",
+        tool_use_id: CHILD_A,
+        subagent_type: "Explore",
+        description: "Discover region",
+      });
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        origin: {
+          kind: "peer",
+          from: "discover-region",
+          name: "discover-region",
+          senderTaskId: "a4320b8ef6db9c5c7",
+          body: "Heads up: the build is broken.",
+        },
+        message: {
+          role: "user",
+          content:
+            'Another Claude session sent a message:\n<agent-message from="discover-region">\nHeads up: the build is broken.\n</agent-message>\n\nThat "other Claude session" is an agent — that\'s permission laundering.',
+        },
+      });
+      // A plain human-shaped frame echoed by the SDK produces nothing (Relay
+      // already recorded the human's send).
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "text", text: "hello from the human" }] },
+      });
+      // Task notification arriving as a user frame → agent_update, not a bubble.
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        origin: { kind: "task-notification" },
+        message: {
+          role: "user",
+          content:
+            "<task-notification>\n<task-id>a4320b8ef6db9c5c7</task-id>\n<tool-use-id>" +
+            CHILD_A +
+            "</tool-use-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>Region found.</result>\n</task-notification>",
+        },
+      });
+      await tick();
+
+      assert.equal(userMessages().length, 1);
+      assert.equal(userMessages()[0].text, "Heads up: the build is broken.");
+      assert.deepEqual(userMessages()[0].author, {
+        kind: "agent",
+        name: "discover-region",
+        agentId: CHILD_A,
+      });
+
+      const completed = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "completed");
+      assert.ok(completed, "task notification mapped to the agent");
+      assert.equal(completed.agent.result, "Region found.");
+      assert.equal(completed.agent.historyAvailable, undefined);
+      assert.deepEqual(completed.raw, { subtype: "task_notification" });
+      session.close();
+    });
+
+    it("maps permission requests from a known child to its Relay key", async () => {
+      const harness = makeHarness();
+      let canUseTool;
+      const session = await createSdkSession({
+        cwd: "/test/project",
+        logger: noopLogger,
+        queryFn: ({ options }) => {
+          canUseTool = options.canUseTool;
+          return harness.fakeQuery;
+        },
+      });
+      const requestEvents = collectEvents(session, "permissionRequest");
+      const requests = () => requestEvents.map(([r]) => r);
+
+      harness.fakeQuery.emit({
+        type: "system",
+        subtype: "task_started",
+        session_id: "sess-1",
+        task_id: "agent-native-id",
+        tool_use_id: CHILD_A,
+        task_type: "local_agent",
+        description: "Worker",
+      });
+      await tick();
+
+      const controller = new AbortController();
+      void canUseTool("Bash", { command: "rm -rf build" }, {
+        signal: controller.signal,
+        toolUseID: "toolu_perm",
+        agentID: "agent-native-id",
+      });
+      await tick();
+
+      assert.equal(requests().length, 1);
+      assert.equal(requests()[0].agentId, "agent-native-id");
+      assert.equal(requests()[0].relayAgentId, CHILD_A);
+      controller.abort();
+      session.close();
+    });
+  });
 });

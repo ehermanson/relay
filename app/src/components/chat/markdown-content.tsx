@@ -127,7 +127,7 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   // Portal to document.body so it escapes overflow-hidden / transform parents
   return createPortal(
     <div
-      className="fixed inset-0 z-[9999] flex cursor-pointer flex-col bg-black/80 backdrop-blur-md pt-[env(safe-area-inset-top,0px)] pr-[env(safe-area-inset-right,0px)] pb-[env(safe-area-inset-bottom,0px)] pl-[env(safe-area-inset-left,0px)]"
+      className="fixed inset-0 z-[9999] flex cursor-pointer flex-col bg-black/80 backdrop-blur-md pt-[var(--app-top-inset)] pr-[env(safe-area-inset-right,0px)] pb-[env(safe-area-inset-bottom,0px)] pl-[env(safe-area-inset-left,0px)]"
       onClick={onClose}
     >
       {/* The close button gets its own row rather than being absolutely
@@ -157,7 +157,7 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
           <img
             src={src}
             alt={alt}
-            className="max-w-full rounded-xl object-contain shadow-2xl max-h-[calc(100dvh-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px)-6rem)]"
+            className="max-w-full rounded-xl object-contain shadow-2xl max-h-[calc(100dvh-var(--app-top-inset)-env(safe-area-inset-bottom,0px)-6rem)]"
           />
         </a>
       </div>

@@ -13,11 +13,12 @@
 import { useCallback, useMemo } from "react";
 import { create } from "zustand";
 
-export type SidecarTab = "tasks" | "files" | "plan" | "context" | "brief" | "review";
+export type SidecarTab = "tasks" | "agents" | "files" | "plan" | "context" | "brief" | "review";
 export type SidecarScope = "chat" | "space";
 
 const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
   "tasks",
+  "agents",
   "files",
   "plan",
   "context",
@@ -28,6 +29,7 @@ const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
 // Priority for fallback when the selected tab has no content.
 const FALLBACK_ORDER: readonly SidecarTab[] = [
   "tasks",
+  "agents",
   "files",
   "plan",
   "context",
@@ -185,6 +187,8 @@ interface UseSidecarPanelsOptions {
   hasPlanContent: boolean;
   hasStats: boolean;
   hasBriefContent?: boolean;
+  /** Delegated agents exist AND the provider advertises `supportsAgentActivity`. */
+  hasAgentsContent?: boolean;
   /**
    * When true, suppress the fallback to other content-bearing tabs. Used during
    * initial hydration so the sidecar doesn't flash to e.g. "context" before the
@@ -226,6 +230,7 @@ export function useSidecarPanels({
   hasPlanContent,
   hasStats,
   hasBriefContent = false,
+  hasAgentsContent = false,
   contentLoading = false,
   hasReviewContent = false,
 }: UseSidecarPanelsOptions): UseSidecarPanelsResult {
@@ -251,6 +256,8 @@ export function useSidecarPanels({
       switch (tab) {
         case "tasks":
           return hasTasksContent;
+        case "agents":
+          return hasAgentsContent;
         case "files":
           return hasFilesContent;
         case "plan":
@@ -263,7 +270,15 @@ export function useSidecarPanels({
           return hasReviewContent;
       }
     },
-    [hasTasksContent, hasFilesContent, hasPlanContent, hasStats, hasBriefContent, hasReviewContent],
+    [
+      hasTasksContent,
+      hasAgentsContent,
+      hasFilesContent,
+      hasPlanContent,
+      hasStats,
+      hasBriefContent,
+      hasReviewContent,
+    ],
   );
 
   const allContentPanels = useMemo(() => {

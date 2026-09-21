@@ -26,7 +26,7 @@ import type {
   ExitMessage,
   ActivityMessage,
   SystemEventMessage,
-  TranscriptMessage,
+  AgentUpdateMessage,
   UserMessage,
   QueuedRemovedMessage,
   ProviderGlobalState,
@@ -76,7 +76,7 @@ export function createWebSocketServer(
     | ActivityMessage
     | SystemEventMessage
     | ExitMessage
-    | TranscriptMessage
+    | AgentUpdateMessage
     | UserMessage
     | QueuedRemovedMessage;
   type ReplayEntry = { sequence: number; message: ReplayableServerMessage };
@@ -333,7 +333,7 @@ export function createWebSocketServer(
     },
   );
 
-  instanceManager.on("instance:transcript", (instanceId: string, message: TranscriptMessage) => {
+  instanceManager.on("instance:agent_update", (instanceId: string, message: AgentUpdateMessage) => {
     sendToSubscribers(instanceId, appendReplayEvent(instanceId, message));
   });
 

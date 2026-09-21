@@ -156,7 +156,11 @@ function ContextWindowBar({
   contextUsage: { contextTokens: number; contextWindow: number; usagePct: number };
   categories?: SessionStats["contextCategories"];
 }) {
-  const activeCategories = categories?.filter((c) => c.tokens > 0 && !/free\s*space/i.test(c.name));
+  const activeCategories = categories?.filter(
+    (c) =>
+      c.tokens > 0 &&
+      (c.kind ? c.kind === "used" || c.kind === "buffer" : !/free\s*space/i.test(c.name)),
+  );
   const hasCategories = activeCategories && activeCategories.length > 0;
 
   return (

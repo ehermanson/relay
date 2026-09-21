@@ -21,6 +21,8 @@ import type {
   OutputMessage,
   ExitMessage,
   ActivityMessage,
+  AgentInfo,
+  AgentUpdateMessage,
   EditToolInput,
   FileChange,
   ProviderAccountStatus,
@@ -59,8 +61,37 @@ import {
   buildCodexGenericToolUse,
   extractCodexToolOutput,
 } from "#core/providers/codex-tool-activity.js";
+import {
+  buildCodexCollabAgentUpdates,
+  buildCodexCollabToolResult,
+  buildCodexCollabToolUseFromCall,
+  buildCodexSubAgentUpdate,
+  codexAgentNameFromPath,
+  codexAgentUpdateProvenance,
+  normalizeCodexCollabToolCall,
+  normalizeCodexSubAgentActivity,
+  parseCodexAgentReport,
+  sanitizeCodexCollabRaw,
+} from "#core/providers/codex-agent-activity.js";
+import { mergeAgentInfo } from "#core/agent-info.js";
+
+/** Lifecycles a child cannot leave by merely finishing a turn. */
+const TERMINAL_AGENT_LIFECYCLES = new Set<AgentInfo["status"]>(["completed", "failed", "stopped"]);
 
 type SpawnFn = typeof spawn;
+
+/**
+ * Notifications a known child thread may deliver on the parent connection.
+ * Everything else scoped to a non-root thread (token usage, diffs, compaction,
+ * plan deltas, …) would clobber root state and is dropped.
+ */
+const CHILD_THREAD_NOTIFICATIONS = new Set([
+  "turn/started",
+  "turn/completed",
+  "item/agentMessage/delta",
+  "item/started",
+  "item/completed",
+]);
 
 // =============================================================================
 // JSON-RPC Types
@@ -786,6 +817,27 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly proposedPlanParser = new ProposedPlanStreamParser();
 
+  // ---------------------------------------------------------------------------
+  // Multi-agent (collaboration) state. `_sessionId` is the root thread; every
+  // other thread id must be a known child before its notifications are used.
+  // ---------------------------------------------------------------------------
+  /** Child thread id → last known agent state (sparse; only what Codex told us). */
+  private readonly knownAgents = new Map<string, AgentInfo>();
+  /** Agent path (`/root/<name>`) → child thread id, for resolving report authors. */
+  private readonly agentPaths = new Map<string, string>();
+  /** Per-thread streamed text (`<threadId>:<itemId>`), flushed on the child's item/turn completion. */
+  private readonly childTextBuffers = new Map<string, string>();
+  /** Collaboration call ids whose tool_use was already emitted (item/started vs item/completed). */
+  private readonly collabToolUseIds = new Set<string>();
+  /** Child agent whose items are currently being converted (stamped onto emitted activities). */
+  private _activityAgentId: string | undefined;
+  /**
+   * True while a `thread/start` / `thread/resume` RPC is in flight. During that
+   * window a `thread/started` announcing a different id than the seeded
+   * `_sessionId` is the (re-keyed) root, not a child.
+   */
+  private _rootThreadRpcPending = false;
+
   // Track whether we initiated close, to suppress spurious exit events
   private _closingIntentionally = false;
 
@@ -1110,7 +1162,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     // Step 2: Start or resume thread
     if (this._sessionId) {
       this.logger.info(`[CodexAppServer] Resuming thread ${this._sessionId}`);
-      const result = (await this.sendRpc("thread/resume", {
+      const result = await this.sendRootThreadRpc("thread/resume", {
         threadId: this._sessionId,
         model: this._preferredModel ?? undefined,
         cwd: this.cwd,
@@ -1118,16 +1170,10 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         sandbox: this.resolveSandboxMode(),
         persistExtendedHistory: true,
         ...this.resolveCodexModelParams(),
-      })) as { thread?: ThreadInfo };
-      if (result?.thread?.id) {
-        this._sessionId = result.thread.id;
-      }
-      if (result?.thread?.path) {
-        this._transcriptPath = result.thread.path;
-      }
+      });
       this.emitSessionInitEvent(result);
     } else {
-      const result = (await this.sendRpc("thread/start", {
+      const result = await this.sendRootThreadRpc("thread/start", {
         model: this._preferredModel ?? undefined,
         cwd: this.cwd,
         baseInstructions: this.bootstrapContext?.baseInstructions ?? undefined,
@@ -1137,13 +1183,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         experimentalRawEvents: false,
         persistExtendedHistory: true,
         ...this.resolveCodexModelParams(),
-      })) as { thread?: ThreadInfo };
-      if (result?.thread?.id) {
-        this._sessionId = result.thread.id;
-      }
-      if (result?.thread?.path) {
-        this._transcriptPath = result.thread.path;
-      }
+      });
       this.emitSessionInitEvent(result);
     }
 
@@ -1164,7 +1204,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
     if (this._sessionId) {
       this.logger.info(`[CodexAppServer] Resuming thread ${this._sessionId} for compaction`);
-      const result = (await this.sendRpc("thread/resume", {
+      await this.sendRootThreadRpc("thread/resume", {
         threadId: this._sessionId,
         model: this._preferredModel ?? undefined,
         cwd: this.cwd,
@@ -1172,18 +1212,33 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         sandbox: this.resolveSandboxMode(),
         persistExtendedHistory: true,
         ...this.resolveCodexModelParams(),
-      })) as { thread?: ThreadInfo };
-      if (result?.thread?.id) {
-        this._sessionId = result.thread.id;
-      }
-      if (result?.thread?.path) {
-        this._transcriptPath = result.thread.path;
-      }
+      });
     }
 
     this.requestStartupSnapshots();
 
     this.startCompaction();
+  }
+
+  /**
+   * `thread/start` / `thread/resume` with the in-flight flag set, so a
+   * `thread/started` notification that lands before the response can re-key
+   * the root (a resumed thread may come back under a new id). The response
+   * remains authoritative for the final id/path.
+   */
+  private async sendRootThreadRpc(
+    method: "thread/start" | "thread/resume",
+    params: Record<string, unknown>,
+  ): Promise<{ thread?: ThreadInfo }> {
+    this._rootThreadRpcPending = true;
+    try {
+      const result = (await this.sendRpc(method, params)) as { thread?: ThreadInfo };
+      if (result?.thread?.id) this._sessionId = result.thread.id;
+      if (result?.thread?.path) this._transcriptPath = result.thread.path;
+      return result;
+    } finally {
+      this._rootThreadRpcPending = false;
+    }
   }
 
   private requestStartupSnapshots(): void {
@@ -1757,6 +1812,28 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private handleNotification(msg: JsonRpcNotification): void {
     const params = msg.params as Record<string, unknown>;
 
+    // Thread scoping: anything tagged with a thread id other than the root is
+    // a child agent's traffic. Known children get attributed handling for a
+    // small set of notifications; unknown thread ids are never merged into the
+    // root stream.
+    const scopedThreadId = getString(params.threadId);
+    if (scopedThreadId && !this.isRootThread(scopedThreadId)) {
+      if (!this.knownAgents.has(scopedThreadId)) {
+        this.logger.debug?.(
+          `[CodexAppServer] Dropping ${msg.method} for unknown thread ${scopedThreadId}`,
+        );
+        return;
+      }
+      if (!CHILD_THREAD_NOTIFICATIONS.has(msg.method)) {
+        this.logger.debug?.(
+          `[CodexAppServer] Ignoring ${msg.method} for child thread ${scopedThreadId}`,
+        );
+        return;
+      }
+      this.handleChildThreadNotification(scopedThreadId, msg.method, params);
+      return;
+    }
+
     switch (msg.method) {
       // -----------------------------------------------------------------------
       // Thread lifecycle
@@ -1764,7 +1841,22 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
       case "thread/started": {
         const thread = params.thread as ThreadInfo | undefined;
         if (thread?.id) {
-          this._sessionId = thread.id;
+          if (!this._sessionId || this._rootThreadRpcPending) {
+            // No root yet, or the root RPC is still in flight: this announces
+            // the root itself (a resume can come back re-keyed under a new id).
+            if (thread.id !== this._sessionId) {
+              this.logger.info(
+                `[CodexAppServer] Root thread ${this._sessionId ?? "(new)"} announced as ${thread.id}`,
+              );
+            }
+            this._sessionId = thread.id;
+          } else if (thread.id !== this._sessionId) {
+            // A second thread on an established connection is a spawned child,
+            // not a new root. Its identity is only trusted once a collaboration
+            // item (subAgentActivity / collabAgentToolCall) names it.
+            this.noteChildThreadStarted(thread);
+            break;
+          }
         }
         if (thread?.path) {
           this._transcriptPath = thread.path;
@@ -1848,6 +1940,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
       // Streaming text
       // -----------------------------------------------------------------------
       case "item/agentMessage/delta": {
+        // Root-thread text only — child deltas are routed by the thread gate
+        // above and never touch the plan parser.
         const delta = params.delta as string;
         if (delta) {
           for (const message of this.proposedPlanParser.push(delta, params)) {
@@ -2196,15 +2290,253 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   // Item handling
   // ===========================================================================
 
+  // ===========================================================================
+  // Multi-agent: thread scoping + collaboration items
+  // ===========================================================================
+
+  private isRootThread(threadId: string | undefined): boolean {
+    return !threadId || !this._sessionId || threadId === this._sessionId;
+  }
+
+  private noteChildThreadStarted(thread: ThreadInfo): void {
+    const known = this.knownAgents.get(thread.id);
+    const raw = thread as ThreadInfo & Record<string, unknown>;
+    const nickname = getString(raw.agentNickname) ?? getString(raw.agent_nickname);
+    const role = getString(raw.agentRole) ?? getString(raw.agent_role);
+    if (!known) {
+      // Only `thread_spawn` metadata makes an unannounced thread a trusted child.
+      const spawn =
+        getRecord(getRecord(getRecord(raw.source)?.subagent)?.thread_spawn) ??
+        getRecord(getRecord(getRecord(raw.source)?.subagent)?.threadSpawn);
+      const parentThreadId = spawn
+        ? getString(spawn.parent_thread_id) ?? getString(spawn.parentThreadId)
+        : getString(raw.parentThreadId) ?? getString(raw.parent_thread_id);
+      if (!parentThreadId) {
+        this.logger.debug?.(
+          `[CodexAppServer] thread/started for unknown non-root thread ${thread.id}; ignoring`,
+        );
+        return;
+      }
+      const agentPath = spawn ? getString(spawn.agent_path) ?? getString(spawn.agentPath) : undefined;
+      const info: AgentInfo = {
+        agentId: thread.id,
+        providerAgentId: thread.id,
+        relation: "child",
+      };
+      const name = codexAgentNameFromPath(agentPath) ?? nickname;
+      if (name) info.name = name;
+      if (role) info.role = role;
+      if (parentThreadId !== this._sessionId) info.parentAgentId = parentThreadId;
+      if (agentPath) this.agentPaths.set(agentPath, thread.id);
+      this.emitAgentUpdate(info, { type: "thread/started", id: thread.id });
+      return;
+    }
+    const patch: AgentInfo = { agentId: thread.id };
+    if (role && !known.role) patch.role = role;
+    if (nickname && !known.name) patch.name = nickname;
+    if (Object.keys(patch).length > 1) {
+      this.emitAgentUpdate(patch, { type: "thread/started", id: thread.id });
+    }
+  }
+
+  /**
+   * Merge a sparse update into the known-agent map (field-level, via the
+   * shared `mergeAgentInfo`) and emit it. `raw` is a provenance stub only —
+   * never the provider item, which would duplicate `result`/`assignment` text.
+   */
+  private emitAgentUpdate(agent: AgentInfo, raw?: Record<string, unknown>): void {
+    const previous = this.knownAgents.get(agent.agentId);
+    this.knownAgents.set(agent.agentId, mergeAgentInfo(previous, agent));
+    this.emit("agentUpdate", {
+      type: "agent_update",
+      agent,
+      ...(raw !== undefined ? { raw } : {}),
+    } as AgentUpdateMessage);
+  }
+
+  /** Emit an activity, attributing it to the child agent currently being converted. */
+  private emitActivity(activity: ActivityMessage): void {
+    const agentId = this._activityAgentId;
+    // file_list is session-level (workspace files), never per-agent.
+    if (agentId && activity.activity !== "file_list") {
+      this.emit("activity", { ...activity, agentId });
+    } else {
+      this.emit("activity", activity);
+    }
+  }
+
+  private handleChildThreadNotification(
+    threadId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
+    switch (method) {
+      case "turn/started": {
+        const turn = params.turn as TurnInfo | undefined;
+        this.emitAgentUpdate(
+          { agentId: threadId, status: "running" },
+          { type: "turn/started", id: turn?.id ?? "" },
+        );
+        break;
+      }
+      case "turn/completed": {
+        this.flushChildText(threadId);
+        const turn = params.turn as TurnInfo | undefined;
+        const patch: AgentInfo = { agentId: threadId };
+        const known = this.knownAgents.get(threadId);
+        if (turn?.status === "failed") {
+          patch.status = "failed";
+          patch.endedAt = Date.now();
+        } else if (turn?.status === "interrupted") {
+          patch.status = "stopped";
+          patch.statusDetail = "interrupted";
+          patch.endedAt = Date.now();
+        } else if (known?.status && TERMINAL_AGENT_LIFECYCLES.has(known.status)) {
+          // A terminal state was already reported (SubAgentActivity(completed),
+          // FINAL_ANSWER, close_agent); a trailing turn end doesn't revive it.
+          patch.lastActivity = "Turn finished";
+        } else {
+          // A child's turn ending is not completion of its assignment — the
+          // parent's SubAgentActivity(completed) / FINAL_ANSWER says that. The
+          // child is parked, waiting for its next input.
+          patch.status = "waiting";
+          patch.lastActivity = "Turn finished";
+        }
+        this.emitAgentUpdate(patch, {
+          type: "turn/completed",
+          id: turn?.id ?? "",
+          ...(turn?.status ? { status: turn.status } : {}),
+        });
+        break;
+      }
+      case "item/agentMessage/delta": {
+        const delta = getString(params.delta);
+        if (!delta) break;
+        const key = `${threadId}:${getString(params.itemId) ?? "message"}`;
+        this.childTextBuffers.set(key, (this.childTextBuffers.get(key) ?? "") + delta);
+        break;
+      }
+      case "item/started": {
+        const item = params.item as ThreadItem;
+        this.withActivityAgent(threadId, () => this.handleItemStarted(item));
+        break;
+      }
+      case "item/completed": {
+        const item = params.item as ThreadItem;
+        if (item?.type === "agentMessage") {
+          const key = `${threadId}:${item.id}`;
+          const buffered = this.childTextBuffers.get(key);
+          this.childTextBuffers.delete(key);
+          const text = getString((item as AgentMessageItem).text) ?? buffered;
+          if (text) {
+            this.emit("output", { type: "output", text, agentId: threadId, raw: item } as OutputMessage);
+          }
+          break;
+        }
+        this.withActivityAgent(threadId, () => this.handleItemCompleted(item));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private withActivityAgent(agentId: string, fn: () => void): void {
+    const previous = this._activityAgentId;
+    this._activityAgentId = agentId;
+    try {
+      fn();
+    } finally {
+      this._activityAgentId = previous;
+    }
+  }
+
+  /** Emit any streamed-but-unterminated text for a child thread as attributed output. */
+  private flushChildText(threadId: string): void {
+    const prefix = `${threadId}:`;
+    for (const [key, text] of this.childTextBuffers) {
+      if (!key.startsWith(prefix)) continue;
+      this.childTextBuffers.delete(key);
+      if (text) this.emit("output", { type: "output", text, agentId: threadId } as OutputMessage);
+    }
+  }
+
+  /**
+   * Root-thread collaboration items. Returns true when handled. Emits the
+   * delegation tool_use (once per call id), a tool_result on completion, and
+   * the implied agent_updates.
+   */
+  private handleCollabItem(item: ThreadItem, phase: "started" | "completed"): boolean {
+    const call = normalizeCodexCollabToolCall(item);
+    if (call) {
+      // `prompt` may be ciphertext — the raw attached for debugging is sanitized.
+      const raw = sanitizeCodexCollabRaw(item);
+      if (!this.collabToolUseIds.has(call.id)) {
+        this.collabToolUseIds.add(call.id);
+        this.emitActivity(buildCodexCollabToolUseFromCall(call, raw));
+      }
+      for (const state of Object.values(call.agentsStates)) {
+        const threadId = state.agentThreadId;
+        if (state.agentPath && threadId) this.agentPaths.set(state.agentPath, threadId);
+      }
+      if (phase === "completed") {
+        const provenance = codexAgentUpdateProvenance(item);
+        for (const update of buildCodexCollabAgentUpdates(call, Date.now())) {
+          this.emitAgentUpdate(update, provenance);
+        }
+        this.emitActivity(buildCodexCollabToolResult(call, raw));
+      }
+      return true;
+    }
+
+    const activity = normalizeCodexSubAgentActivity(item);
+    if (activity) {
+      if (phase !== "completed") return true;
+      if (activity.agentPath) this.agentPaths.set(activity.agentPath, activity.agentThreadId);
+      this.emitAgentUpdate(
+        buildCodexSubAgentUpdate(activity, Date.now()),
+        codexAgentUpdateProvenance(item),
+      );
+      return true;
+    }
+
+    // Child → parent report surfaced as an authored agent message on the root.
+    // Unverified on the live wire (0.154 rollouts record it as a response_item);
+    // handled defensively so a plaintext FINAL_ANSWER becomes the agent's result.
+    if (item.type === "agentMessage" && typeof (item as Record<string, unknown>).author === "string") {
+      const report = parseCodexAgentReport({
+        type: "agent_message",
+        author: (item as Record<string, unknown>).author,
+        recipient: (item as Record<string, unknown>).recipient,
+        content: (item as Record<string, unknown>).content ?? (item as AgentMessageItem).text,
+      });
+      if (!report) return false;
+      const agentId = this.agentPaths.get(report.author);
+      if (!agentId) return true; // Reports from unknown agents are never shown as root text.
+      if (phase !== "completed") return true;
+      const provenance = codexAgentUpdateProvenance(item);
+      if (report.messageType === "FINAL_ANSWER") {
+        const patch: AgentInfo = { agentId, status: "completed", endedAt: Date.now() };
+        if (report.payload) patch.result = report.payload;
+        this.emitAgentUpdate(patch, provenance);
+      } else {
+        this.emitAgentUpdate({ agentId, lastActivity: "Sent a message" }, provenance);
+      }
+      return true;
+    }
+    return false;
+  }
+
   private handleItemStarted(item: ThreadItem): void {
     if (!item) return;
+    if (!this._activityAgentId && this.handleCollabItem(item, "started")) return;
 
     switch (item.type) {
       case "commandExecution": {
         const execution = item as CommandExecutionItem;
         const cmd = execution.command;
         const label = describeCodexCommand(cmd, execution.commandActions);
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_use",
           toolUseId: item.id,
@@ -2245,7 +2577,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
                   ...commonInput,
                   diff: change.diff,
                 } satisfies EditToolInput);
-          this.emit("activity", {
+          this.emitActivity({
             type: "activity",
             activity: "tool_use",
             toolUseId: item.id,
@@ -2262,7 +2594,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
       case "mcpToolCall": {
         const mcp = item as McpToolCallItem;
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_use",
           toolUseId: item.id,
@@ -2286,7 +2618,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         if (dyn.tool === "view_image") {
           const path = extractViewImagePath(dyn.arguments);
           const fileName = path ? path.split("/").pop() || path : undefined;
-          this.emit("activity", {
+          this.emitActivity({
             type: "activity",
             activity: "tool_use",
             toolUseId: item.id,
@@ -2299,7 +2631,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           } as ActivityMessage);
           break;
         }
-        this.emit("activity", {
+        this.emitActivity({
           ...buildCodexGenericToolUse(dyn.tool, dyn.arguments),
           toolUseId: item.id,
           raw: item,
@@ -2314,6 +2646,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   private handleItemCompleted(item: ThreadItem): void {
     if (!item) return;
+    if (!this._activityAgentId && this.handleCollabItem(item, "completed")) return;
 
     switch (item.type) {
       case "agentMessage": {
@@ -2328,7 +2661,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         const status =
           cmd.exitCode === 0 || cmd.status === "completed" ? "Command completed" : "Command failed";
 
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_result",
           toolUseId: item.id,
@@ -2350,7 +2683,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         }
 
         if (this.fileMap.size > 0) {
-          this.emit("activity", {
+          this.emitActivity({
             type: "activity",
             activity: "file_list",
             description: "Files changed",
@@ -2359,7 +2692,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         }
 
         const detail = fc.status === "completed" ? "Patch applied" : `Patch ${fc.status}`;
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_result",
           toolUseId: item.id,
@@ -2378,7 +2711,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         const path = extractGeneratedImagePath(item);
         if (path) {
           const fileName = path.split("/").pop() || path;
-          this.emit("activity", {
+          this.emitActivity({
             type: "activity",
             activity: "tool_use",
             toolUseId: item.id,
@@ -2395,7 +2728,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
       case "mcpToolCall": {
         const mcp = item as McpToolCallItem;
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_result",
           toolUseId: item.id,
@@ -2418,7 +2751,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         if (dyn.tool === "request_user_input") break;
         if (dyn.tool === "view_image") {
           const path = extractViewImagePath(dyn.arguments);
-          this.emit("activity", {
+          this.emitActivity({
             type: "activity",
             activity: "tool_result",
             toolUseId: item.id,
@@ -2430,7 +2763,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           } as ActivityMessage);
           break;
         }
-        this.emit("activity", {
+        this.emitActivity({
           type: "activity",
           activity: "tool_result",
           toolUseId: item.id,

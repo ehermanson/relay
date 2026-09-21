@@ -2,14 +2,20 @@ import { useCallback, useReducer, useRef } from "react";
 import type {
   ServerMessage,
   ActivityMessage,
+  AgentInfo,
   HistoryEntry,
+  MessageAuthor,
+  OutputMessage,
   TaskItem,
   FileChange,
   SystemEventMessage,
   InstanceStatus,
+  UserMessage,
 } from "@shared/types";
 import type { ChatItem, LiveActivity, MergedActivity } from "@/lib/chat-types";
 import { classifyLargeUserText } from "@/lib/message-rendering";
+import { hasAnchorInItems, isMainStreamAgent } from "@/lib/agents";
+import { mergeAgentInfo } from "@shared/agent-info";
 import { INTERACTIVE_TOOLS } from "@shared/tools";
 
 // Re-export for consumers
@@ -119,6 +125,34 @@ function mergeToolResult(activities: MergedActivity[], result: ActivityMessage):
   return false;
 }
 
+/**
+ * Merge a tool_result into an already-flushed item list: scan backwards past
+ * assistant/thinking rows to the nearest activity group(s). Returns true when
+ * the result was placed (merged into its call, or appended as a standalone
+ * permission-denied / interactive entry).
+ */
+function mergeToolResultIntoItems(items: ChatItem[], msg: ActivityMessage): boolean {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "activity-group") {
+      const acts = [...item.activities];
+      if (mergeToolResult(acts, msg)) {
+        items[i] = { kind: "activity-group", activities: acts };
+        return true;
+      }
+      if (msg.toolUseId && !msg.permissionDenied && !msg.resolution) {
+        continue;
+      }
+      // Permission denied / interactive — append as separate entry in the group
+      items[i] = { kind: "activity-group", activities: [...item.activities, msg] };
+      return true;
+    }
+    // Only skip past assistant and thinking items
+    if (item.kind !== "assistant" && item.kind !== "thinking-block") break;
+  }
+  return false;
+}
+
 function buildModelSwitchItem(
   payload: Record<string, unknown> | undefined,
   timestamp?: number,
@@ -155,12 +189,104 @@ function buildUserChatItem(
   };
 }
 
+function buildAgentNoteItem(
+  text: string,
+  author: MessageAuthor,
+  timestamp?: number,
+): Extract<ChatItem, { kind: "agent-note" }> {
+  return {
+    kind: "agent-note",
+    text,
+    name: author.name,
+    agentId: author.agentId,
+    timestamp,
+  };
+}
+
+// ── Per-stream append helpers (live) ─────────────────────────────────
+// Each takes an item list and returns a new list. They are shared by the main
+// stream and every nested agent stream so attributed messages accumulate with
+// exactly the same rules (activity grouping, tool-result pairing by id, output
+// concatenation) without ever touching the main list.
+
+function appendThinkingItem(items: ChatItem[], text: string): ChatItem[] {
+  return [...items, { kind: "thinking-block", text }];
+}
+
 /**
- * Process raw history entries into ChatItem[] for display.
- * Extracted so it can be reused outside the hook (e.g. space debug modal).
+ * Append streamed assistant text. Returns `null` when the chunk is a duplicate
+ * of the tail of the current assistant message (JSONL watcher re-emits).
  */
-export function replayHistoryToItems(history: HistoryEntry[]): ChatItem[] {
-  let items: ChatItem[] = [];
+function appendOutputText(items: ChatItem[], text: string, now: number): ChatItem[] | null {
+  const next = [...items];
+  const lastIdx = next.length - 1;
+  if (lastIdx >= 0 && next[lastIdx].kind === "assistant") {
+    const prev = next[lastIdx] as { kind: "assistant"; text: string; timestamp?: number };
+    if (prev.text.endsWith(text)) return null;
+    next[lastIdx] = {
+      kind: "assistant",
+      text: prev.text + text,
+      timestamp: prev.timestamp,
+    };
+  } else {
+    next.push({ kind: "assistant", text, timestamp: now });
+  }
+  return next;
+}
+
+/** Append a non-list activity (tool_use, tool_result, thinking) to a stream. */
+function appendActivityItem(items: ChatItem[], msg: ActivityMessage): ChatItem[] {
+  const next = [...items];
+  if (msg.activity === "thinking") {
+    next.push({ kind: "thinking-block", text: msg.detail || "" });
+    return next;
+  }
+  if (msg.activity === "tool_result") {
+    // The tool_use might be in the last activity group, or in an earlier group
+    // (if assistant text streamed between use and result).
+    if (!mergeToolResultIntoItems(next, msg)) {
+      // No activity group found — create one (shouldn't normally happen)
+      next.push({ kind: "activity-group", activities: [msg] });
+    }
+    return next;
+  }
+  // tool_use or other non-result activity — append to current group or create new
+  const lastIdx = next.length - 1;
+  if (lastIdx >= 0 && next[lastIdx].kind === "activity-group") {
+    const group = next[lastIdx] as { kind: "activity-group"; activities: MergedActivity[] };
+    next[lastIdx] = { kind: "activity-group", activities: [...group.activities, msg] };
+  } else {
+    next.push({ kind: "activity-group", activities: [msg] });
+  }
+  return next;
+}
+
+// ── Replay stream accumulator ────────────────────────────────────────
+
+interface ReplayStream {
+  output(msg: OutputMessage, timestamp?: number): void;
+  user(msg: UserMessage, timestamp?: number): void;
+  activity(msg: ActivityMessage): void;
+  /** Flush pending text/activities and push a standalone item. */
+  push(item: ChatItem): void;
+  /**
+   * Flush pending text/activities without pushing anything. A process exit
+   * (clean or not) ends whatever was streaming; without this, a restarted
+   * session's first response would be glued onto the interrupted one.
+   */
+  flush(): void;
+  /** Whether a tool_use with this id has been seen (flushed or pending). */
+  hasToolUse(toolUseId: string): boolean;
+  finish(): ChatItem[];
+}
+
+/**
+ * One conversation stream during replay. The main stream and each agent's
+ * nested transcript get their own instance so pending assistant text and
+ * activity groups can never bleed between them.
+ */
+function createReplayStream(): ReplayStream {
+  const items: ChatItem[] = [];
   let assistantText = "";
   let assistantTimestamp: number | undefined;
   let assistantAborted: boolean | undefined;
@@ -187,148 +313,233 @@ export function replayHistoryToItems(history: HistoryEntry[]): ChatItem[] {
     }
   };
 
+  return {
+    output(msg, timestamp) {
+      if (msg.thinking) {
+        items.push({ kind: "thinking-block", text: msg.thinking });
+      } else if (msg.text && msg.text.trim()) {
+        if (!assistantText.endsWith(msg.text)) {
+          flushActivities();
+          if (!assistantText) assistantTimestamp = timestamp;
+          assistantText += msg.text;
+        }
+      }
+      if (msg.isWaiting) {
+        flushActivities();
+        if (msg.modelTimestamp && assistantText) assistantTimestamp = msg.modelTimestamp;
+        flushAssistant(msg.aborted);
+      }
+    },
+    user(msg, timestamp) {
+      flushActivities();
+      flushAssistant();
+      const lastItem = items[items.length - 1];
+      if (
+        isImageOnly(msg.text) &&
+        !msg.queued &&
+        lastItem?.kind === "user" &&
+        !lastItem.queued &&
+        lastItem.timestamp &&
+        timestamp &&
+        Math.abs(timestamp - lastItem.timestamp) < 60_000
+      ) {
+        items[items.length - 1] = {
+          ...lastItem,
+          text: lastItem.text + "\n" + msg.text,
+        };
+      } else {
+        items.push(
+          buildUserChatItem(msg.text, timestamp, msg.queued, {
+            queuedId: msg.queuedId,
+            queuedSourceText: msg.queuedSourceText,
+            queuedImages: msg.queued ? msg.images : undefined,
+            queuedAttachments: msg.queued ? msg.attachments : undefined,
+          }),
+        );
+      }
+    },
+    activity(msg) {
+      if (msg.activity === "task_list" && msg.tasks) {
+        // skip — task lists don't produce chat items
+      } else if (msg.activity === "file_list" && msg.files) {
+        // skip — file lists don't produce chat items
+      } else if (msg.activity === "thinking") {
+        flushAssistant();
+        flushActivities();
+        items.push({ kind: "thinking-block", text: msg.detail || "" });
+      } else if (msg.activity === "tool_result") {
+        // Merge result into the matching tool_use
+        flushAssistant();
+        if (!mergeToolResult(currentActivities, msg)) {
+          // Couldn't merge into unflushed activities — scan backwards through
+          // flushed items (past assistant/thinking rows) to find the activity group.
+          if (!mergeToolResultIntoItems(items, msg)) {
+            currentActivities.push(msg);
+          }
+        }
+      } else {
+        flushAssistant();
+        currentActivities.push(msg);
+      }
+    },
+    push(item) {
+      flushActivities();
+      flushAssistant();
+      items.push(item);
+    },
+    flush() {
+      flushActivities();
+      flushAssistant();
+    },
+    hasToolUse(toolUseId) {
+      if (
+        currentActivities.some((act) => act.activity === "tool_use" && act.toolUseId === toolUseId)
+      ) {
+        return true;
+      }
+      return hasAnchorInItems(items, toolUseId);
+    },
+    finish() {
+      flushActivities();
+      flushAssistant();
+      return items;
+    },
+  };
+}
+
+export interface ReplayResult {
+  /** Main conversation (never contains agent-attributed messages). */
+  items: ChatItem[];
+  /** Delegated agents keyed by Relay agent key, after sparse upsert of every `agent_update`. */
+  agents: Record<string, AgentInfo>;
+  /** Nested transcripts keyed by Relay agent key. */
+  agentItems: Record<string, ChatItem[]>;
+}
+
+/**
+ * Process raw history entries into the main `ChatItem[]` plus delegated-agent
+ * state. Messages carrying `agentId` are routed to that agent's nested stream
+ * and never enter `items`; `agent_update`s upsert `agents` and, on first
+ * sighting without a visible origin tool_use, insert an `agent-card` item.
+ */
+export function replayHistory(history: HistoryEntry[]): ReplayResult {
+  const main = createReplayStream();
+  const agentStreams = new Map<string, ReplayStream>();
+  const agents: Record<string, AgentInfo> = {};
+  const streamFor = (agentId: string): ReplayStream => {
+    let stream = agentStreams.get(agentId);
+    if (!stream) {
+      stream = createReplayStream();
+      agentStreams.set(agentId, stream);
+    }
+    return stream;
+  };
+  // Nested delegation (a provider-declared parent, or an origin tool_use that
+  // lives in another agent's transcript) renders inside the parent's detail
+  // view and never gets a main-stream card — see `isMainStreamAgent`.
+  const isNested = (agent: AgentInfo): boolean => {
+    if (agent.parentAgentId) return true;
+    const origin = agent.originToolUseId;
+    if (!origin) return false;
+    for (const stream of agentStreams.values()) {
+      if (stream.hasToolUse(origin)) return true;
+    }
+    return false;
+  };
+
   for (const entry of history) {
     const msg = entry.message;
     switch (msg.type) {
       case "output":
-        if (msg.thinking) {
-          items.push({ kind: "thinking-block", text: msg.thinking });
-        } else if (msg.text && msg.text.trim()) {
-          if (!assistantText.endsWith(msg.text)) {
-            flushActivities();
-            if (!assistantText) assistantTimestamp = entry.timestamp;
-            assistantText += msg.text;
-          }
+        if (msg.agentId) {
+          streamFor(msg.agentId).output(msg, entry.timestamp);
+          break;
         }
-        if (msg.isWaiting) {
-          flushActivities();
-          if (msg.modelTimestamp && assistantText) assistantTimestamp = msg.modelTimestamp;
-          flushAssistant(msg.aborted);
-        }
+        main.output(msg, entry.timestamp);
         break;
       case "user": {
         if (msg.internal) break;
-        flushActivities();
-        flushAssistant();
-        const lastItem = items[items.length - 1];
-        if (
-          isImageOnly(msg.text) &&
-          !msg.queued &&
-          lastItem?.kind === "user" &&
-          !lastItem.queued &&
-          lastItem.timestamp &&
-          entry.timestamp &&
-          Math.abs(entry.timestamp - lastItem.timestamp) < 60_000
-        ) {
-          items[items.length - 1] = {
-            ...lastItem,
-            text: lastItem.text + "\n" + msg.text,
-          };
-        } else {
-          items.push(
-            buildUserChatItem(msg.text, entry.timestamp, msg.queued, {
-              queuedId: msg.queuedId,
-              queuedSourceText: msg.queuedSourceText,
-              queuedImages: msg.queued ? msg.images : undefined,
-              queuedAttachments: msg.queued ? msg.attachments : undefined,
-            }),
-          );
+        if (msg.agentId) {
+          streamFor(msg.agentId).user(msg, entry.timestamp);
+          break;
         }
+        if (msg.author?.kind === "agent") {
+          main.push(buildAgentNoteItem(msg.text, msg.author, entry.timestamp));
+          break;
+        }
+        main.user(msg, entry.timestamp);
         break;
       }
       case "activity":
-        if (msg.activity === "task_list" && msg.tasks) {
-          // skip — task lists don't produce chat items
-        } else if (msg.activity === "file_list" && msg.files) {
-          // skip — file lists don't produce chat items
-        } else if (msg.activity === "thinking") {
-          flushAssistant();
-          flushActivities();
-          items.push({ kind: "thinking-block", text: msg.detail || "" });
-        } else if (msg.activity === "tool_result") {
-          // Merge result into the matching tool_use
-          flushAssistant();
-          if (!mergeToolResult(currentActivities, msg)) {
-            // Couldn't merge into unflushed activities — scan backwards through
-            // flushed items (past assistant/thinking rows) to find the activity group.
-            let merged = false;
-            for (let j = items.length - 1; j >= 0; j--) {
-              if (items[j].kind === "activity-group") {
-                const acts = [
-                  ...(items[j] as { kind: "activity-group"; activities: MergedActivity[] })
-                    .activities,
-                ];
-                if (mergeToolResult(acts, msg)) {
-                  items[j] = { kind: "activity-group", activities: acts };
-                  merged = true;
-                } else if (msg.toolUseId && !msg.permissionDenied && !msg.resolution) {
-                  continue;
-                } else {
-                  // Permission denied / interactive — append as separate entry in the group
-                  items[j] = { kind: "activity-group", activities: [...acts, msg] };
-                  merged = true;
-                }
-                break;
-              }
-              // Only skip past assistant and thinking items
-              if (items[j].kind !== "assistant" && items[j].kind !== "thinking-block") break;
-            }
-            if (!merged) {
-              currentActivities.push(msg);
-            }
-          }
-        } else {
-          flushAssistant();
-          currentActivities.push(msg);
+        if (msg.agentId) {
+          streamFor(msg.agentId).activity(msg);
+          break;
         }
+        main.activity(msg);
         break;
-      case "system_event": {
-        flushActivities();
-        flushAssistant();
-        if (msg.event === "compact_boundary") {
-          items.push({ kind: "compact-boundary", timestamp: entry.timestamp });
-        } else if (msg.event === "model_switched") {
-          items.push(buildModelSwitchItem(msg.payload, entry.timestamp));
+      case "agent_update": {
+        const id = msg.agent.agentId;
+        const previous = agents[id];
+        agents[id] = mergeAgentInfo(previous, msg.agent);
+        if (!previous && !isNested(msg.agent)) {
+          const origin = msg.agent.originToolUseId;
+          if (!origin || !main.hasToolUse(origin)) {
+            main.push({ kind: "agent-card", agentId: id, timestamp: entry.timestamp });
+          }
         }
         break;
       }
-      case "transcript":
-        flushActivities();
-        flushAssistant();
-        items.push({
-          kind: "agent-transcript",
-          title: msg.title,
-          result: msg.result,
-          timestamp: entry.timestamp,
-        });
+      case "system_event": {
+        if (msg.event === "compact_boundary") {
+          main.push({ kind: "compact-boundary", timestamp: entry.timestamp });
+        } else if (msg.event === "model_switched") {
+          main.push(buildModelSwitchItem(msg.payload, entry.timestamp));
+        }
         break;
+      }
       case "exit":
-        flushActivities();
-        flushAssistant();
+        // Any exit ends the in-flight response, clean or not.
+        main.flush();
         if (msg.code !== 0) {
           let text = msg.signal
             ? `Chat process killed by ${msg.signal}`
             : `Chat process exited with code ${msg.code}`;
           if (msg.stderr) text += `\n${msg.stderr}`;
-          items.push({ kind: "system", text, isError: true });
+          main.push({ kind: "system", text, isError: true });
         }
         break;
       case "error":
-        flushActivities();
-        flushAssistant();
-        items.push({ kind: "system", text: `Error: ${msg.message}`, isError: true });
+        main.push({ kind: "system", text: `Error: ${msg.message}`, isError: true });
         break;
     }
   }
 
-  flushActivities();
-  flushAssistant();
+  const agentItems: Record<string, ChatItem[]> = {};
+  for (const [agentId, stream] of agentStreams) {
+    agentItems[agentId] = stream.finish();
+  }
 
-  return items;
+  return { items: main.finish(), agents, agentItems };
+}
+
+/**
+ * Process raw history entries into ChatItem[] for display.
+ * Extracted so it can be reused outside the hook (e.g. space debug modal).
+ */
+export function replayHistoryToItems(history: HistoryEntry[]): ChatItem[] {
+  return replayHistory(history).items;
 }
 
 interface State {
   items: ChatItem[];
+  /** Delegated agents keyed by Relay agent key (sparse-upserted from `agent_update`). */
+  agents: Record<string, AgentInfo>;
+  /**
+   * Nested transcripts keyed by Relay agent key. Attributed messages land here,
+   * never in `items`. Both maps are replaced (never mutated) on change, so
+   * consumers memoize on reference equality.
+   */
+  agentItems: Record<string, ChatItem[]>;
   hasLoadedHistory: boolean;
   /** True once the active selection has been refreshed from WS replay or REST fallback. */
   hasSyncedHistory: boolean;
@@ -371,6 +582,8 @@ type Action =
       modelTimestamp?: number;
       aborted?: boolean;
       eventSequence?: number;
+      /** Delegated-agent attribution — routes to `agentItems[agentId]`. */
+      agentId?: string;
     }
   | { type: "activity"; message: ActivityMessage }
   | {
@@ -383,10 +596,13 @@ type Action =
       queuedImages?: string[];
       queuedAttachments?: string[];
       eventSequence?: number;
+      author?: MessageAuthor;
+      /** Delegated-agent attribution — routes to `agentItems[agentId]`. */
+      agentId?: string;
     }
+  | { type: "agent_update"; agent: AgentInfo; eventSequence?: number }
   | { type: "clear_queued" }
   | { type: "remove_queued"; queuedId: string; eventSequence?: number }
-  | { type: "transcript"; title: string; result: string; eventSequence?: number }
   | { type: "exit"; code: number; signal?: string; stderr?: string; eventSequence?: number }
   | { type: "error"; message: string }
   | { type: "notification"; message: string }
@@ -429,6 +645,8 @@ function setCacheEntry(id: string, state: State) {
 
 const EMPTY_STATE: State = {
   items: [],
+  agents: {},
+  agentItems: {},
   hasLoadedHistory: false,
   hasSyncedHistory: false,
   isProcessing: false,
@@ -468,6 +686,14 @@ export function primeInstanceMessagesCache(instanceId: string): void {
   });
 }
 
+/** Replace one agent's nested stream (new `agentItems` reference). */
+function withAgentItems(state: State, agentId: string, items: ChatItem[]): State {
+  return {
+    ...state,
+    agentItems: { ...state.agentItems, [agentId]: items },
+  };
+}
+
 function coreReducer(state: State, action: Action): State {
   switch (action.type) {
     case "reset":
@@ -499,14 +725,14 @@ function coreReducer(state: State, action: Action): State {
         };
       }
 
-      const items = replayHistoryToItems(action.history);
+      const { items, agents, agentItems } = replayHistory(action.history);
 
       // Extract latest task/file lists from activity messages
       let currentTasks: TaskItem[] | null = null;
       let currentFiles: FileChange[] | null = null;
       for (const entry of action.history) {
         const msg = entry.message;
-        if (msg.type === "activity") {
+        if (msg.type === "activity" && !msg.agentId) {
           if (msg.activity === "task_list" && msg.tasks) currentTasks = msg.tasks;
           else if (msg.activity === "file_list" && msg.files)
             currentFiles = mergeFileLists(currentFiles, msg.files);
@@ -515,6 +741,8 @@ function coreReducer(state: State, action: Action): State {
 
       return {
         items,
+        agents,
+        agentItems,
         hasLoadedHistory: true,
         hasSyncedHistory: true,
         isProcessing: false,
@@ -530,12 +758,26 @@ function coreReducer(state: State, action: Action): State {
     }
 
     case "output": {
+      // Attributed output belongs to a child agent's nested transcript. It never
+      // touches `items` or the main turn's processing flags — a child's
+      // `isWaiting` does not end the orchestrator's turn.
+      if (action.agentId) {
+        const stream = state.agentItems[action.agentId] ?? [];
+        if (action.thinking) {
+          return withAgentItems(state, action.agentId, appendThinkingItem(stream, action.thinking));
+        }
+        if (action.text) {
+          const next = appendOutputText(stream, action.text, Date.now());
+          if (!next) return state;
+          return withAgentItems(state, action.agentId, next);
+        }
+        return state;
+      }
+
       if (action.thinking) {
-        const items = [...state.items];
-        items.push({ kind: "thinking-block", text: action.thinking });
         return {
           ...state,
-          items,
+          items: appendThinkingItem(state.items, action.thinking),
           isProcessing: true,
           showThinkingIndicator: true,
           lastActivity: buildLiveActivity(
@@ -550,35 +792,12 @@ function coreReducer(state: State, action: Action): State {
       }
 
       if (action.text) {
-        const items = [...state.items];
-
-        // Append to existing assistant message or create new one
-        const lastIdx = items.length - 1;
-        if (lastIdx >= 0 && items[lastIdx].kind === "assistant") {
-          const prev = items[lastIdx] as { kind: "assistant"; text: string; timestamp?: number };
-          // Dedup: skip if the incoming text is already at the end of the current message
-          // (can happen when JSONL watcher re-emits content after the live stream)
-          if (prev.text.endsWith(action.text)) {
-            if (action.isWaiting) {
-              return {
-                ...state,
-                items,
-                isProcessing: false,
-                showThinkingIndicator: false,
-                lastActivity: null,
-                processingStartedAt: null,
-              };
-            }
-            return state;
-          }
-          items[lastIdx] = {
-            kind: "assistant",
-            text: prev.text + action.text,
-            timestamp: prev.timestamp,
-          };
-        } else {
-          items.push({ kind: "assistant", text: action.text, timestamp: Date.now() });
-        }
+        // Append to existing assistant message or create new one. Dedup: skip if
+        // the incoming text is already at the end of the current message (can
+        // happen when JSONL watcher re-emits content after the live stream).
+        const appended = appendOutputText(state.items, action.text, Date.now());
+        const items = appended ?? state.items;
+        if (!appended && !action.isWaiting) return state;
 
         if (action.isWaiting) {
           return {
@@ -621,12 +840,22 @@ function coreReducer(state: State, action: Action): State {
     }
 
     case "activity": {
-      if (action.message.activity === "task_list" && action.message.tasks) {
+      const msg = action.message;
+
+      // Attributed activity → the agent's nested stream only. Child task/file
+      // lists are not surfaced (the sidecar panels describe the main chat).
+      if (msg.agentId) {
+        if (msg.activity === "task_list" || msg.activity === "file_list") return state;
+        const stream = state.agentItems[msg.agentId] ?? [];
+        return withAgentItems(state, msg.agentId, appendActivityItem(stream, msg));
+      }
+
+      if (msg.activity === "task_list" && msg.tasks) {
         return {
           ...state,
           isProcessing: true,
           showThinkingIndicator: true,
-          currentTasks: action.message.tasks,
+          currentTasks: msg.tasks,
           lastActivity: buildLiveActivity(
             {
               phase: "task_list",
@@ -636,12 +865,12 @@ function coreReducer(state: State, action: Action): State {
             state.lastActivity,
           ),
         };
-      } else if (action.message.activity === "file_list" && action.message.files) {
+      } else if (msg.activity === "file_list" && msg.files) {
         return {
           ...state,
           isProcessing: true,
           showThinkingIndicator: true,
-          currentFiles: mergeFileLists(state.currentFiles, action.message.files),
+          currentFiles: mergeFileLists(state.currentFiles, msg.files),
           lastActivity: buildLiveActivity(
             {
               phase: "file_list",
@@ -651,12 +880,10 @@ function coreReducer(state: State, action: Action): State {
             state.lastActivity,
           ),
         };
-      } else if (action.message.activity === "thinking") {
-        const items = [...state.items];
-        items.push({ kind: "thinking-block", text: action.message.detail || "" });
+      } else if (msg.activity === "thinking") {
         return {
           ...state,
-          items,
+          items: appendActivityItem(state.items, msg),
           isProcessing: true,
           showThinkingIndicator: true,
           lastActivity: buildLiveActivity(
@@ -669,94 +896,59 @@ function coreReducer(state: State, action: Action): State {
           ),
         };
       } else {
-        const items = [...state.items];
-        const msg = action.message;
-
-        if (msg.activity === "tool_result") {
-          // Merge tool_result into the matching tool_use entry.
-          // The tool_use might be in the last activity group, or in an
-          // earlier group (if assistant text streamed between use and result).
-          let merged = false;
-
-          // Scan backwards through items to find an activity group
-          for (let i = items.length - 1; i >= 0; i--) {
-            if (items[i].kind === "activity-group") {
-              const group = items[i] as { kind: "activity-group"; activities: MergedActivity[] };
-              const acts = [...group.activities];
-              if (mergeToolResult(acts, msg)) {
-                items[i] = { kind: "activity-group", activities: acts };
-                merged = true;
-              } else if (msg.toolUseId && !msg.permissionDenied && !msg.resolution) {
-                continue;
-              } else {
-                // Couldn't merge (permission denied / interactive result) — append as
-                // a separate entry in this group. This is safe because the live reducer
-                // processes events sequentially; the most recent activity group always
-                // corresponds to the current tool call sequence.
-                items[i] = { kind: "activity-group", activities: [...group.activities, msg] };
-                merged = true;
-              }
-              break;
-            }
-            // Only skip past assistant and thinking items
-            if (items[i].kind !== "assistant" && items[i].kind !== "thinking-block") break;
-          }
-
-          if (!merged) {
-            // No activity group found — create one (shouldn't normally happen)
-            items.push({ kind: "activity-group", activities: [msg] });
-          }
-        } else {
-          // tool_use or other non-result activity — append to current group or create new
-          const lastIdx = items.length - 1;
-          if (lastIdx >= 0 && items[lastIdx].kind === "activity-group") {
-            const group = items[lastIdx] as {
-              kind: "activity-group";
-              activities: MergedActivity[];
-            };
-            items[lastIdx] = {
-              kind: "activity-group",
-              activities: [...group.activities, msg],
-            };
-          } else {
-            items.push({ kind: "activity-group", activities: [msg] });
-          }
-        }
-
         // Build a contextual description from the activity
         return {
           ...state,
-          items,
+          items: appendActivityItem(state.items, msg),
           isProcessing: true,
           showThinkingIndicator: true,
-          lastActivity: buildLiveActivity(
-            classifyActivityForStrip(action.message),
-            state.lastActivity,
-          ),
+          lastActivity: buildLiveActivity(classifyActivityForStrip(msg), state.lastActivity),
         };
       }
     }
 
-    case "transcript": {
-      const items = [...state.items];
-      items.push({
-        kind: "agent-transcript",
-        title: action.title,
-        result: action.result,
-        timestamp: Date.now(),
-      });
-      return {
-        ...state,
-        items,
-        showThinkingIndicator: false,
-      };
+    case "agent_update": {
+      const id = action.agent.agentId;
+      const previous = state.agents[id];
+      const agents = { ...state.agents, [id]: mergeAgentInfo(previous, action.agent) };
+      let items = state.items;
+      if (!previous && isMainStreamAgent(action.agent, state.agentItems)) {
+        // First sighting: anchored agents render in place of their delegation
+        // tool_use; anything else gets one inserted card, keyed by agentId.
+        // Nested agents (see `isMainStreamAgent`) render inside their parent's
+        // detail instead and never get a main-stream card.
+        const origin = action.agent.originToolUseId;
+        if (!origin || !hasAnchorInItems(state.items, origin)) {
+          items = [...state.items, { kind: "agent-card", agentId: id, timestamp: Date.now() }];
+        }
+      }
+      return { ...state, items, agents };
     }
 
     case "user": {
       // Hide programmatically-injected messages (e.g. auto-continue after restart)
       if (action.internal) return state;
-      const items = [...state.items];
       const now = Date.now();
+
+      // Attributed user-role messages (e.g. a child's assignment prompt) belong
+      // to the child's transcript, never the main stream.
+      if (action.agentId) {
+        const stream = state.agentItems[action.agentId] ?? [];
+        return withAgentItems(state, action.agentId, [
+          ...stream,
+          buildUserChatItem(action.text, now),
+        ]);
+      }
+
+      // Agent-authored inbound messages are notes, never human bubbles.
+      if (action.author?.kind === "agent") {
+        return {
+          ...state,
+          items: [...state.items, buildAgentNoteItem(action.text, action.author, now)],
+        };
+      }
+
+      const items = [...state.items];
 
       // When the queue drains, the server sends one coalesced non-queued user
       // message that replaces all the queued placeholders.  Strip the old
@@ -942,8 +1134,8 @@ function getActionSequence(action: Action): number | undefined {
     case "output":
     case "user":
     case "remove_queued":
-    case "transcript":
     case "exit":
+    case "agent_update":
       return action.eventSequence;
     case "activity":
       return action.message.eventSequence;
@@ -963,6 +1155,11 @@ function actionToHistoryEntry(action: Action): HistoryEntry | null {
       return { timestamp: now, message: action.message };
     case "system_event":
       return { timestamp: now, message: action.message };
+    case "agent_update":
+      return {
+        timestamp: now,
+        message: { type: "agent_update", agent: action.agent } as ServerMessage,
+      };
     case "output":
       return {
         timestamp: now,
@@ -974,6 +1171,7 @@ function actionToHistoryEntry(action: Action): HistoryEntry | null {
           thinking: action.thinking,
           modelTimestamp: action.modelTimestamp,
           aborted: action.aborted,
+          agentId: action.agentId,
         } as ServerMessage,
       };
     case "user":
@@ -989,6 +1187,8 @@ function actionToHistoryEntry(action: Action): HistoryEntry | null {
           queuedSourceText: action.queuedSourceText,
           images: action.queuedImages,
           attachments: action.queuedAttachments,
+          author: action.author,
+          agentId: action.agentId,
         } as ServerMessage,
       };
     case "exit":
@@ -1093,6 +1293,7 @@ export function useInstanceMessages() {
               modelTimestamp: message.modelTimestamp,
               aborted: message.aborted,
               eventSequence: message.eventSequence,
+              agentId: message.agentId,
             });
           }
           break;
@@ -1113,6 +1314,17 @@ export function useInstanceMessages() {
               queuedImages: message.queued ? message.images : undefined,
               queuedAttachments: message.queued ? message.attachments : undefined,
               eventSequence: message.eventSequence,
+              author: message.author,
+              agentId: message.agentId,
+            });
+          }
+          break;
+        case "agent_update":
+          if (!message.instanceId || message.instanceId === instanceId) {
+            dispatchAndRecord(instanceId, {
+              type: "agent_update",
+              agent: message.agent,
+              eventSequence: message.eventSequence,
             });
           }
           break;
@@ -1121,16 +1333,6 @@ export function useInstanceMessages() {
             dispatchAndRecord(instanceId, {
               type: "remove_queued",
               queuedId: message.queuedId,
-              eventSequence: message.eventSequence,
-            });
-          }
-          break;
-        case "transcript":
-          if (message.instanceId === instanceId) {
-            dispatchAndRecord(instanceId, {
-              type: "transcript",
-              title: message.title,
-              result: message.result,
               eventSequence: message.eventSequence,
             });
           }
@@ -1250,6 +1452,8 @@ export function useInstanceMessages() {
 
   return {
     items: state.items,
+    agents: state.agents,
+    agentItems: state.agentItems,
     hasLoadedHistory: state.hasLoadedHistory,
     hasSyncedHistory: state.hasSyncedHistory,
     isProcessing: state.isProcessing,

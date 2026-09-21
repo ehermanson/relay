@@ -732,9 +732,10 @@ describe("scanAllSessions archive protection", () => {
     removeWorktree(repoDir, wt.worktreePath, wt.branchName, { keepBranch: true });
     cleanupWorktrees.length = 0;
 
+    const warnings = [];
     const config = resolveConfig({
       password: "test",
-      logger: noopLogger,
+      logger: { ...noopLogger, warn: (message) => warnings.push(message) },
       maxProcesses: 3,
       dbPath: join(tempDir, "sessions.db"),
       providerDirs: {
@@ -795,6 +796,48 @@ describe("scanAllSessions archive protection", () => {
     const row = manager.db.getManagedByInstanceId("managed-space-instance");
     assert.equal(row?.space_id, "recovered-space-9abc1234");
 
+    // Closing a space must survive recovery, including legacy rows that lost
+    // their explicit ownership. Managed and external restores stay read-only,
+    // without warning about worktrees that were intentionally removed.
+    for (const status of ["completed", "archived"]) {
+      manager.db.updateSpaceStatus(recoveredSpace.id, status);
+      for (const spaceId of [recoveredSpace.id, null]) {
+        manager.db.updateManagedSpaceId(row.instance_id, spaceId);
+        assert.equal(manager.getSpaceManager().recoverSpacesFromSessionMetadata(), 0);
+        assert.equal(manager.getSpaceManager().getSpace(recoveredSpace.id).status, status);
+        assert.equal(
+          manager.db.getManagedByInstanceId(row.instance_id).space_id,
+          recoveredSpace.id,
+        );
+      }
+      const restoredRow = manager.db.getManagedByInstanceId(row.instance_id);
+      assert.equal(manager.restoreManagedFromRow(restoredRow), true);
+      assert.equal(manager.instances.get(row.instance_id).info.workingDirectory, wt.worktreePath);
+      manager.instances.delete(row.instance_id);
+      const externalRow = {
+        ...restoredRow,
+        type: "external",
+        session_id: "external-closed-session",
+        instance_id: "external-closed-instance",
+        jsonl_path: restoredRow.transcript_path,
+        allowed_tools: "[]",
+      };
+      assert.equal(manager.restoreExternalFromRow(externalRow), true);
+      assert.equal(
+        manager.instances.get(externalRow.instance_id).info.workingDirectory,
+        wt.worktreePath,
+      );
+      manager.instances.delete(externalRow.instance_id);
+    }
+    assert.deepEqual(
+      warnings.filter((message) => message.includes("no longer usable")),
+      [],
+    );
+
+    // A truly broken active space still warns.
+    manager.db.updateSpaceStatus(recoveredSpace.id, "active");
+    manager.restoreManagedFromRow(manager.db.getManagedByInstanceId(row.instance_id));
+    assert.equal(warnings.filter((message) => message.includes("no longer usable")).length, 1);
     manager.stopAll();
   });
 

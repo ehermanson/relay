@@ -28,7 +28,7 @@ export function MobileSidecarOverlay({ onClose, children }: MobileSidecarOverlay
       open={open}
       onOpenChange={setOpen}
       onExitComplete={onClose}
-      containerClassName="p-2 pt-[calc(env(safe-area-inset-top,0px)+0.5rem)]"
+      containerClassName="p-2 pt-[calc(var(--app-top-inset)+0.5rem)]"
       panelClassName="min-h-0"
     >
       {children}

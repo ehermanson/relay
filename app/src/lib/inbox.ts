@@ -8,11 +8,13 @@
  */
 
 import { isAttachedReviewInstance } from "@/lib/review-session";
-import { compareChatListOrder, getChatRecencyTimestamp, isChatDone } from "@/lib/utils";
+import { getChatRecencyTimestamp, isChatDone } from "@/lib/utils";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
 
-export interface InboxEntry {
-  instance: InstanceInfo;
+interface InboxEntryBase {
+  /** Namespaced destination id, safe to use as a React key. */
+  id: string;
+  kind: "chat" | "space";
   /** Directory of the owning project — the stable key for filtering. */
   dir: string;
   /** Display name of the owning project. */
@@ -20,10 +22,30 @@ export interface InboxEntry {
   /** Route identifier for the owning project (slug, UUID, or basename). */
   projectId: string;
   iconPath?: string;
-  /** The space this chat belongs to, when it isn't in the implicit main space. */
-  space?: SpaceInfo;
   done: boolean;
+  pinned: boolean;
+  recencyAt: number;
 }
+
+export interface InboxChatEntry extends InboxEntryBase {
+  kind: "chat";
+  instance: InstanceInfo;
+  /** Resolved default-space metadata, when present. */
+  space?: SpaceInfo;
+}
+
+export interface InboxSpaceEntry extends InboxEntryBase {
+  kind: "space";
+  space: SpaceInfo;
+  /** Eligible member chats; attached review chats are excluded. */
+  instances: InstanceInfo[];
+  /** Processing chats that are not waiting for the user. */
+  workingCount: number;
+  /** Chats with errors or waiting for permission/an answer. */
+  attentionInstances: InstanceInfo[];
+}
+
+export type InboxEntry = InboxChatEntry | InboxSpaceEntry;
 
 export interface InboxProjectOption {
   dir: string;
@@ -55,17 +77,47 @@ export interface InboxSourceGroup {
   project?: { id?: string };
 }
 
-/** Flatten project groups into one recency-sorted list, pinned chats first. */
+function isAttentionInstance(instance: InstanceInfo): boolean {
+  if (instance.status === "stopped") return false;
+  // These are provider-normalized fields; no driver-specific tool/status names
+  // belong in inbox grouping.
+  return (
+    instance.status === "error" ||
+    !!instance.pendingPermission ||
+    !!instance.pendingPlan ||
+    !!instance.pendingTool
+  );
+}
+
+function compareInboxEntries(a: InboxEntry, b: InboxEntry): number {
+  const pinnedDelta = Number(b.pinned) - Number(a.pinned);
+  if (pinnedDelta !== 0) return pinnedDelta;
+  return b.recencyAt - a.recencyAt || a.id.localeCompare(b.id);
+}
+
+/** Flatten project groups into one destination list, grouping named spaces. */
 export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEntry[] {
   const entries: InboxEntry[] = [];
   for (const group of groups) {
     const spacesById = new Map(group.spaces.map((space) => [space.id, space]));
+    const instancesBySpace = new Map<string, InstanceInfo[]>();
     for (const instance of group.groupInstances) {
       // Review chats stay attached to the chat they audit — surfacing them as
       // peers in a flat list would double-count the same work.
       if (isAttachedReviewInstance(instance)) continue;
       const space = instance.spaceId ? spacesById.get(instance.spaceId) : undefined;
+      // Missing metadata can be a transient loading state. Keep the chat
+      // visible until its named space is actually resolved.
+      if (space && !space.isDefault) {
+        const members = instancesBySpace.get(space.id) ?? [];
+        members.push(instance);
+        instancesBySpace.set(space.id, members);
+        continue;
+      }
+      const recencyAt = getChatRecencyTimestamp(instance);
       entries.push({
+        id: `chat:${instance.id}`,
+        kind: "chat",
         instance,
         dir: group.dir,
         projectName: group.name,
@@ -73,10 +125,65 @@ export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEnt
         iconPath: group.iconPath,
         space,
         done: isChatDone(instance, space?.status),
+        pinned: !!instance.pinned,
+        recencyAt,
+      });
+    }
+
+    for (const space of group.spaces) {
+      if (space.isDefault) continue;
+      const instances = instancesBySpace.get(space.id) ?? [];
+      const attentionInstances = instances.filter(isAttentionInstance);
+      const attentionIds = new Set(attentionInstances.map((instance) => instance.id));
+      const workingCount = instances.filter(
+        (instance) => instance.status === "processing" && !attentionIds.has(instance.id),
+      ).length;
+      const memberRecency = instances.reduce(
+        (latest, instance) => Math.max(latest, getChatRecencyTimestamp(instance)),
+        0,
+      );
+      entries.push({
+        id: `space:${space.id}`,
+        kind: "space",
+        dir: group.dir,
+        projectName: group.name,
+        projectId: group.projectId,
+        iconPath: group.iconPath,
+        space,
+        instances,
+        workingCount,
+        attentionInstances,
+        done: space.status === "completed" || space.status === "archived",
+        pinned: !!space.pinned,
+        recencyAt: Math.max(space.lastActivityAt ?? 0, space.createdAt ?? 0, memberRecency),
       });
     }
   }
-  return entries.sort((a, b) => compareChatListOrder(a.instance, b.instance));
+  return entries.sort(compareInboxEntries);
+}
+
+export function isInboxEntryCurrent(entry: InboxEntry, chatId?: string, spaceId?: string): boolean {
+  if (entry.kind === "chat") return !!chatId && entry.instance.id === chatId;
+  return (
+    entry.space.id === spaceId || (!!chatId && entry.instances.some((item) => item.id === chatId))
+  );
+}
+
+/** Apply a list cap while retaining the current chat or space destination. */
+export function capInboxEntries(
+  entries: readonly InboxEntry[],
+  limit: number,
+  chatId?: string,
+  spaceId?: string,
+  extraEntries: readonly InboxEntry[] = [],
+): InboxEntry[] {
+  const visible = entries.slice(0, limit);
+  if (visible.some((entry) => isInboxEntryCurrent(entry, chatId, spaceId))) return visible;
+  const current = [...entries, ...extraEntries].find((entry) =>
+    isInboxEntryCurrent(entry, chatId, spaceId),
+  );
+  if (current && !visible.some((entry) => entry.id === current.id)) visible.push(current);
+  return visible;
 }
 
 /** Scope to one project directory; `null` means every project. */
@@ -98,7 +205,7 @@ export function partitionInboxEntries(entries: readonly InboxEntry[]): {
   // Done is an archive: a pin means "keep this in front of me", which a chat
   // marked done no longer needs — so the section orders by recency alone
   // rather than inheriting the active list's pinned-first sort.
-  done.sort((a, b) => getChatRecencyTimestamp(b.instance) - getChatRecencyTimestamp(a.instance));
+  done.sort((a, b) => b.recencyAt - a.recencyAt || a.id.localeCompare(b.id));
   return { active, done };
 }
 
@@ -122,9 +229,14 @@ export function selectStaleInboxEntries(
   entries: readonly InboxEntry[],
   now: number,
   days: number = STALE_CHAT_DONE_DAYS,
-): InboxEntry[] {
+): InboxChatEntry[] {
   const cutoff = now - days * DAY_MS;
-  return entries.filter((entry) => {
+  return entries.filter((entry): entry is InboxChatEntry => {
+    if (entry.kind !== "chat") return false;
+    // An unresolved space is a loading state, not a standalone chat. Keep its
+    // fallback row visible, but never let the bulk sweep mutate it before the
+    // space metadata arrives and groups it under its real destination.
+    if (entry.instance.spaceId && !entry.space) return false;
     if (entry.done || entry.instance.status === "processing") return false;
     const recencyAt = getChatRecencyTimestamp(entry.instance);
     return recencyAt > 0 && recencyAt < cutoff;
