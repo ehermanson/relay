@@ -230,7 +230,7 @@ export function DiffDrawer({
       <div className="animate-fade-in absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
       <div
-        className="diff-drawer animate-slide-in-right relative ml-auto flex h-full w-full max-w-full md:max-w-[90vw] flex-col overflow-hidden border-l border-border bg-surface pt-[env(safe-area-inset-top,0px)] shadow-2xl lg:max-w-[80vw]"
+        className="diff-drawer animate-slide-in-right relative ml-auto flex h-full w-full max-w-full md:max-w-[90vw] flex-col overflow-hidden border-l border-border bg-surface pt-[var(--app-top-inset)] shadow-2xl lg:max-w-[80vw]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-4 py-3">

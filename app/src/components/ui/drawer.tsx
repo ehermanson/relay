@@ -40,7 +40,7 @@ function DrawerContent({
         className={`fixed inset-0 z-[9999] transition-opacity duration-200 ease-out data-[ending-style]:opacity-0 data-[starting-style]:opacity-0 ${showBackdrop ? "bg-black/40 backdrop-blur-sm" : ""}`}
       />
       <BaseDrawer.Popup
-        className={`fixed inset-y-0 right-0 z-[9999] flex ${width} flex-col border-l border-border/70 bg-surface pt-[env(safe-area-inset-top,0px)] shadow-2xl transition-[transform,translate,scale,box-shadow,opacity] duration-200 ease-out data-[ending-style]:translate-x-full data-[starting-style]:translate-x-full ${className}`}
+        className={`fixed inset-y-0 right-0 z-[9999] flex ${width} flex-col border-l border-border/70 bg-surface pt-[var(--app-top-inset)] shadow-2xl transition-[transform,translate,scale,box-shadow,opacity] duration-200 ease-out data-[ending-style]:translate-x-full data-[starting-style]:translate-x-full ${className}`}
         style={style}
       >
         {children}

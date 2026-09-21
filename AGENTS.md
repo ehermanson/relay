@@ -112,6 +112,12 @@ Zero relative path navigation (`../`) in any server/cli import.
 - `decodeProjectDir()` uses greedy filesystem-validated decode (not naive `-` → `/`) to handle dashed project names
 - JSONL watchers track incremental changes with dedup: suppressed while process is active, offset advanced to EOF when process finishes
 
+### iOS Standalone Top-Edge Blur
+
+`index.css` defines `--app-top-inset`: the native safe-area inset plus 22px in iOS standalone mode (`@supports (-webkit-touch-callout: none)` plus `display-mode: standalone`). The body and viewport-fixed overlays (sidebar, sidecar, drawers, dialogs, image viewer) consume this one value. New viewport-edge content must use it instead of reading `env(safe-area-inset-top)` directly; nested headers must not apply it again. Dialog and image height limits account for the same inset. This leaves the system's blurred top band empty rather than trying to disable it. Safari Web Inspector on the affected iPhone (Safari 27) showed no filter/backdrop-filter/transform on the header or its ancestors; moving the unchanged header down 22px made it crisp, while 16px still blurred the top of the title. Browser tabs and desktop do not get the extra 22px. The feature gate also applies to older iOS versions and iPadOS; it deliberately avoids version sniffing.
+
+Previous sticky/safe-area ownership changes did not fix the reported blur. WebKit bug 301756 describes Safari toolbar color extension, not a guaranteed standalone-PWA blur opt-out. A temporary fixed-header test was reported unchanged, but was gone on inspector reconnection, so that result is inconclusive. Keep this as a measured clearance workaround; do not claim the native effect is disabled. Preserve the existing body safe-area ownership and keyboard behavior.
+
 ### iOS Keyboard Handling
 
 The iOS keyboard is handled by **accepting** WebKit's native page push (the header slides off-screen while typing — standard iOS webapp behavior) and making scroll math visual-viewport-aware instead of mutating layout. The message-framing effect in `message-list.tsx` intersects the scroll container with `window.visualViewport` to compute the pin position (`messageTop − hiddenTop`), spacer size, and handoff threshold. Dead ends — tried and reverted (see git history), don't relearn them:
