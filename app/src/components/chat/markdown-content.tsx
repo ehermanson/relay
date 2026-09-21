@@ -481,12 +481,24 @@ function MarkdownLink({
   );
 }
 
+// Tables scroll horizontally inside their own wrapper instead of being
+// squeezed into the chat column — on a phone the auto layout otherwise
+// collapses short columns to one character per line.
+function TableBlock({ node: _, ...rest }: React.ComponentProps<"table"> & { node?: unknown }) {
+  return (
+    <div className="markdown-table-wrap">
+      <table {...rest} />
+    </div>
+  );
+}
+
 const REMARK_PLUGINS = [remarkGfm, remarkMentions];
 const MD_COMPONENTS = {
   code: CodeBlock,
   pre: PreBlock,
   img: ImageThumbnail,
   a: MarkdownLink,
+  table: TableBlock,
 };
 
 export const MarkdownContent = memo(function MarkdownContent({ text }: MarkdownContentProps) {

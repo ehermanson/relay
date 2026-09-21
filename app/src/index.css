@@ -640,9 +640,24 @@ body *::-webkit-scrollbar-thumb:hover {
   color: var(--color-text-bright);
 }
 
+/* Tables live in a horizontal scroller (see TableBlock in
+   markdown-content.tsx). Without it the browser squeezes the table into the
+   chat column: narrow columns collapse to one character per line and inline
+   code (commit hashes, identifiers) — `word-break: break-all` above — splits
+   mid-token. Headers and inline code never wrap inside a cell, so every
+   column keeps a readable minimum width and prose columns take the rest. */
+.markdown-table-wrap {
+  margin: 0.75em 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
 .markdown-content table {
   border-collapse: collapse;
-  margin: 0.75em 0;
+  margin: 0;
   width: 100%;
   font-size: 0.8125rem;
 }
@@ -652,12 +667,41 @@ body *::-webkit-scrollbar-thumb:hover {
   border: 1px solid var(--color-border);
   padding: 8px 12px;
   text-align: left;
+  vertical-align: top;
+  min-width: 6ch;
+}
+
+/* Outer edges come from the wrapper so the rounded corners stay clean. */
+.markdown-table-wrap tr > :first-child {
+  border-left: 0;
+}
+.markdown-table-wrap tr > :last-child {
+  border-right: 0;
+}
+.markdown-table-wrap thead tr:first-child > * {
+  border-top: 0;
+}
+.markdown-table-wrap tbody tr:last-child > * {
+  border-bottom: 0;
 }
 
 .markdown-content th {
   background: var(--color-table-header-bg);
   font-weight: 600;
   color: var(--color-text-bright);
+  white-space: nowrap;
+}
+
+.markdown-content th code,
+.markdown-content td code {
+  word-break: normal;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .markdown-content table {
+    font-size: 0.875rem;
+  }
 }
 
 /* ── Code Copy Button ──────────────────────────────────────────────── */
