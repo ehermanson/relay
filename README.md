@@ -17,6 +17,8 @@ Run Relay on your dev machine, open it from your laptop or phone, and keep up wi
 
 ### Spaces
 
+The inbox shows each named space once, alongside standalone chats. Space rows summarize working chats, requests for input, and unread activity; open a space to return to your last-viewed chat. Pin spaces independently, then Complete to merge or Archive to close without merging.
+
 <img src="relay-space.png" alt="Relay spaces view" width="800" />
 
 ## What Relay Is
@@ -47,7 +49,9 @@ If you do not use spaces, you can still use Relay just fine with regular chats.
 - Complete a space by merging it, or archive it without merging
 - Use built-in git actions like branch switch, fetch, pull, push, and space push/PR
 - Change provider, model, reasoning level, and runtime mode when the provider supports it
+- Attach photos, documents, and videos to chats; videos support inline playback and files up to 100 MB (playback depends on browser codec support). Agents receive videos as local file attachments.
 - Respond to approval requests and other agent prompts from the browser
+- Follow delegated work: subagents show up as collapsed cards where they were spawned (name, model when known, status, result) and in an Agents sidecar; agent-to-agent reports are never shown as your own messages
 - Start review chats for a branch or for the files changed in a chat
 - Browse project tasks, plans, installed skills, docs, and usage stats
 - Set global defaults and project-specific instructions

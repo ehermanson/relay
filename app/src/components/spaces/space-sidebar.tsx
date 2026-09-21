@@ -8,6 +8,7 @@ import type { FileChange, InstanceInfo, SessionStats, SpaceInfo } from "@shared/
 
 const TAB_LABELS: Record<SidecarTab, string> = {
   tasks: "Tasks",
+  agents: "Agents",
   files: "Files",
   plan: "Plan",
   context: "Context",

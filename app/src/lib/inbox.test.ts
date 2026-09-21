@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   buildInboxEntries,
   buildInboxProjectOptions,
+  capInboxEntries,
   filterInboxEntries,
+  isInboxEntryCurrent,
   partitionInboxEntries,
   resolveNewMenuShape,
   selectStaleInboxEntries,
   STALE_CHAT_DONE_DAYS,
+  type InboxChatEntry,
   type InboxProjectOption,
   type InboxSourceGroup,
+  type InboxSpaceEntry,
 } from "./inbox";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
 
@@ -30,6 +34,8 @@ function space(overrides: Partial<SpaceInfo> & { id: string }): SpaceInfo {
     projectDirectory: "/tmp/project",
     status: "active",
     isDefault: false,
+    createdAt: 10,
+    lastActivityAt: 10,
     ...overrides,
   } as SpaceInfo;
 }
@@ -45,153 +51,241 @@ function group(overrides: Partial<InboxSourceGroup> = {}): InboxSourceGroup {
   };
 }
 
+function chatEntries(entries: ReturnType<typeof buildInboxEntries>): InboxChatEntry[] {
+  return entries.filter((entry): entry is InboxChatEntry => entry.kind === "chat");
+}
+
+function spaceEntries(entries: ReturnType<typeof buildInboxEntries>): InboxSpaceEntry[] {
+  return entries.filter((entry): entry is InboxSpaceEntry => entry.kind === "space");
+}
+
 describe("buildInboxEntries", () => {
-  it("flattens every project into one list, newest activity first", () => {
+  it("groups every eligible chat in a named space into one destination", () => {
     const entries = buildInboxEntries([
       group({
-        dir: "/a",
-        name: "alpha",
-        groupInstances: [chat({ id: "old", lastActivityAt: 10 })],
+        groupInstances: [
+          chat({ id: "one", spaceId: "feature", lastActivityAt: 100 }),
+          chat({ id: "two", spaceId: "feature", lastActivityAt: 300 }),
+          chat({ id: "standalone", lastActivityAt: 200 }),
+        ],
+        spaces: [space({ id: "feature", name: "Feature" })],
       }),
-      group({ dir: "/b", name: "beta", groupInstances: [chat({ id: "new", lastActivityAt: 90 })] }),
     ]);
 
-    expect(entries.map((e) => e.instance.id)).toEqual(["new", "old"]);
-    expect(entries[0].projectName).toBe("beta");
-    expect(entries[1].dir).toBe("/a");
+    expect(entries.map((entry) => entry.id)).toEqual(["space:feature", "chat:standalone"]);
+    expect(spaceEntries(entries)[0].instances.map((instance) => instance.id)).toEqual([
+      "one",
+      "two",
+    ]);
+    expect(spaceEntries(entries)[0].recencyAt).toBe(300);
   });
 
-  it("sorts pinned chats above more recent unpinned ones", () => {
+  it("keeps default-space and unresolved-space chats as individual rows", () => {
+    const entries = buildInboxEntries([
+      group({
+        groupInstances: [
+          chat({ id: "main", spaceId: "default" }),
+          chat({ id: "loading", spaceId: "not-loaded" }),
+        ],
+        spaces: [space({ id: "default", isDefault: true })],
+      }),
+    ]);
+
+    expect(chatEntries(entries).map((entry) => entry.instance.id)).toEqual(["loading", "main"]);
+    expect(chatEntries(entries).find((entry) => entry.instance.id === "main")?.space?.id).toBe(
+      "default",
+    );
+  });
+
+  it("includes empty and broken named spaces in Active", () => {
+    const entries = buildInboxEntries([
+      group({ spaces: [space({ id: "empty" }), space({ id: "broken", status: "broken" })] }),
+    ]);
+    const { active, done } = partitionInboxEntries(entries);
+
+    expect(active.map((entry) => entry.id)).toEqual(["space:broken", "space:empty"]);
+    expect(spaceEntries(active).every((entry) => entry.instances.length === 0)).toBe(true);
+    expect(done).toEqual([]);
+  });
+
+  it("puts completed and archived spaces in Done exactly once", () => {
+    const entries = buildInboxEntries([
+      group({
+        groupInstances: [chat({ id: "merged-chat", spaceId: "merged" })],
+        spaces: [
+          space({ id: "merged", status: "completed", lastActivityAt: 200 }),
+          space({ id: "archived", status: "archived", lastActivityAt: 100 }),
+        ],
+      }),
+    ]);
+    const { active, done } = partitionInboxEntries(entries);
+
+    expect(active).toEqual([]);
+    expect(done.map((entry) => entry.id)).toEqual(["space:merged", "space:archived"]);
+  });
+
+  it("keeps an active space active when every child chat is done", () => {
+    const [entry] = buildInboxEntries([
+      group({
+        groupInstances: [chat({ id: "done-child", spaceId: "work", doneAt: 2000 })],
+        spaces: [space({ id: "work" })],
+      }),
+    ]);
+    expect(entry.kind).toBe("space");
+    expect(entry.done).toBe(false);
+  });
+
+  it("omits attached review chats from rows and space counts", () => {
+    const [entry] = buildInboxEntries([
+      group({
+        groupInstances: [
+          chat({ id: "main", spaceId: "work" }),
+          chat({
+            id: "review",
+            spaceId: "work",
+            review: { sourceInstanceId: "main", sourceName: "main", scope: "branch" },
+          }),
+        ],
+        spaces: [space({ id: "work" })],
+      }),
+    ]);
+    expect(entry.kind === "space" && entry.instances.map((instance) => instance.id)).toEqual([
+      "main",
+    ]);
+  });
+
+  it("sorts by independent destination pin then aggregate recency", () => {
+    const pinnedSpace = Object.assign(space({ id: "pinned", lastActivityAt: 1 }), { pinned: true });
     const entries = buildInboxEntries([
       group({
         groupInstances: [
           chat({ id: "recent", lastActivityAt: 900 }),
-          chat({ id: "pinned", lastActivityAt: 5, pinned: true }),
+          chat({ id: "space-chat", spaceId: "plain", lastActivityAt: 800, pinned: true }),
         ],
+        spaces: [pinnedSpace, space({ id: "plain", lastActivityAt: 2 })],
       }),
     ]);
 
-    expect(entries.map((e) => e.instance.id)).toEqual(["pinned", "recent"]);
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "space:pinned",
+      "chat:recent",
+      "space:plain",
+    ]);
+    expect(spaceEntries(entries).find((entry) => entry.space.id === "plain")?.pinned).toBe(false);
   });
 
-  it("prefers the last message timestamp over lastActivityAt for recency", () => {
-    const entries = buildInboxEntries([
+  it("counts normalized attention ahead of working across providers", () => {
+    const request = { requestId: "request", kind: "user_input", questions: [] } as NonNullable<
+      InstanceInfo["pendingPermission"]
+    >;
+    const [entry] = buildInboxEntries([
       group({
         groupInstances: [
-          chat({ id: "stale-activity", lastActivityAt: 500 }),
           chat({
-            id: "fresh-message",
-            lastActivityAt: 1,
-            lastMessage: { text: "hi", from: "assistant", timestamp: 900 },
+            id: "claude-question",
+            provider: "claude",
+            spaceId: "work",
+            status: "processing",
+            pendingPermission: request,
+          }),
+          chat({
+            id: "codex-approval",
+            provider: "codex",
+            spaceId: "work",
+            status: "processing",
+            pendingTool: "shell",
+          }),
+          chat({
+            id: "plan",
+            provider: "codex",
+            spaceId: "work",
+            status: "processing",
+            pendingPlan: "plan",
+          }),
+          chat({ id: "failed", provider: "codex", spaceId: "work", status: "error" }),
+          chat({ id: "working", provider: "claude", spaceId: "work", status: "processing" }),
+          chat({
+            id: "stopped-request",
+            spaceId: "work",
+            status: "stopped",
+            pendingPermission: request,
           }),
         ],
+        spaces: [space({ id: "work" })],
       }),
     ]);
-
-    expect(entries.map((e) => e.instance.id)).toEqual(["fresh-message", "stale-activity"]);
-  });
-
-  it("omits review chats attached to another chat", () => {
-    const entries = buildInboxEntries([
-      group({
-        groupInstances: [
-          chat({ id: "main" }),
-          chat({
-            id: "review",
-            review: { sourceInstanceId: "main", sourceName: "main", scope: "branch" },
-          }),
-        ],
-      }),
+    expect(entry.kind).toBe("space");
+    if (entry.kind !== "space") throw new Error("expected space");
+    expect(entry.attentionInstances.map((instance) => instance.id)).toEqual([
+      "claude-question",
+      "codex-approval",
+      "plan",
+      "failed",
     ]);
-
-    expect(entries.map((e) => e.instance.id)).toEqual(["main"]);
-  });
-
-  it("attaches the owning space and marks closed-space chats done", () => {
-    const entries = buildInboxEntries([
-      group({
-        groupInstances: [
-          chat({ id: "in-open", spaceId: "open", lastActivityAt: 300 }),
-          chat({ id: "in-merged", spaceId: "merged", lastActivityAt: 200 }),
-          chat({ id: "standalone", lastActivityAt: 100 }),
-        ],
-        spaces: [space({ id: "open" }), space({ id: "merged", status: "completed" })],
-      }),
-    ]);
-
-    const byId = new Map(entries.map((e) => [e.instance.id, e]));
-    expect(byId.get("in-open")?.space?.id).toBe("open");
-    expect(byId.get("in-open")?.done).toBe(false);
-    // Merged work shouldn't keep surfacing in the inbox.
-    expect(byId.get("in-merged")?.done).toBe(true);
-    expect(byId.get("standalone")?.space).toBeUndefined();
-  });
-
-  it("treats a chat as done only until it has newer activity", () => {
-    const entries = buildInboxEntries([
-      group({
-        groupInstances: [
-          chat({ id: "settled", doneAt: 500, lastActivityAt: 400 }),
-          chat({ id: "revived", doneAt: 500, lastActivityAt: 600 }),
-        ],
-      }),
-    ]);
-
-    const byId = new Map(entries.map((e) => [e.instance.id, e]));
-    expect(byId.get("settled")?.done).toBe(true);
-    expect(byId.get("revived")?.done).toBe(false);
+    expect(entry.workingCount).toBe(1);
   });
 });
 
-describe("filterInboxEntries", () => {
+describe("filter and partition", () => {
   const entries = buildInboxEntries([
-    group({ dir: "/a", groupInstances: [chat({ id: "a1" })] }),
-    group({ dir: "/b", groupInstances: [chat({ id: "b1" })] }),
+    group({ dir: "/a", groupInstances: [chat({ id: "a1", lastActivityAt: 10 })] }),
+    group({ dir: "/b", groupInstances: [chat({ id: "b1", lastActivityAt: 20 })] }),
   ]);
 
-  it("returns every project when no filter is set", () => {
+  it("filters destinations by project directory", () => {
     expect(filterInboxEntries(entries, null)).toHaveLength(2);
+    expect(filterInboxEntries(entries, "/b").map((entry) => entry.id)).toEqual(["chat:b1"]);
   });
 
-  it("scopes to a single project directory", () => {
-    expect(filterInboxEntries(entries, "/b").map((e) => e.instance.id)).toEqual(["b1"]);
-  });
-
-  it("yields nothing for a directory that no longer has chats", () => {
-    expect(filterInboxEntries(entries, "/gone")).toEqual([]);
+  it("orders Done by recency without pins", () => {
+    const { done } = partitionInboxEntries(
+      buildInboxEntries([
+        group({
+          groupInstances: [
+            chat({ id: "old-pin", pinned: true, lastActivityAt: 100, doneAt: 900 }),
+            chat({ id: "new", lastActivityAt: 800, doneAt: 900 }),
+          ],
+        }),
+      ]),
+    );
+    expect(done.map((entry) => entry.id)).toEqual(["chat:new", "chat:old-pin"]);
   });
 });
 
-describe("partitionInboxEntries", () => {
-  it("splits done chats out while preserving order within each side", () => {
-    const entries = buildInboxEntries([
-      group({
-        groupInstances: [
-          chat({ id: "live-new", lastActivityAt: 900 }),
-          chat({ id: "done-new", lastActivityAt: 800, doneAt: 900 }),
-          chat({ id: "live-old", lastActivityAt: 300 }),
-          chat({ id: "done-old", lastActivityAt: 100, doneAt: 900 }),
-        ],
-      }),
-    ]);
+describe("current destination and caps", () => {
+  const entries = buildInboxEntries([
+    group({
+      groupInstances: [
+        chat({ id: "top", lastActivityAt: 300 }),
+        chat({ id: "member", spaceId: "work", lastActivityAt: 200 }),
+        chat({ id: "tail", lastActivityAt: 100 }),
+      ],
+      spaces: [space({ id: "work" })],
+    }),
+  ]);
 
-    const { active, done } = partitionInboxEntries(entries);
-    expect(active.map((e) => e.instance.id)).toEqual(["live-new", "live-old"]);
-    expect(done.map((e) => e.instance.id)).toEqual(["done-new", "done-old"]);
+  it("keeps a space selected while switching among member chats", () => {
+    const grouped = entries.find((entry) => entry.kind === "space")!;
+    expect(isInboxEntryCurrent(grouped, "member")).toBe(true);
+    expect(isInboxEntryCurrent(grouped, undefined, "work")).toBe(true);
   });
 
-  it("orders the done section by recency alone, ignoring pins", () => {
-    const entries = buildInboxEntries([
-      group({
-        groupInstances: [
-          chat({ id: "done-pinned", pinned: true, lastActivityAt: 100, doneAt: 900 }),
-          chat({ id: "done-recent", lastActivityAt: 800, doneAt: 900 }),
-        ],
-      }),
+  it("retains a current space below the cap", () => {
+    expect(capInboxEntries(entries, 1, "member").map((entry) => entry.id)).toEqual([
+      "chat:top",
+      "space:work",
     ]);
+  });
 
-    const { done } = partitionInboxEntries(entries);
-    expect(done.map((e) => e.instance.id)).toEqual(["done-recent", "done-pinned"]);
+  it("can retain a current closed or empty space from an extra list", () => {
+    const [closed] = buildInboxEntries([
+      group({ spaces: [space({ id: "closed", status: "archived" })] }),
+    ]);
+    expect(
+      capInboxEntries(entries.slice(0, 1), 5, undefined, "closed", [closed]).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["chat:top", "space:closed"]);
   });
 });
 
@@ -201,45 +295,38 @@ describe("selectStaleInboxEntries", () => {
   const stale = NOW - (STALE_CHAT_DONE_DAYS + 1) * DAY;
   const fresh = NOW - (STALE_CHAT_DONE_DAYS - 1) * DAY;
 
-  function select(instances: InstanceInfo[]) {
-    const { active } = partitionInboxEntries(
-      buildInboxEntries([group({ groupInstances: instances })]),
-    );
-    return selectStaleInboxEntries(active, NOW).map((e) => e.instance.id);
-  }
-
-  it("picks only chats past the inactivity cutoff", () => {
-    expect(
-      select([
-        chat({ id: "old", lastActivityAt: stale }),
-        chat({ id: "recent", lastActivityAt: fresh }),
-      ]),
-    ).toEqual(["old"]);
-  });
-
-  it("measures staleness from the last message when it leads lastActivityAt", () => {
-    expect(
-      select([
-        chat({
-          id: "messaged-recently",
-          lastActivityAt: stale,
-          lastMessage: { text: "hi", from: "assistant", timestamp: fresh },
-        }),
-      ]),
-    ).toEqual([]);
-  });
-
-  it("leaves a working agent alone however long the chat has been open", () => {
-    expect(select([chat({ id: "busy", status: "processing", lastActivityAt: stale })])).toEqual([]);
-  });
-
-  it("skips chats with no recorded activity rather than treating them as ancient", () => {
-    expect(select([chat({ id: "unknown", lastActivityAt: undefined })])).toEqual([]);
-  });
-
-  it("never re-marks chats that are already done", () => {
+  it("selects only stale standalone chats", () => {
     const entries = buildInboxEntries([
-      group({ groupInstances: [chat({ id: "done", lastActivityAt: stale, doneAt: NOW })] }),
+      group({
+        groupInstances: [
+          chat({ id: "old", lastActivityAt: stale }),
+          chat({ id: "recent", lastActivityAt: fresh }),
+          chat({ id: "space-old", spaceId: "work", lastActivityAt: stale }),
+          chat({ id: "unresolved-space-old", spaceId: "loading", lastActivityAt: stale }),
+          chat({ id: "working", status: "processing", lastActivityAt: stale }),
+          chat({ id: "unknown", lastActivityAt: undefined }),
+        ],
+        spaces: [space({ id: "work" })],
+      }),
+    ]);
+
+    expect(selectStaleInboxEntries(entries, NOW).map((entry) => entry.instance.id)).toEqual([
+      "old",
+    ]);
+  });
+
+  it("uses the latest message/activity signal and skips done chats", () => {
+    const entries = buildInboxEntries([
+      group({
+        groupInstances: [
+          chat({
+            id: "messaged",
+            lastActivityAt: stale,
+            lastMessage: { text: "hi", from: "assistant", timestamp: fresh },
+          }),
+          chat({ id: "done", lastActivityAt: stale, doneAt: NOW }),
+        ],
+      }),
     ]);
     expect(selectStaleInboxEntries(entries, NOW)).toEqual([]);
   });

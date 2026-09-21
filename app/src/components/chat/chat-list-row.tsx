@@ -11,7 +11,7 @@ import {
 import type { InstanceInfo } from "@shared/types";
 
 /**
- * Dense chat row for mobile lists (home project cards + project chat list).
+ * Dense chat row for the mobile project chat list.
  * Row 1: status dot · name (truncated) · time-ago. Row 2 (optional): space
  * branch tag · model. Space chats are tagged so the flat list stays legible.
  */

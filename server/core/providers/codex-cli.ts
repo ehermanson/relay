@@ -28,6 +28,13 @@ let cachedCodeModeHostPath: string | null | undefined;
  * Locate the `codex-code-mode-host` helper binary, or null if none is found.
  * Result is cached for the process lifetime.
  */
+/**
+ * Name Relay reports as the app-server client. Codex persists it as the
+ * rollout's `session_meta.originator`, which is how discovery tells Relay's
+ * own threads apart from genuinely external ones.
+ */
+export const RELAY_CODEX_ORIGINATOR = "relay";
+
 export function findCodexCodeModeHost(): string | null {
   if (cachedCodeModeHostPath !== undefined) return cachedCodeModeHostPath;
   for (const candidate of CODE_MODE_HOST_CANDIDATES) {

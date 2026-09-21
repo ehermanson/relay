@@ -21,6 +21,7 @@ import {
   deleteSpace as apiDeleteSpace,
   removeProject as apiRemoveProject,
   setInstancePinned as apiSetInstancePinned,
+  setSpacePinned as apiSetSpacePinned,
   setInstanceDone as apiSetInstanceDone,
 } from "../lib/api";
 import { type RemoveProjectTarget } from "../lib/project-route";
@@ -38,6 +39,7 @@ interface SidebarActions {
 
   // Space
   completeSpace(spaceId: string): void;
+  pinSpace(spaceId: string, pinned: boolean): void;
   markSpaceMerged(spaceId: string): void;
   deleteSpace(spaceId: string): void;
   renameSpace(spaceId: string, name: string): void;
@@ -180,6 +182,13 @@ export function SidebarActionsProvider({
 
       // Space
       completeSpace: (spaceId) => setConfirmCompleteSpaceId(spaceId),
+      pinSpace: (spaceId, pinned) => {
+        apiSetSpacePinned(spaceId, pinned)
+          .then(() => queryClient.invalidateQueries({ queryKey: ["spaces"] }))
+          .catch((err) => {
+            toast.error(err instanceof Error ? err.message : "Failed to pin space");
+          });
+      },
       markSpaceMerged: (spaceId) => {
         void toastAsync(apiMarkSpaceMerged(spaceId), {
           loading: "Marking space as merged...",

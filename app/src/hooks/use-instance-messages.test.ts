@@ -1,6 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { replayHistoryToItems, useInstanceMessages } from "@/hooks/use-instance-messages";
+import {
+  replayHistory,
+  replayHistoryToItems,
+  useInstanceMessages,
+} from "@/hooks/use-instance-messages";
+import { buildAgentAnchorIndex } from "@/lib/agents";
 import type {
   ActivityMessage,
   HistoryEntry,
@@ -624,5 +629,449 @@ describe("useInstanceMessages passive history hydration", () => {
     });
 
     expect(result.current.getReplayCursor("inst-b")).toBeUndefined();
+  });
+});
+
+describe("tool result pairing", () => {
+  const read = (id: string): ActivityMessage => ({
+    type: "activity",
+    activity: "tool_use",
+    tool: "Read",
+    toolUseId: id,
+    description: "Reading file",
+    input: { file_path: `/${id}.ts` },
+  });
+  const result = (id: string): ActivityMessage => ({
+    type: "activity",
+    activity: "tool_result",
+    toolUseId: id,
+    description: "Tool completed",
+    detail: `contents of ${id}`,
+  });
+  const messages = [read("a"), read("b"), result("b"), result("a")];
+  function assertPairs(items: ReturnType<typeof replayHistoryToItems>) {
+    const activities = items.flatMap((item) =>
+      item.kind === "activity-group" ? item.activities : [],
+    );
+    expect(
+      activities
+        .filter((a) => a.activity === "tool_use")
+        .map((a) => [a.toolUseId, a.mergedResultDetail]),
+    ).toEqual([
+      ["a", "contents of a"],
+      ["b", "contents of b"],
+    ]);
+  }
+  it("pairs out-of-order parallel reads during replay", () => {
+    assertPairs(replayHistoryToItems(messages.map((message) => ({ timestamp: 1, message }))));
+  });
+  it("pairs out-of-order parallel reads in live updates", () => {
+    const hook = renderHook(() => useInstanceMessages());
+    act(() => hook.result.current.setInstanceId("test"));
+    act(() =>
+      messages.forEach((message) =>
+        hook.result.current.handleMessage("test", { ...message, instanceId: "test" }),
+      ),
+    );
+    assertPairs(hook.result.current.items);
+  });
+  it("finds the call across intervening activity groups", () => {
+    const history: HistoryEntry[] = [
+      { timestamp: 1, message: read("a") },
+      {
+        timestamp: 2,
+        message: { type: "activity", activity: "thinking", description: "Thinking", detail: "hmm" },
+      },
+      { timestamp: 3, message: read("b") },
+      { timestamp: 4, message: result("a") },
+      { timestamp: 5, message: result("b") },
+    ];
+    assertPairs(replayHistoryToItems(history));
+  });
+  it("does not attach an unknown result to the latest read", () => {
+    const items = replayHistoryToItems(
+      [read("a"), result("unknown")].map((message) => ({ timestamp: 1, message })),
+    );
+    const group = items.find((item) => item.kind === "activity-group");
+    expect(
+      group?.kind === "activity-group" && group.activities[0].mergedResultDetail,
+    ).toBeUndefined();
+  });
+  it("never overwrites already paired legacy results", () => {
+    const legacy = [read("a"), read("b"), result("a"), result("b")].map(
+      ({ toolUseId: _id, ...message }) => ({ timestamp: 1, message }),
+    );
+    const items = replayHistoryToItems(legacy);
+    const activities = items.flatMap((item) =>
+      item.kind === "activity-group" ? item.activities : [],
+    );
+    expect(activities.map((a) => a.mergedResultDetail)).toEqual(["contents of a", "contents of b"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delegated agents: attribution routing, agent_update, agent notes
+// ---------------------------------------------------------------------------
+
+describe("delegated agent routing", () => {
+  const output = (text: string, agentId?: string, seq?: number): OutputMessage => ({
+    type: "output",
+    instanceId: "inst-a",
+    text,
+    isWaiting: false,
+    agentId,
+    eventSequence: seq,
+  });
+  const agentTool = (toolUseId: string, agentId: string): ActivityMessage => ({
+    type: "activity",
+    instanceId: "inst-a",
+    activity: "tool_use",
+    tool: "Read",
+    toolUseId,
+    description: "Reading file",
+    input: { file_path: `/${toolUseId}.ts` },
+    agentId,
+  });
+  const agentResult = (toolUseId: string, agentId: string): ActivityMessage => ({
+    type: "activity",
+    instanceId: "inst-a",
+    activity: "tool_result",
+    toolUseId,
+    description: "Tool completed",
+    detail: `contents of ${toolUseId}`,
+    agentId,
+  });
+
+  it("never lets attributed messages enter items (live)", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-1"));
+    act(() => {
+      result.current.handleMessage("inst-agents-1", { ...output("orchestrator says", undefined, 1), instanceId: "inst-agents-1" });
+      result.current.handleMessage("inst-agents-1", { ...output("child says", "agent-1", 2), instanceId: "inst-agents-1" });
+      result.current.handleMessage("inst-agents-1", { ...agentTool("t1", "agent-1"), instanceId: "inst-agents-1" });
+      result.current.handleMessage("inst-agents-1", { ...agentResult("t1", "agent-1"), instanceId: "inst-agents-1" });
+      result.current.handleMessage("inst-agents-1", {
+        type: "user",
+        instanceId: "inst-agents-1",
+        text: "child assignment",
+        agentId: "agent-1",
+      } as UserMessage);
+    });
+    expect(result.current.items).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "orchestrator says" }),
+    ]);
+    const nested = result.current.agentItems["agent-1"];
+    expect(nested.map((i) => i.kind)).toEqual(["assistant", "activity-group", "user"]);
+    const group = nested[1];
+    expect(group.kind === "activity-group" && group.activities[0].mergedResultDetail).toBe(
+      "contents of t1",
+    );
+  });
+
+  it("never lets attributed messages enter items (replay) and keeps agents separate", () => {
+    const history: HistoryEntry[] = [
+      { timestamp: 1, message: { type: "user", instanceId: "i", text: "go" } },
+      { timestamp: 2, message: output("A1 ", "agent-a") },
+      { timestamp: 3, message: output("B1 ", "agent-b") },
+      { timestamp: 4, message: output("main ") },
+      { timestamp: 5, message: output("A2", "agent-a") },
+      { timestamp: 6, message: output("B2", "agent-b") },
+      { timestamp: 7, message: { ...output("main2"), isWaiting: true } },
+    ];
+    const { items, agentItems } = replayHistory(history);
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "user", text: "go" }),
+      expect.objectContaining({ kind: "assistant", text: "main main2" }),
+    ]);
+    expect(agentItems["agent-a"]).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "A1 A2" }),
+    ]);
+    expect(agentItems["agent-b"]).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "B1 B2" }),
+    ]);
+  });
+
+  it("keeps interleaved live output for two agents in separate nested streams", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-3"));
+    act(() => {
+      result.current.handleMessage("inst-agents-3", { ...output("A1 ", "agent-a", 1), instanceId: "inst-agents-3" });
+      result.current.handleMessage("inst-agents-3", { ...output("B1 ", "agent-b", 2), instanceId: "inst-agents-3" });
+      result.current.handleMessage("inst-agents-3", { ...output("A2", "agent-a", 3), instanceId: "inst-agents-3" });
+      result.current.handleMessage("inst-agents-3", { ...output("B2", "agent-b", 4), instanceId: "inst-agents-3" });
+    });
+    expect(result.current.items).toEqual([]);
+    expect(result.current.agentItems["agent-a"]).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "A1 A2" }),
+    ]);
+    expect(result.current.agentItems["agent-b"]).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "B1 B2" }),
+    ]);
+    expect(result.current.isProcessing).toBe(false);
+  });
+
+  it("sparse-merges agent_update and leaves unknown fields unknown", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-4"));
+    act(() => {
+      result.current.handleMessage("inst-agents-4", {
+        type: "agent_update",
+        instanceId: "inst-agents-4",
+        agent: { agentId: "agent-1", name: "explorer", status: "running" },
+      });
+      result.current.handleMessage("inst-agents-4", {
+        type: "agent_update",
+        instanceId: "inst-agents-4",
+        agent: { agentId: "agent-1", status: "completed", result: "ok" },
+      });
+    });
+    const agent = result.current.agents["agent-1"];
+    expect(agent).toEqual({ agentId: "agent-1", name: "explorer", status: "completed", result: "ok" });
+    expect("model" in agent).toBe(false);
+    expect(agent.model).toBeUndefined();
+  });
+
+  it("inserts exactly one agent-card for an unanchored agent, never for an anchored one", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-5"));
+    act(() => {
+      // Anchored: the delegation tool_use precedes the update.
+      result.current.handleMessage("inst-agents-5", {
+        type: "activity",
+        instanceId: "inst-agents-5",
+        activity: "tool_use",
+        tool: "Agent",
+        toolUseId: "tu-1",
+        description: "Spawning agent",
+      });
+      result.current.handleMessage("inst-agents-5", {
+        type: "agent_update",
+        instanceId: "inst-agents-5",
+        agent: { agentId: "tu-1", originToolUseId: "tu-1", status: "running" },
+      });
+      // Unanchored: no origin known.
+      result.current.handleMessage("inst-agents-5", {
+        type: "agent_update",
+        instanceId: "inst-agents-5",
+        agent: { agentId: "thr-2", status: "running" },
+      });
+      result.current.handleMessage("inst-agents-5", {
+        type: "agent_update",
+        instanceId: "inst-agents-5",
+        agent: { agentId: "thr-2", status: "completed" },
+      });
+    });
+    const cards = result.current.items.filter((i) => i.kind === "agent-card");
+    expect(cards).toEqual([expect.objectContaining({ kind: "agent-card", agentId: "thr-2" })]);
+    const anchors = buildAgentAnchorIndex(result.current.items, result.current.agents);
+    expect([...anchors.entries()]).toEqual([["tu-1", "tu-1"]]);
+  });
+
+  it("renders author.kind === 'agent' as an agent-note, never a user bubble", () => {
+    const history: HistoryEntry[] = [
+      {
+        timestamp: 1,
+        message: {
+          type: "user",
+          instanceId: "i",
+          text: "Freeze starts Friday",
+          author: { kind: "agent", name: "release-manager", agentId: "peer-1" },
+        },
+      },
+    ];
+    expect(replayHistoryToItems(history)).toEqual([
+      {
+        kind: "agent-note",
+        text: "Freeze starts Friday",
+        name: "release-manager",
+        agentId: "peer-1",
+        timestamp: 1,
+      },
+    ]);
+
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-6"));
+    act(() => {
+      result.current.handleMessage("inst-agents-6", {
+        type: "user",
+        instanceId: "inst-agents-6",
+        text: "live note",
+        author: { kind: "agent", name: "peer" },
+      } as UserMessage);
+    });
+    expect(result.current.items.map((i) => i.kind)).toEqual(["agent-note"]);
+    expect(result.current.items.some((i) => i.kind === "user")).toBe(false);
+  });
+
+  it("never gives a nested agent a main-stream card (replay)", () => {
+    const history: HistoryEntry[] = [
+      { timestamp: 1, message: { type: "user", instanceId: "i", text: "go" } },
+      {
+        timestamp: 2,
+        message: {
+          type: "activity",
+          instanceId: "i",
+          activity: "tool_use",
+          tool: "Agent",
+          toolUseId: "tu-lead",
+          description: "Spawning agent",
+        },
+      },
+      {
+        timestamp: 3,
+        message: {
+          type: "agent_update",
+          agent: { agentId: "tu-lead", originToolUseId: "tu-lead", status: "running" },
+        },
+      },
+      // The lead delegates again: its tool_use is attributed to the lead's
+      // transcript, and the grandchild's update names the lead as parent.
+      {
+        timestamp: 4,
+        message: {
+          type: "activity",
+          instanceId: "i",
+          activity: "tool_use",
+          tool: "Agent",
+          toolUseId: "tu-grandchild",
+          description: "Spawning agent",
+          agentId: "tu-lead",
+        },
+      },
+      {
+        timestamp: 5,
+        message: {
+          type: "agent_update",
+          agent: {
+            agentId: "tu-grandchild",
+            originToolUseId: "tu-grandchild",
+            parentAgentId: "tu-lead",
+            status: "running",
+          },
+        },
+      },
+      // A second grandchild with no declared parent, but whose origin lives
+      // inside the lead's transcript — still nested.
+      {
+        timestamp: 6,
+        message: {
+          type: "activity",
+          instanceId: "i",
+          activity: "tool_use",
+          tool: "Agent",
+          toolUseId: "tu-grandchild-2",
+          description: "Spawning agent",
+          agentId: "tu-lead",
+        },
+      },
+      {
+        timestamp: 7,
+        message: {
+          type: "agent_update",
+          agent: { agentId: "tu-grandchild-2", originToolUseId: "tu-grandchild-2" },
+        },
+      },
+    ];
+    const { items, agents, agentItems } = replayHistory(history);
+    expect(items.filter((i) => i.kind === "agent-card")).toEqual([]);
+    expect(Object.keys(agents).sort()).toEqual(["tu-grandchild", "tu-grandchild-2", "tu-lead"]);
+    // Both grandchild origins are anchorable inside the lead's transcript.
+    const nested = buildAgentAnchorIndex(agentItems["tu-lead"], agents);
+    expect([...nested.entries()].sort()).toEqual([
+      ["tu-grandchild", "tu-grandchild"],
+      ["tu-grandchild-2", "tu-grandchild-2"],
+    ]);
+  });
+
+  it("never gives a nested agent a main-stream card (live)", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-agents-nested"));
+    act(() => {
+      result.current.handleMessage("inst-agents-nested", {
+        ...agentTool("tu-grandchild", "tu-lead"),
+        tool: "Agent",
+        instanceId: "inst-agents-nested",
+      });
+      result.current.handleMessage("inst-agents-nested", {
+        type: "agent_update",
+        instanceId: "inst-agents-nested",
+        agent: { agentId: "tu-grandchild", originToolUseId: "tu-grandchild" },
+      });
+      result.current.handleMessage("inst-agents-nested", {
+        type: "agent_update",
+        instanceId: "inst-agents-nested",
+        agent: { agentId: "thr-child", parentAgentId: "thr-parent", status: "running" },
+      });
+      // Control: a top-level agent with an unknown origin still gets its card.
+      result.current.handleMessage("inst-agents-nested", {
+        type: "agent_update",
+        instanceId: "inst-agents-nested",
+        agent: { agentId: "thr-top", status: "running" },
+      });
+    });
+    expect(result.current.items.filter((i) => i.kind === "agent-card")).toEqual([
+      expect.objectContaining({ kind: "agent-card", agentId: "thr-top" }),
+    ]);
+    expect(Object.keys(result.current.agents).sort()).toEqual(["thr-child", "thr-top", "tu-grandchild"]);
+  });
+
+  it("flushes the in-flight response on a clean exit during replay", () => {
+    const history: HistoryEntry[] = [
+      { timestamp: 1, message: { type: "user", instanceId: "i", text: "first" } },
+      { timestamp: 2, message: output("interrupted answer") },
+      { timestamp: 3, message: { type: "exit", instanceId: "i", code: 0 } },
+      { timestamp: 4, message: { type: "user", instanceId: "i", text: "second" } },
+      { timestamp: 5, message: { ...output("fresh answer"), isWaiting: true } },
+    ];
+    expect(replayHistoryToItems(history)).toEqual([
+      expect.objectContaining({ kind: "user", text: "first" }),
+      expect.objectContaining({ kind: "assistant", text: "interrupted answer" }),
+      expect.objectContaining({ kind: "user", text: "second" }),
+      expect.objectContaining({ kind: "assistant", text: "fresh answer" }),
+    ]);
+
+    // Without an intervening user turn the two responses must still be
+    // distinct items, not one glued message.
+    const glued: HistoryEntry[] = [
+      { timestamp: 1, message: output("before ") },
+      { timestamp: 2, message: { type: "exit", instanceId: "i", code: 0 } },
+      { timestamp: 3, message: { ...output("after"), isWaiting: true } },
+    ];
+    expect(replayHistoryToItems(glued).map((i) => i.kind === "assistant" && i.text)).toEqual([
+      "before ",
+      "after",
+    ]);
+  });
+
+  it("mirrors agent attribution into rawHistory", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => {
+      result.current.setInstanceId("inst-raw2");
+      result.current.handleMessage("inst-raw2", {
+        type: "instance_history",
+        instanceId: "inst-raw2",
+        history: [],
+        replayMode: "full",
+        latestSequence: 0,
+        replayEpoch: 1,
+      });
+      result.current.handleMessage("inst-raw2", {
+        type: "output",
+        instanceId: "inst-raw2",
+        text: "child",
+        isWaiting: false,
+        agentId: "agent-1",
+      });
+      result.current.handleMessage("inst-raw2", {
+        type: "agent_update",
+        instanceId: "inst-raw2",
+        agent: { agentId: "agent-1", status: "running" },
+      });
+    });
+    const messages = result.current.rawHistory?.map((e) => e.message) ?? [];
+    expect(messages[0]).toEqual(expect.objectContaining({ type: "output", agentId: "agent-1" }));
+    expect(messages[1]).toEqual(
+      expect.objectContaining({ type: "agent_update", agent: { agentId: "agent-1", status: "running" } }),
+    );
   });
 });

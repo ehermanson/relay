@@ -1,7 +1,8 @@
-import type { FileChange, HistoryEntry, ProviderKind, TranscriptMessage } from "#core/types.js";
+import type { AgentInfo, FileChange, HistoryEntry, ProviderKind } from "#core/types.js";
+import { mergeAgentInfo } from "#core/agent-info.js";
 
 interface HandoffMessage {
-  role: "User" | "Assistant" | "Activity";
+  role: "User" | "Assistant" | "Activity" | "Agent";
   text: string;
 }
 
@@ -20,30 +21,47 @@ function normalizeMessageText(text: string): string {
 
 function collectConversation(history: HistoryEntry[]): HandoffMessage[] {
   const messages: HandoffMessage[] = [];
+  // agent_updates are sparse patches; labels come from the merged state.
+  const agents = new Map<string, AgentInfo>();
 
   for (const entry of history) {
     const message = entry.message;
     if (message.type === "user") {
       if (message.internal) continue;
+      // Child-agent frames belong to the child's transcript, not the visible chat.
+      if (message.agentId) continue;
       const text = normalizeMessageText(message.text);
-      if (text) messages.push({ role: "User", text });
+      if (!text) continue;
+      if (message.author?.kind === "agent") {
+        const who = message.author.name ? `Agent ${message.author.name}` : "Agent";
+        messages.push({ role: "Agent", text: `${who}: ${text}` });
+      } else {
+        messages.push({ role: "User", text });
+      }
       continue;
     }
 
     if (message.type === "output" && !message.isWaiting) {
+      if (message.agentId) continue;
       const text = normalizeMessageText(message.text);
       if (text) messages.push({ role: "Assistant", text });
       continue;
     }
 
-    if (message.type === "transcript") {
-      const transcript = message as TranscriptMessage;
-      const text = normalizeMessageText(`Agent result (${transcript.title}): ${transcript.result}`);
-      if (text) messages.push({ role: "Assistant", text });
+    if (message.type === "agent_update") {
+      // Only the final report carries context worth handing over; spawn and
+      // progress updates would just be noise for the target provider.
+      const agent = mergeAgentInfo(agents.get(message.agent.agentId), message.agent);
+      agents.set(agent.agentId, agent);
+      if (!message.agent.result) continue;
+      const label = agent.name ?? agent.description ?? agent.role ?? agent.agentId;
+      const text = normalizeMessageText(`Agent result (${label}): ${message.agent.result}`);
+      if (text) messages.push({ role: "Agent", text });
       continue;
     }
 
     if (message.type === "activity") {
+      if (message.agentId) continue;
       const pieces = [message.description, message.detail].filter(
         (piece): piece is string => typeof piece === "string" && piece.trim().length > 0,
       );

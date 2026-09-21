@@ -20,6 +20,8 @@ import type {
   ProviderRuntimeMode,
   SystemEventMessage,
   UserInputQuestion,
+  AgentUpdateMessage,
+  UserMessage,
 } from "#core/types.js";
 import type { CoreConfig } from "#core/config.js";
 import type { ProviderSession } from "#core/provider.js";
@@ -53,6 +55,10 @@ export interface ClaudeProcessEvents {
   permissionRequest: [ProviderRequest];
   /** CLI sessions never emit this — included for ProviderSession compatibility. */
   titleUpdate: [string];
+  /** CLI sessions never emit this — included for ProviderSession compatibility. */
+  agentUpdate: [AgentUpdateMessage];
+  /** CLI sessions never emit this — included for ProviderSession compatibility. */
+  userMessage: [UserMessage];
 }
 
 export interface ClaudeProcess {
@@ -281,7 +287,12 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
             )
             // The Claude harness always offers a freeform "Other" answer; flag it
             // so the UI enables the composer (see claude-sdk.ts / instance-manager.ts).
-            .map((question) => ({ ...question, isOther: true }))
+            // Normalize multiSelect to a boolean to match the SDK/replay mappers.
+            .map((question) => ({
+              ...question,
+              multiSelect: question.multiSelect === true,
+              isOther: true,
+            }))
         : [];
       if (questions.length > 0) {
         const request: ProviderRequest = {
@@ -299,6 +310,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
       type: "activity",
       activity: "tool_use",
       tool: toolName,
+      toolUseId,
       description: describeToolUse(toolName, input),
       detail: describeToolDetail(toolName, input),
       input: activityInput,
@@ -608,7 +620,13 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
             } else {
               const content = extractToolResultText(event.content);
               const toolName = pendingTools.get(event.tool_use_id);
-              const activity = buildToolResultActivity(event.is_error, toolName, content);
+              const activity = buildToolResultActivity(
+                event.is_error,
+                toolName,
+                content,
+                undefined,
+                event.tool_use_id,
+              );
 
               // Suppress duplicate denial emissions after cancel
               if (activity.permissionDenied && this._cancelledForPermission) continue;
@@ -647,7 +665,13 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
                   } else {
                     const text = extractToolResultText(block.content);
                     const toolName = pendingTools.get(block.tool_use_id);
-                    const activity = buildToolResultActivity(block.is_error, toolName, text);
+                    const activity = buildToolResultActivity(
+                      block.is_error,
+                      toolName,
+                      text,
+                      undefined,
+                      block.tool_use_id,
+                    );
 
                     // Suppress duplicate denial emissions after cancel
                     if (activity.permissionDenied && this._cancelledForPermission) continue;

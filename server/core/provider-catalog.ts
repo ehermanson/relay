@@ -225,6 +225,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     },
     reasoningEffortLevels: EXTENDED_EFFORTS,
     composerHints: { helpText: "Use @ for files and / for commands and skills" },
+    supportsAgentActivity: true,
     runtimeModes: {
       "approval-required": {
         label: "Ask Permission",
@@ -264,6 +265,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     },
     reasoningEffortLevels: STANDARD_EFFORTS,
     composerHints: { helpText: "Use @ for files, / for commands, and $ for skills" },
+    supportsAgentActivity: true,
     fastModes: {
       off: { label: "Standard", description: "Default speed with normal credit usage" },
       on: { label: "Fast", description: "About 1.5x faster, with credits used at 2x" },

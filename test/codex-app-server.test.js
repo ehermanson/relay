@@ -891,7 +891,7 @@ describe("CodexAppServerSession", () => {
             command: "ls -la",
             cwd: "/tmp/project",
             status: "inProgress",
-            commandActions: [],
+            commandActions: [{ type: "listFiles", command: "ls -la", path: "/tmp/project" }],
             aggregatedOutput: null,
             exitCode: null,
             durationMs: null,
@@ -912,7 +912,7 @@ describe("CodexAppServerSession", () => {
             command: "ls -la",
             cwd: "/tmp/project",
             status: "completed",
-            commandActions: [],
+            commandActions: [{ type: "listFiles", command: "ls -la", path: "/tmp/project" }],
             aggregatedOutput: "file1.ts\nfile2.ts\n",
             exitCode: 0,
             durationMs: 50,
@@ -925,7 +925,9 @@ describe("CodexAppServerSession", () => {
 
     const toolUse = activities.find(([a]) => a.activity === "tool_use" && a.tool === "Bash");
     assert.ok(toolUse, "Expected a tool_use activity for Bash");
-    assert.match(toolUse[0].description, /Running command/);
+    assert.equal(toolUse[0].description, "List files in /tmp/project");
+    assert.equal(toolUse[0].inputDescription, "List files in /tmp/project");
+    assert.equal(toolUse[0].input.command, "ls -la");
 
     const toolResult = activities.find(([a]) => a.activity === "tool_result" && a.tool === "Bash");
     assert.ok(toolResult, "Expected a tool_result activity for Bash");
@@ -2504,6 +2506,542 @@ describe("CodexAppServerSession", () => {
     assert.ok(compactStart, "Should send thread/compact/start after respawn");
     assert.equal(compactStart.params.threadId, "thread-compactable");
 
+    session.close();
+  });
+});
+
+describe("code-mode tool activities", () => {
+  it("preserves dynamic exec input and output", async () => {
+    const harness = createHarness();
+    const session = new CodexAppServerSession({
+      cwd: "/tmp/project",
+      logger: noopLogger,
+      spawnProcess: harness.spawnProcess,
+      codexPath: "codex",
+    });
+    const activities = collectEvents(session, "activity");
+    session.send("inspect files");
+    const child = harness.children[0];
+    autoRespond(child);
+    await tick(50);
+    const code = 'text(await tools.exec_command({cmd: "ls"}));';
+    for (const method of ["item/started", "item/completed"]) {
+      child.stdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method,
+          params: {
+            threadId: "thread-001",
+            turnId: "turn-1",
+            item: {
+              type: "dynamicToolCall",
+              id: "exec-1",
+              tool: "exec",
+              arguments: code,
+              status: method === "item/started" ? "inProgress" : "completed",
+              contentItems: [{ type: "text", text: "file.ts" }],
+              success: true,
+            },
+          },
+        }) + "\n",
+      );
+    }
+    await tick();
+    const use = activities.find(([a]) => a.activity === "tool_use")?.[0];
+    const result = activities.find(([a]) => a.activity === "tool_result")?.[0];
+    assert.equal(use?.tool, "ExecuteCode");
+    assert.deepEqual(use?.input, { code });
+    assert.equal(result?.toolUseId, use?.toolUseId);
+    assert.equal(result?.detail, "file.ts");
+    session.close();
+  });
+});
+
+// =============================================================================
+// Multi-agent thread scoping (collaboration items, child threads)
+// =============================================================================
+
+describe("multi-agent thread scoping", () => {
+  function notify(child, method, params) {
+    child.stdout.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
+  }
+
+  async function startRootTurn() {
+    const harness = createHarness();
+    const session = new CodexAppServerSession({
+      cwd: "/tmp/project",
+      logger: noopLogger,
+      spawnProcess: harness.spawnProcess,
+      codexPath: "codex",
+    });
+    const outputs = collectEvents(session, "output");
+    const activities = collectEvents(session, "activity");
+    const agentUpdates = collectEvents(session, "agentUpdate");
+    session.send("delegate this");
+    const child = harness.children[0];
+    autoRespond(child);
+    await tick(50);
+    notify(child, "turn/started", {
+      threadId: "thread-001",
+      turn: { id: "turn-1", items: [], status: "inProgress", error: null },
+    });
+    return { session, child, outputs, activities, agentUpdates };
+  }
+
+  function spawnChild(child, threadId = "thread-child", callId = "call_spawn_1") {
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "subAgentActivity",
+        id: callId,
+        kind: "started",
+        agentThreadId: threadId,
+        agentPath: "/root/jev_research",
+      },
+    });
+  }
+
+  it("never merges interleaved deltas from two threads", async () => {
+    const { session, child, outputs, agentUpdates } = await startRootTurn();
+    spawnChild(child);
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      itemId: "msg-root",
+      delta: "Root says ",
+    });
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      itemId: "msg-child",
+      delta: "child part one ",
+    });
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      itemId: "msg-root",
+      delta: "hello",
+    });
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      itemId: "msg-child",
+      delta: "and two",
+    });
+    notify(child, "item/completed", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      item: { type: "agentMessage", id: "msg-child", text: "child part one and two" },
+    });
+    await tick();
+
+    const rootText = outputs
+      .map(([o]) => o)
+      .filter((o) => !o.agentId && o.text)
+      .map((o) => o.text)
+      .join("");
+    assert.equal(rootText, "Root says hello");
+    const childOutputs = outputs.map(([o]) => o).filter((o) => o.agentId === "thread-child");
+    assert.equal(childOutputs.length, 1, "child text flushes once, on item completion");
+    assert.equal(childOutputs[0].text, "child part one and two");
+    assert.ok(agentUpdates.some(([u]) => u.agent.agentId === "thread-child"));
+    session.close();
+  });
+
+  it("flushes buffered child text when the child's turn completes without an item", async () => {
+    const { session, child, outputs } = await startRootTurn();
+    spawnChild(child);
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      itemId: "msg-child",
+      delta: "partial",
+    });
+    notify(child, "turn/completed", {
+      threadId: "thread-child",
+      turn: { id: "turn-c1", items: [], status: "completed", error: null },
+    });
+    await tick();
+    const childOutputs = outputs.map(([o]) => o).filter((o) => o.agentId === "thread-child");
+    assert.deepEqual(
+      childOutputs.map((o) => o.text),
+      ["partial"],
+    );
+    // A child's turn ending must not end the root turn.
+    assert.equal(session.isProcessing, true);
+    session.close();
+  });
+
+  it("attributes child items with agentId and keeps file_list session-level", async () => {
+    const { session, child, activities } = await startRootTurn();
+    spawnChild(child);
+    notify(child, "item/started", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      item: {
+        type: "commandExecution",
+        id: "cmd-c1",
+        command: "ls -la",
+        cwd: "/tmp/project",
+        status: "inProgress",
+      },
+    });
+    notify(child, "item/completed", {
+      threadId: "thread-child",
+      turnId: "turn-c1",
+      item: {
+        type: "fileChange",
+        id: "fc-c1",
+        status: "completed",
+        changes: [{ path: "/tmp/project/a.ts", kind: { type: "add" }, diff: "+x" }],
+      },
+    });
+    await tick();
+    const cmd = activities.map(([a]) => a).find((a) => a.toolUseId === "cmd-c1");
+    assert.ok(cmd, "child command activity emitted");
+    assert.equal(cmd.agentId, "thread-child");
+    const fileList = activities.map(([a]) => a).find((a) => a.activity === "file_list");
+    assert.ok(fileList);
+    assert.equal(fileList.agentId, undefined);
+    const patch = activities.map(([a]) => a).find((a) => a.toolUseId === "fc-c1");
+    assert.equal(patch.agentId, "thread-child");
+    session.close();
+  });
+
+  it("drops deltas and items from unknown thread ids", async () => {
+    const { session, child, outputs, activities, agentUpdates } = await startRootTurn();
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-unknown",
+      turnId: "turn-x",
+      itemId: "msg-x",
+      delta: "should not appear",
+    });
+    notify(child, "item/started", {
+      threadId: "thread-unknown",
+      turnId: "turn-x",
+      item: {
+        type: "commandExecution",
+        id: "cmd-x",
+        command: "rm -rf /",
+        cwd: "/",
+        status: "inProgress",
+      },
+    });
+    notify(child, "item/completed", {
+      threadId: "thread-unknown",
+      turnId: "turn-x",
+      item: { type: "agentMessage", id: "msg-x", text: "should not appear" },
+    });
+    notify(child, "turn/completed", {
+      threadId: "thread-unknown",
+      turn: { id: "turn-x", items: [], status: "completed", error: null },
+    });
+    await tick();
+    assert.ok(outputs.every(([o]) => !String(o.text).includes("should not appear")));
+    assert.ok(activities.every(([a]) => a.toolUseId !== "cmd-x"));
+    assert.equal(agentUpdates.length, 0);
+    assert.equal(
+      session.isProcessing,
+      true,
+      "unknown thread's turn/completed must not finish the root turn",
+    );
+    session.close();
+  });
+
+  it("does not let a second thread/started overwrite the root session id", async () => {
+    const { session, child } = await startRootTurn();
+    notify(child, "thread/started", {
+      thread: { id: "thread-other", cwd: "/tmp/project", path: "/tmp/other.jsonl" },
+    });
+    await tick();
+    assert.equal(session.getRuntimeBinding().providerSessionId, "thread-001");
+    session.close();
+  });
+
+  it("maps collabAgentToolCall spawn to a tool_use plus agent_update with model", async () => {
+    const { session, child, activities, agentUpdates } = await startRootTurn();
+    const encrypted = "gAAAAA" + "x".repeat(60);
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call_spawn_2",
+        tool: "spawnAgent",
+        status: "completed",
+        senderThreadId: "thread-001",
+        receiverThreadIds: ["thread-child-2"],
+        prompt: encrypted,
+        model: "gpt-5.3-codex",
+        reasoningEffort: "medium",
+        agentsStates: {
+          "thread-child-2": { agentThreadId: "thread-child-2", agentPath: "/root/impl" },
+        },
+      },
+    });
+    await tick();
+    const toolUse = activities
+      .map(([a]) => a)
+      .find((a) => a.activity === "tool_use" && a.toolUseId === "call_spawn_2");
+    assert.ok(toolUse, "spawn tool_use emitted");
+    assert.equal(toolUse.tool, "spawn_agent");
+    assert.equal(toolUse.description, "Spawning agent");
+    assert.equal(JSON.stringify(toolUse.input).includes("gAAAAA"), false, "no ciphertext in input");
+    const update = agentUpdates.map(([u]) => u.agent).find((a) => a.agentId === "thread-child-2");
+    assert.ok(update);
+    assert.equal(update.originToolUseId, "call_spawn_2");
+    assert.equal(update.relation, "child");
+    assert.equal(update.name, "impl");
+    assert.equal(update.model, "gpt-5.3-codex");
+    assert.equal(update.reasoningEffort, "medium");
+    assert.equal(update.status, "running");
+    assert.equal(update.assignment, undefined, "encrypted prompt is never surfaced");
+    assert.ok(typeof update.startedAt === "number");
+    const result = activities
+      .map(([a]) => a)
+      .find((a) => a.activity === "tool_result" && a.toolUseId === "call_spawn_2");
+    assert.ok(result, "tool_result emitted on completion");
+
+    // The spawned thread is now known: its traffic is attributed, not dropped.
+    notify(child, "item/completed", {
+      threadId: "thread-child-2",
+      turnId: "turn-c2",
+      item: { type: "agentMessage", id: "m", text: "hi from impl" },
+    });
+    await tick();
+    session.close();
+  });
+
+  it("maps subAgentActivity kinds onto lifecycle statuses", async () => {
+    const { session, child, agentUpdates } = await startRootTurn();
+    spawnChild(child, "thread-child-3", "call_spawn_3");
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "subAgentActivity",
+        id: "call_msg_3",
+        kind: "interacted",
+        agentThreadId: "thread-child-3",
+        agentPath: "/root/jev_research",
+      },
+    });
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "subAgentActivity",
+        id: "call_stop_3",
+        kind: "interrupted",
+        agentThreadId: "thread-child-3",
+        agentPath: "/root/jev_research",
+      },
+    });
+    await tick();
+    const updates = agentUpdates
+      .map(([u]) => u.agent)
+      .filter((a) => a.agentId === "thread-child-3");
+    assert.equal(updates.length, 3);
+    assert.equal(updates[0].status, "running");
+    assert.equal(updates[0].originToolUseId, "call_spawn_3");
+    assert.equal(updates[0].name, "jev_research");
+    assert.equal(updates[1].lastActivity, undefined, "message receipts preserve useful activity");
+    assert.equal(updates[2].status, "stopped");
+    assert.equal(updates[2].statusDetail, "interrupted");
+    session.close();
+  });
+
+  it("marks a closed agent stopped; a failed resume is the call failing, not the agent", async () => {
+    const { session, child, agentUpdates } = await startRootTurn();
+    spawnChild(child, "thread-child-4", "call_spawn_4");
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call_close_4",
+        tool: "closeAgent",
+        status: "completed",
+        senderThreadId: "thread-001",
+        receiverThreadIds: ["thread-child-4"],
+        agentsStates: {},
+      },
+    });
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call_resume_4",
+        tool: "resumeAgent",
+        status: "failed",
+        senderThreadId: "thread-001",
+        receiverThreadIds: ["thread-child-4"],
+        agentsStates: {},
+      },
+    });
+    await tick();
+    const updates = agentUpdates
+      .map(([u]) => u.agent)
+      .filter((a) => a.agentId === "thread-child-4");
+    assert.deepEqual(
+      updates.map((u) => u.status),
+      ["running", "stopped", undefined],
+    );
+    assert.equal(updates[2].lastActivity, "Resuming agent failed");
+    session.close();
+  });
+
+  it("takes lifecycle from agents_states (string and single-key object variants)", async () => {
+    const { session, child, agentUpdates } = await startRootTurn();
+    spawnChild(child, "thread-a", "call_spawn_a");
+    spawnChild(child, "thread-b", "call_spawn_b");
+    spawnChild(child, "thread-c", "call_spawn_c");
+    spawnChild(child, "thread-d", "call_spawn_d");
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "collabAgentToolCall",
+        id: "call_wait_1",
+        tool: "wait",
+        status: "completed",
+        senderThreadId: "thread-001",
+        receiverThreadIds: ["thread-a", "thread-b", "thread-c", "thread-d", "thread-e"],
+        agentsStates: {
+          "thread-a": { completed: "Final report text" },
+          "thread-b": { errored: "boom" },
+          "thread-c": "running",
+          "thread-d": "shutdown",
+        },
+      },
+    });
+    await tick();
+    const byId = (id) =>
+      agentUpdates
+        .map(([u]) => u.agent)
+        .filter((a) => a.agentId === id)
+        .at(-1);
+    assert.equal(byId("thread-a").status, "completed");
+    assert.equal(byId("thread-a").result, "Final report text");
+    assert.ok(typeof byId("thread-a").endedAt === "number");
+    assert.equal(byId("thread-b").status, "failed");
+    assert.equal(byId("thread-b").statusDetail, "boom");
+    assert.equal(byId("thread-c").status, "running");
+    assert.equal(byId("thread-d").status, "stopped");
+    assert.equal(byId("thread-d").statusDetail, "shutdown");
+    // The wait verb itself never sets a lifecycle: a receiver the provider
+    // reported nothing about gets no status from the call.
+    assert.equal(byId("thread-e").status, undefined);
+    const rawUpdates = agentUpdates.map(([u]) => u);
+    assert.ok(rawUpdates.every((u) => u.raw === undefined || typeof u.raw.type === "string"));
+    assert.ok(
+      rawUpdates.every((u) => !JSON.stringify(u.raw ?? {}).includes("Final report text")),
+      "agent_update.raw is a provenance stub, never the full item",
+    );
+    session.close();
+  });
+
+  it("parks a child as waiting when its turn completes, unless already terminal", async () => {
+    const { session, child, agentUpdates } = await startRootTurn();
+    spawnChild(child, "thread-w", "call_spawn_w");
+    notify(child, "turn/completed", {
+      threadId: "thread-w",
+      turn: { id: "turn-w1", items: [], status: "completed", error: null },
+    });
+    await tick();
+    const latest = () =>
+      agentUpdates
+        .map(([u]) => u.agent)
+        .filter((a) => a.agentId === "thread-w")
+        .at(-1);
+    assert.equal(latest().status, "waiting");
+    assert.equal(latest().lastActivity, "Turn finished");
+
+    notify(child, "item/completed", {
+      threadId: "thread-001",
+      turnId: "turn-1",
+      item: {
+        type: "subAgentActivity",
+        id: "subagent-completed-w",
+        kind: "completed",
+        agentThreadId: "thread-w",
+        agentPath: "/root/jev_research",
+      },
+    });
+    notify(child, "turn/completed", {
+      threadId: "thread-w",
+      turn: { id: "turn-w2", items: [], status: "completed", error: null },
+    });
+    await tick();
+    assert.equal(
+      latest().status,
+      undefined,
+      "a trailing turn end does not revive a completed agent",
+    );
+    assert.equal(latest().lastActivity, "Turn finished");
+    session.close();
+  });
+
+  it("re-keys the root when thread/started announces a new id during resume", async () => {
+    const harness = createHarness();
+    const session = new CodexAppServerSession({
+      cwd: "/tmp/project",
+      resumeSessionId: "thread-old",
+      logger: noopLogger,
+      spawnProcess: harness.spawnProcess,
+      codexPath: "codex",
+    });
+    const outputs = collectEvents(session, "output");
+    const agentUpdates = collectEvents(session, "agentUpdate");
+    session.send("continue");
+    const child = harness.children[0];
+    autoRespond(child, { skipMethods: ["thread/resume"] });
+    await tick(50);
+
+    const resume = child.getStdinMessages().find((m) => m.method === "thread/resume");
+    assert.ok(resume, "thread/resume sent");
+    assert.equal(resume.params.threadId, "thread-old");
+
+    // Server announces the resumed thread under a new id before answering the RPC.
+    notify(child, "thread/started", {
+      thread: { id: "thread-new", cwd: "/tmp/project", path: "/tmp/new.jsonl" },
+    });
+    notify(child, "turn/started", {
+      threadId: "thread-new",
+      turn: { id: "turn-n1", items: [], status: "inProgress", error: null },
+    });
+    notify(child, "item/agentMessage/delta", {
+      threadId: "thread-new",
+      turnId: "turn-n1",
+      itemId: "msg-n",
+      delta: "resumed root text",
+    });
+    await tick();
+    child.stdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: resume.id,
+        result: {
+          thread: { id: "thread-new", cwd: "/tmp/project", path: "/tmp/new.jsonl", turns: [] },
+        },
+      }) + "\n",
+    );
+    await tick(50);
+
+    assert.equal(session.getRuntimeBinding().providerSessionId, "thread-new");
+    const rootText = outputs
+      .map(([o]) => o)
+      .filter((o) => !o.agentId)
+      .map((o) => o.text)
+      .join("");
+    assert.equal(
+      rootText,
+      "resumed root text",
+      "root notifications for the re-keyed id are not dropped",
+    );
+    assert.equal(agentUpdates.length, 0, "the re-keyed root is never treated as a child");
     session.close();
   });
 });

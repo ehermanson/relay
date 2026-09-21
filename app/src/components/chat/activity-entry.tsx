@@ -159,7 +159,7 @@ export function ActivityEntry({
   resultDetail,
   toolResultMeta,
 }: ActivityEntryProps) {
-  const hasRichContent = !!input && !!tool;
+  const hasRichContent = !!tool && (!!input || !!detail || !!resultDetail);
   const isPermDenied = !!permissionDenied;
   const defaultExpanded =
     isPermDenied || (hasRichContent && (tool === "AskUserQuestion" || tool === "GenerateImage"));
@@ -254,8 +254,9 @@ export function ActivityEntry({
             <div className="pl-[18px] pr-2 pb-1.5">
               <ToolContent
                 tool={tool!}
-                input={input!}
+                input={input ?? (detail ? { input: detail } : {})}
                 resultDetail={resultDetail}
+                resultStatus={resultStatus}
                 onSendMessage={onSendMessage}
                 onAnswerUserInput={onAnswerUserInput}
                 isInteractive={isInteractive}

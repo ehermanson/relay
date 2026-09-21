@@ -118,6 +118,22 @@ export function registerSpaceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     return c.json(instanceManager.listSpaceChats(space.id));
   });
 
+  app.post("/api/spaces/:id/pinned", async (c) => {
+    try {
+      const body = await readJsonBody<{ pinned?: boolean }>(c);
+      if (typeof body.pinned !== "boolean") {
+        return c.json({ error: "pinned must be a boolean" }, 400);
+      }
+      const space = instanceManager
+        .getSpaceManager()
+        .setSpacePinned(c.req.param("id"), body.pinned);
+      return c.json(space);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to pin space";
+      return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+    }
+  });
+
   app.post("/api/spaces/:id/complete", async (c) => {
     try {
       const body = await readJsonBody<{ mergeMethod?: string; squashMessage?: string }>(c);

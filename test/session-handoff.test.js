@@ -37,9 +37,13 @@ describe("buildProviderSwitchHandoffPrompt", () => {
         {
           timestamp: 4,
           message: {
-            type: "transcript",
-            title: "Background agent",
-            result: "The issue is tied to create_instance handling.",
+            type: "agent_update",
+            agent: {
+              agentId: "toolu_bg",
+              name: "Background agent",
+              status: "completed",
+              result: "The issue is tied to create_instance handling.",
+            },
           },
         },
         {

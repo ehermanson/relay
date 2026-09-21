@@ -2,6 +2,8 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ChevronRight } from "lucide-react";
 import { ActivityEntry } from "./activity-entry";
+import { AgentCard } from "./agent-card";
+import { useAgentCards } from "./agent-card-context";
 import type { MergedActivity } from "@/lib/chat-types";
 import { INTERACTIVE_TOOLS } from "@shared/tools";
 
@@ -41,6 +43,10 @@ export function ActivityGroup({
   planChildName,
 }: ActivityGroupProps) {
   const [expanded, setExpanded] = useState(false);
+  // Delegated agents anchored to a tool_use in this group render as cards in
+  // place of the plain entry (the tool_result is already merged into the call,
+  // so the card owns the result text too).
+  const agentCards = useAgentCards();
 
   // Only show Allow button on the last denial per tool in this group
   const lastDenialIndex = new Map<string, number>();
@@ -98,23 +104,45 @@ export function ActivityGroup({
     hiddenResults.add(i);
   }
 
-  // Hide progress-update entries: tool_use without `input` (emitted by the server
+  // Hide known progress-update entries (emitted by the server
   // for long-running Bash commands as "Running... Ns"). Once the real result is
   // merged into the original tool_use (which has `input`), these are stale noise.
   for (let i = 0; i < activities.length; i++) {
     const act = activities[i];
-    if (act.activity !== "tool_use" || act.input) continue;
-    // No input — this is a progress update. Hide it.
+    if (act.activity !== "tool_use" || act.input || !act.description.startsWith("Running... "))
+      continue;
+    // Missing input alone does not imply progress: custom tools may lack arguments.
     hiddenResults.add(i);
   }
 
-  // Build visible list preserving original indices for key stability
+  // Build visible list preserving original indices for key stability. Each
+  // entry resolves its anchored agent up front so the fold below can keep
+  // every card visible — a collapsed "N more" must never hide an agent's
+  // failure or "Needs approval" badge.
   const visible = activities
-    .map((act, i) => ({ act, origIndex: i }))
+    .map((act, i) => {
+      const anchoredAgentId =
+        agentCards && act.activity === "tool_use" && act.toolUseId
+          ? agentCards.anchoredAgents.get(act.toolUseId)
+          : undefined;
+      const anchoredAgent = anchoredAgentId ? agentCards?.agents[anchoredAgentId] : undefined;
+      return { act, origIndex: i, anchoredAgent };
+    })
     .filter(({ origIndex }) => !superseded.has(origIndex) && !hiddenResults.has(origIndex));
 
-  const hiddenCount = visible.length - VISIBLE_COUNT;
-  const rendered = hiddenCount > 0 && !expanded ? visible.slice(hiddenCount) : visible;
+  // Fold only plain entries: the oldest plain rows collapse behind "N more",
+  // agent cards always render.
+  const plainCount = visible.reduce((n, entry) => n + (entry.anchoredAgent ? 0 : 1), 0);
+  const hiddenCount = plainCount - VISIBLE_COUNT;
+  let rendered = visible;
+  if (hiddenCount > 0 && !expanded) {
+    let toHide = hiddenCount;
+    rendered = visible.filter((entry) => {
+      if (entry.anchoredAgent || toHide <= 0) return true;
+      toHide--;
+      return false;
+    });
+  }
 
   return (
     <div className="flex flex-col gap-px">
@@ -141,7 +169,7 @@ export function ActivityGroup({
             </button>
           </motion.div>
         )}
-        {rendered.map(({ act, origIndex }, vi) => {
+        {rendered.map(({ act, origIndex, anchoredAgent }, vi) => {
           const isLastDenialForTool =
             act.permissionDenied && lastDenialIndex.get(act.permissionDenied) === origIndex;
 
@@ -152,6 +180,20 @@ export function ActivityGroup({
             INTERACTIVE_TOOLS.has(act.tool || "") &&
             act.tool !== "EnterPlanMode" &&
             act.tool !== "ExitPlanMode";
+          if (anchoredAgent) {
+            return (
+              <motion.div
+                key={`activity-${origIndex}`}
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                className="overflow-hidden py-0.5"
+              >
+                <AgentCard agent={anchoredAgent} fallbackResult={act.mergedResultDetail} />
+              </motion.div>
+            );
+          }
           return (
             <motion.div
               key={`activity-${origIndex}`}

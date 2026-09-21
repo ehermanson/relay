@@ -24,13 +24,34 @@ export function AttachmentStrip({
         const removeButton = (
           <Tooltip content="Remove">
             <button
+              type="button"
+              aria-label={`Remove ${entry.file.name}`}
               onClick={() => onRemove(index)}
-              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-error text-white opacity-0 transition-opacity group-hover:opacity-100"
+              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-error text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:h-10 [@media(pointer:coarse)]:w-10 [@media(pointer:coarse)]:opacity-100"
             >
               <X size={10} strokeWidth={3} />
             </button>
           </Tooltip>
         );
+
+        if (entry.kind === "video" && entry.preview) {
+          return (
+            <div key={index} className="group relative max-w-[16rem]">
+              <video
+                src={entry.preview}
+                aria-label={entry.file.name}
+                controls
+                playsInline
+                preload="metadata"
+                className="h-32 w-56 rounded-lg border border-border bg-black object-contain"
+              />
+              <div className="truncate text-[0.6875rem] text-muted">
+                {entry.file.name} · {formatBytes(entry.file.size)}
+              </div>
+              {removeButton}
+            </div>
+          );
+        }
 
         if (entry.kind === "image" && entry.preview) {
           return (

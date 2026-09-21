@@ -23,6 +23,7 @@ import {
   UserMinus,
   Wrench,
   Image as ImageIcon,
+  Lightbulb,
   type LucideIcon,
 } from "lucide-react";
 
@@ -48,6 +49,7 @@ export const TOOL_ICONS: Record<string, LucideIcon> = {
   TeamCreate: UserPlus,
   TeamDelete: UserMinus,
   GenerateImage: ImageIcon,
+  Advisor: Lightbulb,
 };
 
 /** Default icon when a tool name isn't in the registry. */

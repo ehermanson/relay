@@ -8,6 +8,7 @@ import { useState } from "react";
 import { ActivityCodeBlock, PatchDiffView, langFromPath } from "@/components/chat/activity-code";
 import { ImageThumbnail } from "@/components/chat/markdown-content";
 import type { EditToolInput, UserInputAnswer } from "@shared/types";
+import { toggleAnswerSelection } from "@/lib/utils";
 
 const IMAGE_EXTENSIONS = new Set([
   "png",
@@ -64,7 +65,7 @@ export function AskUserQuestionContent({
   isInteractive,
 }: AskUserQuestionContentProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string[]>>({});
   const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [replyMode, setReplyMode] = useState(false);
@@ -76,6 +77,7 @@ export function AskUserQuestionContent({
         question?: string;
         header?: string;
         options?: Array<{ label?: string; description?: string }>;
+        multiSelect?: boolean;
         isOther?: boolean;
       }>
     | undefined;
@@ -87,18 +89,31 @@ export function AskUserQuestionContent({
   const canRespond = isInteractive && isManagedPrompt && !submitted;
 
   const answerForQuestion = (questionId: string) => {
-    if (selectedAnswers[questionId] === "__other__") {
-      const other = otherAnswers[questionId]?.trim();
-      return other ? [other] : [];
+    const selected = selectedAnswers[questionId] ?? [];
+    const result: string[] = [];
+    for (const label of selected) {
+      if (label === "__other__") {
+        const other = otherAnswers[questionId]?.trim();
+        if (other) result.push(other);
+      } else {
+        result.push(label);
+      }
     }
-    const selected = selectedAnswers[questionId];
-    return selected ? [selected] : [];
+    return result;
   };
 
   const canSubmit =
     canRespond &&
     questions.every((question, index) => {
       const questionId = question.id || `question-${index}`;
+      // "Other" picked but left blank isn't a real answer — require the text so
+      // the choice isn't silently dropped when submitting.
+      if (
+        (selectedAnswers[questionId] ?? []).includes("__other__") &&
+        !otherAnswers[questionId]?.trim()
+      ) {
+        return false;
+      }
       return answerForQuestion(questionId).length > 0;
     });
 
@@ -106,8 +121,8 @@ export function AskUserQuestionContent({
     <div className="mt-2 flex flex-col gap-2">
       {questions.map((q, qi) => {
         const questionId = q.id || `question-${qi}`;
-        const selectedAnswer = selectedAnswers[questionId];
-        const showOther = q.isOther && selectedAnswer === "__other__";
+        const selectedForQuestion = selectedAnswers[questionId] ?? [];
+        const showOther = q.isOther && selectedForQuestion.includes("__other__");
 
         return (
           <div key={qi} className="overflow-hidden rounded-lg border border-border">
@@ -118,6 +133,11 @@ export function AskUserQuestionContent({
                 </span>
               )}
               {q.question}
+              {q.multiSelect && isManagedPrompt && (
+                <p className="mt-1 text-[0.6875rem] font-normal text-muted">
+                  Select all that apply
+                </p>
+              )}
             </div>
             {q.options && (
               <div className="flex flex-col">
@@ -125,7 +145,7 @@ export function AskUserQuestionContent({
                   const key = `${qi}-${oi}`;
                   const optionLabel = opt.label;
                   const isSelected = isManagedPrompt
-                    ? selectedAnswer === optionLabel
+                    ? !!optionLabel && selectedForQuestion.includes(optionLabel)
                     : selectedKey === key;
                   const isDimmed = !isManagedPrompt && selectedKey !== null && !isSelected;
                   return (
@@ -146,7 +166,11 @@ export function AskUserQuestionContent({
                               if (canRespond) {
                                 setSelectedAnswers((prev) => ({
                                   ...prev,
-                                  [questionId]: optionLabel,
+                                  [questionId]: toggleAnswerSelection(
+                                    prev[questionId],
+                                    optionLabel,
+                                    q.multiSelect,
+                                  ),
                                 }));
                               }
                             }
@@ -175,7 +199,7 @@ export function AskUserQuestionContent({
                     <button
                       type="button"
                       className={`rounded-md px-2 py-1 text-[0.75rem] font-medium transition-colors ${
-                        selectedAnswer === "__other__"
+                        selectedForQuestion.includes("__other__")
                           ? "bg-accent/10 text-accent"
                           : "text-muted hover:bg-accent/5 hover:text-text"
                       }`}
@@ -184,7 +208,11 @@ export function AskUserQuestionContent({
                           ? () =>
                               setSelectedAnswers((prev) => ({
                                 ...prev,
-                                [questionId]: "__other__",
+                                [questionId]: toggleAnswerSelection(
+                                  prev[questionId],
+                                  "__other__",
+                                  q.multiSelect,
+                                ),
                               }))
                           : undefined
                       }
@@ -337,6 +365,7 @@ interface ToolContentProps {
   tool: string;
   input: Record<string, unknown>;
   resultDetail?: string;
+  resultStatus?: "success" | "error";
   onSendMessage?: (text: string) => void;
   onAnswerUserInput?: (
     requestId: string,
@@ -361,6 +390,7 @@ export function ToolContent({
   tool,
   input,
   resultDetail,
+  resultStatus,
   onSendMessage,
   onAnswerUserInput,
   isInteractive,
@@ -405,6 +435,12 @@ export function ToolContent({
         }
         return null;
       }
+      case "ExecuteCode": {
+        const code = input.code;
+        return typeof code === "string" ? (
+          <ActivityCodeBlock content={code} lang="javascript" />
+        ) : null;
+      }
       case "Bash": {
         const command = input.command as string | undefined;
         if (command) {
@@ -412,33 +448,33 @@ export function ToolContent({
         }
         return null;
       }
-      case "Read": {
-        const filePath = (input.file_path as string) || undefined;
-        if (filePath) {
-          const parts = [];
-          if (input.offset) parts.push(`offset: ${input.offset}`);
-          if (input.limit) parts.push(`limit: ${input.limit}`);
-          const extra = parts.length > 0 ? ` (${parts.join(", ")})` : "";
-          return (
-            <>
-              <ActivityCodeBlock content={filePath + extra} />
-              {isImagePath(filePath) && <ImagePreview path={filePath} />}
-            </>
-          );
-        }
-        return null;
-      }
+      case "Read":
       case "ViewImage": {
         const filePath = (input.file_path as string) || (input.path as string) || undefined;
-        if (filePath) {
+        const parts = [];
+        if (input.offset != null) parts.push(`offset: ${input.offset}`);
+        if (input.limit != null) parts.push(`limit: ${input.limit}`);
+        const extra = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+        const label = filePath ? filePath + extra : undefined;
+        if (resultStatus === "error") {
+          return (
+            <ActivityCodeBlock content={resultDetail || "Unable to read file"} label={label} />
+          );
+        }
+        if (filePath && (tool === "ViewImage" || isImagePath(filePath))) {
           return (
             <>
-              <ActivityCodeBlock content={filePath} />
+              <ActivityCodeBlock content={label!} />
               <ImagePreview path={filePath} />
             </>
           );
         }
-        return null;
+        if (resultDetail) {
+          return (
+            <ActivityCodeBlock content={resultDetail} label={label} lang={langFromPath(filePath)} />
+          );
+        }
+        return label ? <ActivityCodeBlock content={label} /> : null;
       }
       case "GenerateImage": {
         const filePath = (input.file_path as string) || (input.path as string) || undefined;
@@ -514,6 +550,9 @@ export function ToolContent({
 
   const hasResult = !!resultDetail;
 
+  // File reads own their layout: generic result text must not replace image previews.
+  if (tool === "Read" || tool === "ViewImage") return inputContent;
+
   // Edit: just the diff. The result ("file updated successfully") is noise.
   if (tool === "Edit") return inputContent;
 
@@ -522,10 +561,14 @@ export function ToolContent({
   if (tool === "Write") return inputContent;
 
   // Bash: labeled Command + Result sections (like Kanna).
-  if (tool === "Bash") {
+  if (tool === "Bash" || tool === "ExecuteCode") {
     return (
       <div className="flex flex-col gap-2">
-        {inputContent && <LabeledSection label="Command">{inputContent}</LabeledSection>}
+        {inputContent && (
+          <LabeledSection label={tool === "ExecuteCode" ? "Code" : "Command"}>
+            {inputContent}
+          </LabeledSection>
+        )}
         {hasResult ? (
           <LabeledSection label="Result">
             <ActivityCodeBlock content={resultDetail!} />

@@ -65,9 +65,9 @@ export function useDoneTransitionPulse(active: InboxEntry[], done: InboxEntry[])
 
   useEffect(() => {
     const prevActive = prevActiveIdsRef.current;
-    prevActiveIdsRef.current = new Set(active.map((entry) => entry.instance.id));
+    prevActiveIdsRef.current = new Set(active.map((entry) => entry.id));
     if (!prevActive) return;
-    if (done.some((entry) => prevActive.has(entry.instance.id))) setPulse((n) => n + 1);
+    if (done.some((entry) => prevActive.has(entry.id))) setPulse((n) => n + 1);
   }, [active, done]);
 
   return pulse;
