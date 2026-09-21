@@ -11,6 +11,7 @@ interface ToolCategory {
 }
 
 const TOOL_CATEGORIES: Record<string, ToolCategory> = {
+  ExecuteCode: { singular: "code execution", plural: "code executions" },
   Read: { singular: "read", plural: "reads" },
   Edit: { singular: "edit", plural: "edits" },
   Write: { singular: "write", plural: "writes" },

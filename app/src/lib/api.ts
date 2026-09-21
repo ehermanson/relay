@@ -1,3 +1,4 @@
+import { videoContentType, MAX_VIDEO_UPLOAD } from "@shared/video-attachments";
 import type {
   CreateInstancePayload,
   HistoryEntry,
@@ -348,6 +349,33 @@ export async function fetchInstanceHistory(instanceId: string): Promise<HistoryE
   return res.json();
 }
 
+/**
+ * Detailed transcript of one delegated agent (`agentId` is the Relay agent key,
+ * `AgentInfo.agentId`). Served from transcript files — never boots or resumes
+ * anything. Returns `null` when the server has no history for this agent (404).
+ */
+export async function fetchAgentHistory(
+  instanceId: string,
+  agentId: string,
+): Promise<HistoryEntry[] | null> {
+  const res = await fetch(
+    `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/history`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to fetch agent history");
+  const data = (await res.json()) as { history?: HistoryEntry[] };
+  return Array.isArray(data.history) ? data.history : [];
+}
+
+export async function fetchAgentModel(instanceId: string, agentId: string): Promise<string | null> {
+  const res = await fetch(
+    `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/model`,
+  );
+  if (!res.ok) throw new Error("Failed to fetch agent model");
+  const data = (await res.json()) as { model: string | null };
+  return data.model;
+}
+
 export async function fetchInstanceSummary(instanceId: string): Promise<InstanceInfo | null> {
   const res = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/summary`);
   if (res.status === 404) return null;
@@ -375,6 +403,8 @@ const EXT_TO_MIME: Record<string, string> = {
 };
 
 function inferContentType(file: File): string {
+  const videoMime = videoContentType(file.name, file.type);
+  if (videoMime) return videoMime;
   if (file.type) return file.type;
   const dot = file.name.lastIndexOf(".");
   if (dot < 0) return "application/octet-stream";
@@ -382,10 +412,12 @@ function inferContentType(file: File): string {
 }
 
 /**
- * Upload a single file attachment (image or supported document) to the server.
+ * Upload a single file attachment (image, video, or supported document) to the server.
  * Returns the absolute path on disk where the file was staged (~/.relay/uploads/<uuid>.ext).
  */
 export async function uploadAttachment(file: File): Promise<string> {
+  const limit = videoContentType(file.name, file.type) ? MAX_VIDEO_UPLOAD : 10 * 1024 * 1024;
+  if (file.size > limit) throw new Error(`File too large (${limit / (1024 * 1024)}MB limit)`);
   const res = await fetch("/api/upload", {
     method: "POST",
     headers: { "Content-Type": inferContentType(file) },
@@ -784,6 +816,19 @@ export async function convertWorktreeToSpace(
 export async function fetchSpaceDetail(spaceId: string): Promise<SpaceInfo> {
   const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`);
   if (!res.ok) throw new Error("Failed to fetch space");
+  return res.json();
+}
+
+export async function setSpacePinned(spaceId: string, pinned: boolean): Promise<SpaceInfo> {
+  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/pinned`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: "Failed to pin space" }));
+    throw new Error(data.error || "Failed to pin space");
+  }
   return res.json();
 }
 

@@ -19,6 +19,7 @@ import {
   $isRangeSelection,
   $isTextNode,
   $setSelection,
+  SKIP_DOM_SELECTION_TAG,
   type EditorConfig,
   type EditorState,
   type LexicalEditor,
@@ -495,9 +496,20 @@ function SyncEffect({
     const editor = editorRef.current;
     if (!editor || selectionOffset == null) return;
 
-    editor.update(() => {
-      $setSelectionAtOffset(selectionOffset);
-    });
+    // Writing a DOM range into an unfocused contenteditable focuses it (and on
+    // iOS raises the keyboard), so only sync the editor-state selection while the
+    // editor is blurred; a later editor.focus() re-applies it to the DOM.
+    const rootElement = editor.getRootElement();
+    const editorHasFocus =
+      !!rootElement &&
+      document.activeElement !== null &&
+      rootElement.contains(document.activeElement);
+    editor.update(
+      () => {
+        $setSelectionAtOffset(selectionOffset);
+      },
+      editorHasFocus ? undefined : { tag: SKIP_DOM_SELECTION_TAG },
+    );
     onSelectionApplied?.();
   }, [editorRef, onSelectionApplied, selectionOffset]);
 

@@ -682,6 +682,11 @@ export function InstanceViewContent() {
               onInterruptAndSend={actions.handleInterruptAndSend}
               onEditQueued={actions.handleEditQueued}
               onRemoveQueued={actions.handleRemoveQueued}
+              agents={shared.agents}
+              agentItems={shared.agentItems}
+              instanceId={shared.id}
+              provider={shared.instance.provider}
+              pendingRequest={shared.instance.pendingPermission ?? null}
             />
           </MaybeRelayProvider>
         </ErrorBoundary>

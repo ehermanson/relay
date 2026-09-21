@@ -46,7 +46,12 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ViewHeader, ViewHeaderTitle, MobileSidebarToggle } from "@/components/ui/view-header";
 import type { ChatItem } from "@/hooks/use-instance-messages";
 import type { MergedActivity } from "@/lib/chat-types";
+import { toggleAnswerSelection } from "@/lib/utils";
+import { findRequestAgentId } from "@/lib/agents";
+import { AgentsPanel } from "@/components/chat/agents-panel";
+import { AGENT_SCENES } from "@/components/debug/agent-sandbox-fixtures";
 import type {
+  AgentInfo,
   InstanceInfo,
   InstanceStatus,
   ProviderRequest,
@@ -230,9 +235,10 @@ const ASK_USER_QUESTIONS: UserInputQuestion[] = [
   {
     id: "testing",
     header: "Testing strategy",
-    question: "What level of test coverage do you want?",
+    question: "Which test types should we add? (multi-select)",
+    multiSelect: true,
     options: [
-      { label: "Unit tests only", description: "Fast, focused tests for individual functions" },
+      { label: "Unit tests", description: "Fast, focused tests for individual functions" },
       { label: "Integration tests", description: "Test component interactions and data flow" },
       { label: "Full E2E", description: "End-to-end browser tests for critical paths" },
     ],
@@ -715,18 +721,6 @@ const TEMPLATES: MessageTemplate[] = [
       timestamp: Date.now(),
     }),
   },
-  {
-    label: "Agent transcript",
-    icon: Bot,
-    description: "Sub-agent spawned and completed",
-    create: () => ({
-      kind: "agent-transcript" as const,
-      title: `Sub-agent: review code (#${nextId()})`,
-      result:
-        "Reviewed 3 files, found 2 issues. Applied fixes to debug-panel.tsx and chat-debug.tsx.",
-      timestamp: Date.now(),
-    }),
-  },
 ];
 
 // ── Grouped templates ────────────────────────────────────────────────
@@ -773,7 +767,7 @@ const TEMPLATE_GROUPS: TemplateGroup[] = [
   {
     label: "System",
     templates: TEMPLATES.filter((t) =>
-      ["System event", "Error event", "Compact boundary", "Agent transcript"].includes(t.label),
+      ["System event", "Error event", "Compact boundary"].includes(t.label),
     ),
   },
 ];
@@ -1029,11 +1023,17 @@ export function ChatSandbox() {
   const [instanceOverrides, setInstanceOverrides] = useState<Partial<InstanceInfo>>({});
   const [composerMode, setComposerMode] = useState<ComposerMode>("idle");
   const [planComments, setPlanComments] = useState<PlanComment[]>([]);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string[]>>({});
   const [connectionBanner, setConnectionBanner] = useState<"reconnecting" | "interrupted" | null>(
     null,
   );
   const [showBranchBanner, setShowBranchBanner] = useState(false);
+  // Delegated-agent prototype state (see agent-sandbox-fixtures.ts).
+  const [agents, setAgents] = useState<Record<string, AgentInfo>>({});
+  const [agentItems, setAgentItems] = useState<Record<string, ChatItem[]>>({});
+  const [agentRequest, setAgentRequest] = useState<ProviderRequest | null>(null);
+  const [showAgentsPanel, setShowAgentsPanel] = useState(false);
+  const agentsCount = Object.keys(agents).length;
 
   const instance = useMemo<InstanceInfo>(
     () => ({ ...DEFAULT_INSTANCE, ...instanceOverrides }),
@@ -1050,6 +1050,9 @@ export function ChatSandbox() {
 
   const clearAll = useCallback(() => {
     setItems([]);
+    setAgents({});
+    setAgentItems({});
+    setAgentRequest(null);
     setInstanceOverrides({});
     setComposerMode("idle");
     setConnectionBanner(null);
@@ -1241,6 +1244,36 @@ export function ChatSandbox() {
               </div>
             </Section>
 
+            {/* Delegated agents (cards + Agents sidecar prototype) */}
+            <Section title="Delegated agents">
+              <p className="mb-2 text-[0.6875rem] text-muted">
+                Scenes load main items, agent state and nested transcripts together.
+              </p>
+              <div className="flex flex-col gap-1">
+                <ToggleRow
+                  label="Show Agents sidecar"
+                  checked={showAgentsPanel}
+                  onChange={setShowAgentsPanel}
+                />
+                {AGENT_SCENES.map((scene) => (
+                  <button
+                    key={scene.label}
+                    onClick={() => {
+                      const built = scene.build();
+                      setItems(built.items);
+                      setAgents(built.agents);
+                      setAgentItems(built.agentItems);
+                      setAgentRequest(built.pendingRequest ?? null);
+                    }}
+                    className="rounded-md border border-border/50 px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-surface-hover"
+                  >
+                    <div className="text-[0.75rem] font-medium text-text-bright">{scene.label}</div>
+                    <div className="mt-0.5 text-[0.6875rem] text-muted">{scene.description}</div>
+                  </button>
+                ))}
+              </div>
+            </Section>
+
             {/* Message palette */}
             {TEMPLATE_GROUPS.map((group) => (
               <Section key={group.label} title={group.label} defaultOpen={false}>
@@ -1281,6 +1314,8 @@ export function ChatSandbox() {
             isOpen={false}
             tasksCount={0}
             filesCount={0}
+            agentsCount={agentsCount}
+            hasAgentsContent={agentsCount > 0}
             hasPlanContent={!!instance.planContent}
             hasReviewContent={!!instance.reviewInstanceId}
             hasStats={!!instance.stats}
@@ -1290,26 +1325,48 @@ export function ChatSandbox() {
             onOpenMobileSidecar={() => {}}
           />
 
-          {/* Message list */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
-            {items.length === 0 ? (
-              <div className="flex flex-1 flex-col items-center justify-center text-center">
-                <MessageSquare size={32} className="mb-3 text-muted/40" />
-                <p className="text-[0.875rem] font-medium text-text">No messages yet</p>
-                <p className="mt-1 max-w-xs text-[0.75rem] text-muted">
-                  Add messages from the palette, load a scene, or apply a preset.
-                </p>
+          {/* Message list (+ optional Agents sidecar prototype) */}
+          <div className="flex min-h-0 flex-1 overflow-hidden bg-bg">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {items.length === 0 ? (
+                <div className="flex flex-1 flex-col items-center justify-center text-center">
+                  <MessageSquare size={32} className="mb-3 text-muted/40" />
+                  <p className="text-[0.875rem] font-medium text-text">No messages yet</p>
+                  <p className="mt-1 max-w-xs text-[0.75rem] text-muted">
+                    Add messages from the palette, load a scene, or apply a preset.
+                  </p>
+                </div>
+              ) : (
+                <ErrorBoundary name="Sandbox preview">
+                  <MessageList
+                    items={items}
+                    isProcessing={isProcessing}
+                    instanceStatus={instance.status}
+                    isInteractive={instance.status !== "stopped"}
+                    isExternal={!!instance.external}
+                    agents={agents}
+                    agentItems={agentItems}
+                    provider={instance.provider}
+                    pendingRequest={agentRequest}
+                  />
+                </ErrorBoundary>
+              )}
+            </div>
+            {showAgentsPanel && agentsCount > 0 && (
+              <div className="flex w-[320px] shrink-0 flex-col overflow-hidden border-l border-border/70 bg-surface">
+                <div className="shrink-0 border-b border-border/60 px-3 py-2 text-xs font-medium text-text-bright">
+                  Agents <span className="text-muted">{agentsCount}</span>
+                </div>
+                <ErrorBoundary name="Agents panel">
+                  <AgentsPanel
+                    agents={agents}
+                    agentItems={agentItems}
+                    items={items}
+                    provider={instance.provider}
+                    pendingAgentId={findRequestAgentId(agentRequest, agents)}
+                  />
+                </ErrorBoundary>
               </div>
-            ) : (
-              <ErrorBoundary name="Sandbox preview">
-                <MessageList
-                  items={items}
-                  isProcessing={isProcessing}
-                  instanceStatus={instance.status}
-                  isInteractive={instance.status !== "stopped"}
-                  isExternal={!!instance.external}
-                />
-              </ErrorBoundary>
             )}
           </div>
 
@@ -1377,7 +1434,14 @@ export function ChatSandbox() {
               onPlanCommentsChange={setPlanComments}
               selectedAnswers={selectedAnswers}
               onSelectAnswer={(qId, answer) =>
-                setSelectedAnswers((prev) => ({ ...prev, [qId]: answer }))
+                setSelectedAnswers((prev) => ({
+                  ...prev,
+                  [qId]: toggleAnswerSelection(
+                    prev[qId],
+                    answer,
+                    ASK_USER_QUESTIONS.find((q) => q.id === qId)?.multiSelect,
+                  ),
+                }))
               }
             />
           )}
@@ -1405,7 +1469,7 @@ function MockComposer({
   onDismiss: () => void;
   planComments: PlanComment[];
   onPlanCommentsChange: (c: PlanComment[]) => void;
-  selectedAnswers: Record<string, string>;
+  selectedAnswers: Record<string, string[]>;
   onSelectAnswer: (qId: string, answer: string) => void;
 }) {
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);

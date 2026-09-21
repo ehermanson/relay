@@ -14,6 +14,7 @@ import type {
 } from "@shared/types";
 import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { QueuedRestore } from "@/lib/chat-types";
+import { toggleAnswerSelection } from "@/lib/utils";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
 import { ComposerPanel } from "@/components/chat/input-area/composer-panel";
 import { AttachmentStrip } from "@/components/chat/input-area/attachment-strip";
@@ -34,6 +35,7 @@ import { ProjectContext } from "@/context/project-context";
 import { useWSMethods } from "@/context/websocket-context";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { expandTaskReferences } from "@/lib/composer-mentions";
+import { shouldAutoFocusComposer } from "@/lib/composer-focus";
 
 import { AnimatePresence, motion } from "motion/react";
 import { MessageSquareReply, X } from "lucide-react";
@@ -313,7 +315,7 @@ export function InputArea({
     resetAfterSend,
   } = useComposerState(instanceId, composerRef);
   const [promptText, setPromptText] = useState("");
-  const [selectedPromptAnswers, setSelectedPromptAnswers] = useState<Record<string, string>>({});
+  const [selectedPromptAnswers, setSelectedPromptAnswers] = useState<Record<string, string[]>>({});
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
   const [promptReplyMode, setPromptReplyMode] = useState(false);
   const [planComments, setPlanComments] = useState<PlanComment[]>([]);
@@ -324,7 +326,7 @@ export function InputArea({
   useEffect(() => {
     setPlanComments([]);
     setPlanFeedbackText("");
-    if (pendingPlan) {
+    if (pendingPlan && shouldAutoFocusComposer()) {
       composerRef.current?.focus();
     }
   }, [pendingPlan]);
@@ -375,7 +377,7 @@ export function InputArea({
     setSelectedPromptAnswers({});
     setIsQuestionPanelCollapsed(false);
     setPromptReplyMode(false);
-    if (promptRequestId) {
+    if (promptRequestId && shouldAutoFocusComposer()) {
       composerRef.current?.focus();
     }
   }, [promptRequestId]);
@@ -515,12 +517,16 @@ export function InputArea({
   };
 
   const promptAnswerForQuestion = (question: UserInputQuestion) => {
+    const selected = selectedPromptAnswers[question.id] ?? [];
     if (freeformQuestionId && question.id === freeformQuestionId) {
       const customAnswer = promptText.trim();
-      if (customAnswer) return [customAnswer];
+      if (customAnswer) {
+        // Multi-select: the typed note is an extra answer alongside checked
+        // options. Single-select: the note replaces the pick (radio semantics).
+        return question.multiSelect ? [...selected, customAnswer] : [customAnswer];
+      }
     }
-    const selected = selectedPromptAnswers[question.id];
-    return selected ? [selected] : [];
+    return selected;
   };
 
   const canSubmitPrompt =
@@ -707,7 +713,11 @@ export function InputArea({
         onSelectOption={(questionId, answer) =>
           setSelectedPromptAnswers((prev) => ({
             ...prev,
-            [questionId]: answer,
+            [questionId]: toggleAnswerSelection(
+              prev[questionId],
+              answer,
+              promptQuestions.find((q) => q.id === questionId)?.multiSelect,
+            ),
           }))
         }
         collapsed={isQuestionPanelCollapsed}
@@ -964,7 +974,7 @@ export function InputArea({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,application/pdf,application/json,application/xml,application/yaml,application/sql,text/plain,text/csv,text/markdown,text/html,text/xml,text/yaml,.pdf,.json,.csv,.md,.txt,.log,.html,.yaml,.yml,.xml,.diff,.patch,.sql"
+            accept="video/*,.mp4,.mov,.webm,.m4v,.avi,.mkv,.ogv,.mpeg,.mpg,.3gp,.3g2,image/*,application/pdf,application/json,application/xml,application/yaml,application/sql,text/plain,text/csv,text/markdown,text/html,text/xml,text/yaml,.pdf,.json,.csv,.md,.txt,.log,.html,.yaml,.yml,.xml,.diff,.patch,.sql"
             multiple
             className="hidden"
             onChange={(event) => {

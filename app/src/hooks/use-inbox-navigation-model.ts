@@ -1,6 +1,6 @@
 /**
- * Flattens the project-grouped navigation model into a single recency-sorted
- * inbox across every project.
+ * Groups the project navigation model into one recency-sorted inbox of
+ * standalone chats and named spaces across every project.
  *
  * Deliberately reuses `useSidebarNavigationController` rather than fetching
  * anything of its own: the merged REST-summaries + live-WS instance set, the

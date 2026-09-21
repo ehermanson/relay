@@ -4,7 +4,6 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { BarChart3, CheckCircle2, FolderPlus, MessageSquare, Plus } from "lucide-react";
 import { useWSState, useWSMethods } from "../context/websocket-context";
 import { getInstanceProjectRouteId } from "../lib/project-route";
-import { MobileSidebarToggle } from "../components/ui/view-header";
 import { Tooltip } from "../components/ui/tooltip";
 import { EmptyProjectActions } from "../components/empty-project-actions";
 import { CreateSpaceDialog, useCreateSpaceDialog } from "../components/spaces/create-space-dialog";
@@ -15,9 +14,8 @@ import {
   getChatRecencyTimestamp,
   getDisplayTokenBreakdown,
 } from "../lib/utils";
-import { isAttachedReviewInstance } from "../lib/review-session";
 import { useMediaQuery } from "../hooks/use-media-query";
-import { ChatListRow } from "../components/chat/chat-list-row";
+import { MobileHome } from "@/components/mobile-home";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useProjectNavigationModel } from "../hooks/use-project-navigation-model";
 import { useActionToasts } from "@/context/action-toast-context";
@@ -41,25 +39,6 @@ function ModelChipsSkeleton() {
     <div className="flex items-center gap-1.5 border-t border-border/50 px-4 py-2">
       <span className="h-5 w-20 animate-pulse rounded-md bg-surface-hover" />
       <span className="h-5 w-16 animate-pulse rounded-md bg-surface-hover" />
-    </div>
-  );
-}
-
-/** Placeholder rows matching ChatListRow's dimensions so the card doesn't grow when chats land. */
-function ChatRowsSkeleton({ rows = 3 }: { rows?: number }) {
-  const widths = ["70%", "55%", "62%"];
-  return (
-    <div className="flex flex-col border-t border-border/50">
-      {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="flex items-center gap-2.5 px-3 py-2">
-          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-surface-hover" />
-          <span
-            className="h-[1.05rem] animate-pulse rounded bg-surface-hover"
-            style={{ width: widths[i % widths.length] }}
-          />
-          <span className="ml-auto h-3 w-8 shrink-0 animate-pulse rounded bg-surface-hover" />
-        </div>
-      ))}
     </div>
   );
 }
@@ -126,115 +105,6 @@ function ProjectCard({
   const taskCount = artifacts?.tasks?.length ?? 0;
   const openTasks =
     artifacts?.tasks?.filter((t) => t.status === "open" || t.status === "in_progress").length ?? 0;
-
-  // Mobile surfaces recent chats instead of stats — phones are for starting or
-  // continuing a chat, not reading token breakdowns (the sidebar covers desktop).
-  const isMobile = useMediaQuery("(max-width: 768px)");
-  const recentChats = [...instances]
-    .filter((i) => !isAttachedReviewInstance(i))
-    .sort((a, b) => getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a))
-    .slice(0, 5);
-
-  // Tag space-owned chats with their branch (default "main" space stays untagged).
-  const spacesById = new Map((artifacts?.spaces ?? []).map((s) => [s.id, s]));
-  const spaceLabelFor = (inst: InstanceInfo): string | undefined => {
-    if (!inst.spaceId) return undefined;
-    const space = spacesById.get(inst.spaceId);
-    if (!space || space.isDefault) return undefined;
-    return space.gitBranch ?? space.name;
-  };
-
-  const iconNode = showIcon ? (
-    <img
-      src={`/api/file?path=${encodeURIComponent(iconPath)}`}
-      alt=""
-      className="h-9 w-9 rounded-lg object-contain"
-      onError={() => setImgError(true)}
-    />
-  ) : (
-    dirName.charAt(0).toUpperCase()
-  );
-
-  if (isMobile) {
-    return (
-      <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
-        {/* Header — taps through to the project */}
-        <div className="flex items-center gap-3 px-3 pt-3 pb-2">
-          <Link
-            to="/projects/$projectId"
-            params={{ projectId }}
-            className="flex min-w-0 flex-1 items-center gap-3"
-          >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg text-[0.8125rem] font-semibold text-muted">
-              {iconNode}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[0.875rem] font-semibold text-text-bright">
-                {dirName}
-              </div>
-              {activeCount > 0 ? (
-                <div className="flex items-center gap-1 text-[0.6875rem] text-accent">
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
-                  {activeCount} active
-                </div>
-              ) : lastActivity ? (
-                <div className="text-[0.6875rem] text-muted">{formatTimeAgo(lastActivity)}</div>
-              ) : null}
-            </div>
-          </Link>
-          <Tooltip content={`New chat in ${dirName}`}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onNewSession(directory);
-              }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-hover hover:text-text"
-            >
-              <Plus size={14} />
-            </button>
-          </Tooltip>
-        </div>
-
-        {/* Recent chats */}
-        {recentChats.length > 0 ? (
-          <div className="flex flex-col border-t border-border/50">
-            {recentChats.map((inst) => (
-              <ChatListRow key={inst.id} instance={inst} spaceLabel={spaceLabelFor(inst)} />
-            ))}
-            {instances.length > recentChats.length && (
-              <Link
-                to="/projects/$projectId"
-                params={{ projectId }}
-                className="px-3 py-2 text-[0.6875rem] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-text"
-              >
-                View all {instances.length} chats →
-              </Link>
-            )}
-          </div>
-        ) : chatsLoading ? (
-          <ChatRowsSkeleton />
-        ) : sessionCount > 0 ? (
-          <Link
-            to="/projects/$projectId"
-            params={{ projectId }}
-            className="border-t border-border/50 px-3 py-2.5 text-[0.6875rem] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-text"
-          >
-            View {sessionCount} chat{sessionCount !== 1 ? "s" : ""} →
-          </Link>
-        ) : !artifactsLoading && !chatsLoading ? (
-          <div className="border-t border-border/50 px-3 py-3">
-            <EmptyProjectActions
-              size="compact"
-              onNewChat={() => onNewSession(directory)}
-              onNewSpace={() => onCreateSpace(directory)}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
 
   return (
     <Link
@@ -382,15 +252,18 @@ export function Dashboard() {
   const { trackInstanceCreate } = useActionToasts();
   // Same merged model as the sidebar: REST chat summaries (react-query cached,
   // persisted across loads) merged with live WS instances, in the shared
-  // user-defined project order. Keeps the dashboard from waiting on the
-  // WebSocket and guarantees it always matches the sidebar.
+  // user-defined project order on desktop. Mobile Home derives its own
+  // recency order from the same data without waiting on the WebSocket.
   const {
     groups: projectGroups,
     projectByDir,
     projects,
     projectsLoading,
     chatsLoadingByProjectId,
+    projectSpaces,
+    spacesLoadingByDir,
   } = useProjectNavigationModel();
+  const isMobile = useMediaQuery("(max-width: 768px)");
   const navigate = useNavigate();
   const pendingCreate = useRef(false);
   const prevInstanceIds = useRef(new Set<string>());
@@ -447,6 +320,7 @@ export function Dashboard() {
       queryKey: ["projectArtifacts", id],
       queryFn: () => fetchProjectArtifacts(id),
       staleTime: 60_000,
+      enabled: !isMobile,
     })),
   });
 
@@ -472,14 +346,35 @@ export function Dashboard() {
     (i) => i.status === "processing" || i.status === "idle",
   ).length;
 
+  if (isMobile) {
+    const groups = projectGroups.map(([dir, groupInstances]) => {
+      const project = projectByDir.get(dir);
+      return {
+        dir,
+        groupInstances,
+        project,
+        name: project?.name ?? dir.split("/").pop() ?? dir,
+        projectId:
+          project?.id ?? (groupInstances[0] ? getInstanceProjectRouteId(groupInstances[0]) : dir),
+        iconPath: projectIcons[dir],
+        spaces: projectSpaces[dir] ?? [],
+      };
+    });
+    return (
+      <MobileHome
+        groups={groups}
+        loading={
+          projectsLoading ||
+          Object.values(chatsLoadingByProjectId).some(Boolean) ||
+          Object.values(spacesLoadingByDir).some(Boolean)
+        }
+        onNewChat={handleNewSession}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Mobile header bar */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-2 sm:hidden">
-        <MobileSidebarToggle />
-        <h1 className="text-[0.875rem] font-semibold tracking-tight text-text-bright">Projects</h1>
-      </div>
-
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-5xl px-4 py-4 sm:px-6 sm:py-8">
           {/* Desktop header */}

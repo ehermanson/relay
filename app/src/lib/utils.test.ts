@@ -4,7 +4,29 @@ import {
   getDisplaySessionStats,
   getDisplayTokenBreakdown,
   isChatDone,
+  toggleAnswerSelection,
 } from "./utils";
+
+describe("toggleAnswerSelection", () => {
+  it("replaces the prior choice for single-select questions", () => {
+    expect(toggleAnswerSelection(["A"], "B", false)).toEqual(["B"]);
+    expect(toggleAnswerSelection(undefined, "A", undefined)).toEqual(["A"]);
+  });
+
+  it("keeps the choice when a single-select option is re-clicked (radio behavior)", () => {
+    expect(toggleAnswerSelection(["A"], "A", false)).toEqual(["A"]);
+  });
+
+  it("adds an option to the set for multi-select questions", () => {
+    expect(toggleAnswerSelection(["A"], "B", true)).toEqual(["A", "B"]);
+    expect(toggleAnswerSelection(undefined, "A", true)).toEqual(["A"]);
+  });
+
+  it("removes an already-selected option for multi-select questions", () => {
+    expect(toggleAnswerSelection(["A", "B"], "A", true)).toEqual(["B"]);
+    expect(toggleAnswerSelection(["A"], "A", true)).toEqual([]);
+  });
+});
 
 describe("isChatDone", () => {
   it("is false for a chat that was never marked done", () => {

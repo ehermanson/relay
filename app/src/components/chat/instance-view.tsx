@@ -5,6 +5,7 @@ import { InstanceViewProvider } from "@/components/chat/instance-view-context";
 import { InstanceViewShell } from "@/components/chat/instance-view-shell";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useInstanceMessages } from "@/hooks/use-instance-messages";
+import { useProviderModels } from "@/hooks/use-provider-models";
 import { useConnectionBanner } from "@/hooks/use-connection-banner";
 import { useDismissedBranchChanges } from "@/hooks/use-dismissed-branch-changes";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -25,9 +26,10 @@ import {
   getAttachedReviewInstances,
 } from "@/lib/review-session";
 import { buildProviderSwitchHandoffPrompt } from "@shared/session-handoff";
-import type { QueuedRestore, UserRow } from "@/lib/chat-types";
+import type { ChatItem, QueuedRestore, UserRow } from "@/lib/chat-types";
 import { toast } from "sonner";
 import type {
+  AgentInfo,
   FileChange,
   InstanceInfo,
   ProviderModelOptions,
@@ -38,6 +40,10 @@ import type {
   TerminalScope,
   UserInputAnswer,
 } from "@shared/types";
+
+/** Stable empties for the capability gate — same references every render, so memos hold. */
+const EMPTY_AGENTS: Record<string, AgentInfo> = {};
+const EMPTY_AGENT_ITEMS: Record<string, ChatItem[]> = {};
 
 /** Re-fetch an uploaded attachment so it can be re-added to the composer on queued-message edit. */
 async function fetchUploadedFile(path: string): Promise<File | null> {
@@ -91,6 +97,8 @@ export function InstanceView({
   const { isConnected, isSyncing, connectionId, instances } = useWSState();
   const {
     items,
+    agents: rawAgents,
+    agentItems: rawAgentItems,
     hasLoadedHistory,
     hasSyncedHistory,
     isProcessing,
@@ -532,6 +540,17 @@ export function InstanceView({
   const hasFilesContent = filesCount > 0;
   const hasPlanContent = !!resolvedInstance?.planContent;
   const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent;
+  // Capability gate, applied once at the source: when the provider doesn't
+  // advertise `supportsAgentActivity`, the agent state handed to the chat is
+  // EMPTY, so cards, notes, anchored substitution, badges, the header toggle
+  // and the sidecar all agree without checking the flag themselves. Attributed
+  // messages stay routed out of the main stream regardless. Same query key as
+  // the composer's picker, so this adds no extra fetch.
+  const { capabilities: providerCapabilities } = useProviderModels(resolvedInstance?.provider);
+  const supportsAgentActivity = !!providerCapabilities.supportsAgentActivity;
+  const agents = supportsAgentActivity ? rawAgents : EMPTY_AGENTS;
+  const agentItems = supportsAgentActivity ? rawAgentItems : EMPTY_AGENT_ITEMS;
+  const hasAgentsContent = Object.keys(agents).length > 0;
   const branchChangeKey =
     resolvedInstance?.branchChanged && resolvedInstance.id
       ? `${resolvedInstance.id}:${resolvedInstance.branchChanged.originalBranch}->${resolvedInstance.branchChanged.currentBranch}`
@@ -553,6 +572,7 @@ export function InstanceView({
     scope: "chat",
     isMobile,
     hasTasksContent,
+    hasAgentsContent,
     hasFilesContent,
     hasPlanContent,
     hasReviewContent,
@@ -747,6 +767,9 @@ export function InstanceView({
       attachedReviews,
       planChild,
       items,
+      agents,
+      agentItems,
+      hasAgentsContent,
       rawHistory,
       searchFocus,
       currentTasks,

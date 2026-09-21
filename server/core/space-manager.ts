@@ -48,6 +48,7 @@ function rowToInfo(row: SpaceRow, chatCount: number): SpaceInfo {
     createdAt: row.created_at,
     lastActivityAt: row.last_activity_at,
     chatCount,
+    pinned: row.pinned === 1,
     mergeCommit: row.merge_commit,
     mergeMethod: row.merge_method as MergeMethod | null,
     mergedAt: row.merged_at,
@@ -544,7 +545,11 @@ export class SpaceManager extends EventEmitter {
     const defaultSpaces = new Set<string>();
 
     for (const project of this.db.getAllProjects()) {
-      for (const space of this.db.getSpacesByProject(project.directory)) {
+      // Include archived rows: surviving chat metadata must never reopen them.
+      const defaultSpace = this.db.getDefaultSpace(project.directory);
+      const spaces = this.db.getSpacesByProjectAll(project.directory);
+      if (defaultSpace) spaces.push(defaultSpace);
+      for (const space of spaces) {
         existingSpaces.set(space.id, space);
         if (space.is_default === 1) {
           defaultSpaces.add(project.directory);
@@ -655,7 +660,8 @@ export class SpaceManager extends EventEmitter {
     }
 
     for (const { row, sessionIds, managedInstanceIds } of recoveredSpaces.values()) {
-      const matching = this.findMatchingSpaceRow(existingSpaces.values(), row);
+      const matching =
+        this.db.getSpace(row.id) ?? this.findMatchingSpaceRow(existingSpaces.values(), row);
       const linkedSpaceId = matching?.id ?? row.id;
       const recoveredMeta = this.inferRecoveredSpaceStatus(row);
       const upsertRow: SpaceRow = matching
@@ -763,6 +769,19 @@ export class SpaceManager extends EventEmitter {
     const updated = this.db.getSpace(id);
     if (!updated) {
       throw new Error(`Space ${id} not found after rename`);
+    }
+    const info = this.toInfo(updated);
+    this.emit("space:updated", info);
+    return info;
+  }
+
+  setSpacePinned(id: string, pinned: boolean): SpaceInfo {
+    if (!this.db.setSpacePinned(id, pinned)) {
+      throw new Error(`Space ${id} not found`);
+    }
+    const updated = this.db.getSpace(id);
+    if (!updated) {
+      throw new Error(`Space ${id} not found after pin update`);
     }
     const info = this.toInfo(updated);
     this.emit("space:updated", info);
