@@ -545,7 +545,11 @@ export class SpaceManager extends EventEmitter {
     const defaultSpaces = new Set<string>();
 
     for (const project of this.db.getAllProjects()) {
-      for (const space of this.db.getSpacesByProject(project.directory)) {
+      // Include archived rows: surviving chat metadata must never reopen them.
+      const defaultSpace = this.db.getDefaultSpace(project.directory);
+      const spaces = this.db.getSpacesByProjectAll(project.directory);
+      if (defaultSpace) spaces.push(defaultSpace);
+      for (const space of spaces) {
         existingSpaces.set(space.id, space);
         if (space.is_default === 1) {
           defaultSpaces.add(project.directory);
@@ -656,7 +660,8 @@ export class SpaceManager extends EventEmitter {
     }
 
     for (const { row, sessionIds, managedInstanceIds } of recoveredSpaces.values()) {
-      const matching = this.findMatchingSpaceRow(existingSpaces.values(), row);
+      const matching =
+        this.db.getSpace(row.id) ?? this.findMatchingSpaceRow(existingSpaces.values(), row);
       const linkedSpaceId = matching?.id ?? row.id;
       const recoveredMeta = this.inferRecoveredSpaceStatus(row);
       const upsertRow: SpaceRow = matching

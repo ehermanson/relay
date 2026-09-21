@@ -7754,7 +7754,12 @@ export class InstanceManager extends EventEmitter {
 
     if (entry.worktree_path && !restoredPaths.worktreePath) {
       if (hasExplicitSpaceOwnership && entry.space_id) {
-        if (!this.warnedUnusableSpaces.has(entry.space_id)) {
+        // Closed spaces deliberately remove their worktrees; only broken active
+        // spaces need attention. Keep the same read-only restore in either case.
+        if (
+          this.spaceManager.getSpace(entry.space_id)?.status === "broken" &&
+          !this.warnedUnusableSpaces.has(entry.space_id)
+        ) {
           this.warnedUnusableSpaces.add(entry.space_id);
           this.baseConfig.logger.warn(
             `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable for space ${entry.space_id}; keeping sessions read-only`,
@@ -7853,7 +7858,12 @@ export class InstanceManager extends EventEmitter {
 
     if (entry.worktree_path && !restoredPaths.worktreePath) {
       if (hasExplicitSpaceOwnership && entry.space_id) {
-        if (!this.warnedUnusableSpaces.has(entry.space_id)) {
+        // Closed spaces deliberately remove their worktrees; only broken active
+        // spaces need attention. Keep the same read-only restore in either case.
+        if (
+          this.spaceManager.getSpace(entry.space_id)?.status === "broken" &&
+          !this.warnedUnusableSpaces.has(entry.space_id)
+        ) {
           this.warnedUnusableSpaces.add(entry.space_id);
           this.baseConfig.logger.warn(
             `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable for space ${entry.space_id}; keeping sessions read-only`,
@@ -9381,7 +9391,10 @@ export class InstanceManager extends EventEmitter {
       const msg = instance.history[i].message;
       if (msg.type === "agent_update") continue;
       // Agent-authored notes and child-agent frames are not the user's intent.
-      if (msg.type === "user" && ((msg as UserMessage).author?.kind === "agent" || (msg as UserMessage).agentId)) {
+      if (
+        msg.type === "user" &&
+        ((msg as UserMessage).author?.kind === "agent" || (msg as UserMessage).agentId)
+      ) {
         continue;
       }
       if (msg.type === "user" && (msg as UserMessage).text && !(msg as UserMessage).internal) {
