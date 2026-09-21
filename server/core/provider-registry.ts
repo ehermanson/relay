@@ -231,6 +231,17 @@ function stripClaude1mSuffix(id: string): string {
   return id.replace(/\[1m\]$/i, "");
 }
 
+/**
+ * Strip gateway provider prefix from a model id so the canonical claude-* id
+ * is visible. Examples:
+ *   "vertex_ai/claude-sonnet-5"          → "claude-sonnet-5"
+ *   "bedrock/anthropic.claude-opus-4-8"  → "claude-opus-4-8"
+ *   "foundry/claude-haiku-4-5-20251001"  → "claude-haiku-4-5-20251001"
+ */
+function stripGatewayPrefix(modelId: string): string {
+  return modelId.replace(/^[^/]+\/(?:anthropic\.)?/, "");
+}
+
 export function inferClaudeModelIdFromSdkInfo(model: ClaudeSdkModelInfo): string | null {
   // Newer CLIs report the canonical id directly — always prefer it. The
   // display-text fallbacks below exist only for CLIs that predate
@@ -238,6 +249,12 @@ export function inferClaudeModelIdFromSdkInfo(model: ClaudeSdkModelInfo): string
   // covered by resolvedModel.
   if (model.resolvedModel?.startsWith("claude-")) return stripClaude1mSuffix(model.resolvedModel);
   if (model.value.startsWith("claude-")) return stripClaude1mSuffix(model.value);
+  // Gateway providers (Vertex AI, Bedrock, Foundry) prefix the model id with
+  // the provider name. Strip the prefix and retry the claude- check.
+  const stripped = stripGatewayPrefix(model.value);
+  if (stripped !== model.value && stripped.startsWith("claude-")) {
+    return stripClaude1mSuffix(stripped);
+  }
   const text = `${model.displayName ?? ""} ${model.description ?? ""}`;
   const match = text.match(/\b(Opus|Sonnet|Haiku|Fable)\s+(\d+)(?:\.(\d+))?\b/i);
   if (!match) return null;

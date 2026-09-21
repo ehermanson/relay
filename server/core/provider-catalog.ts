@@ -102,10 +102,12 @@ function resolveCodexDefaultModelOption(
 }
 
 function formatClaudeModelLabel(modelId: string): string | null {
+  // Strip gateway provider prefix before matching (e.g. "vertex_ai/claude-sonnet-5").
+  const id = modelId.replace(/^[^/]+\/(?:anthropic\.)?/, "");
   // Match any `claude-<family>-<major>[-<minor>]` id — the family list is
   // deliberately NOT a whitelist, so newly released family names (e.g.
   // "fable") format correctly without a code change.
-  const match = modelId.match(/^claude-([a-z]+)-(\d+)(?:-(\d+))?/i);
+  const match = id.match(/^claude-([a-z]+)-(\d+)(?:-(\d+))?/i);
   if (!match) return null;
   const family = toTitleCaseToken(match[1]);
   const version = match[3] ? `${match[2]}.${match[3]}` : match[2];

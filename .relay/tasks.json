@@ -2514,14 +2514,14 @@
       "id": "c7d9e1f3",
       "title": "Claude: strip gateway provider prefixes from model IDs in the model picker",
       "description": "CLI 2.1.223 fixed a bug that hid Claude models registered with gateway-provider prefixes (e.g. `vertex_ai/claude-3-5-sonnet-20241022`, `bedrock/anthropic.claude-3-5-sonnet-20241022-v1:0`) from model discovery. After the fix, these IDs surface in the model picker.\n\nRelay's `formatClaudeModelLabel` in `server/core/providers/provider-catalog.ts` handles `claude-*` IDs. Without a prefix-strip pass, gateway users see raw gateway IDs like `vertex_ai/claude-3-5-sonnet-20241022` in the picker instead of readable labels like \"Claude 3.5 Sonnet\".\n\nNeeded:\n1. Strip the gateway provider prefix (`vertex_ai/`, `bedrock/anthropic.`, etc.) before passing the ID to `formatClaudeModelLabel`.\n2. Verify model discovery de-duplicates IDs so a model registered under both a canonical and a gateway ID doesn't appear twice.\n\nScope: small (~1h). Touch points: `provider-catalog.ts` or model discovery in `claude-sdk.ts`.\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/claude-code CHANGELOG v2.1.223",
-      "status": "open",
+      "status": "done",
       "priority": 2,
       "type": "task",
       "tags": ["provider-watch", "claude", "bucket-2"],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
-      "updatedAt": "2026-08-17T00:00:00.000Z"
+      "updatedAt": "2026-09-21T17:27:06.980Z"
     },
     {
       "id": "a8b2c4d6",
