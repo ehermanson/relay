@@ -328,6 +328,8 @@ export function describeToolUse(tool: string, input?: Record<string, unknown>): 
       return "Editing notebook";
     case "Agent":
       return "Spawning agent";
+    case "Advisor":
+      return "Getting advice";
     case "SendMessage":
       return "Sending message";
     case "TeamCreate":

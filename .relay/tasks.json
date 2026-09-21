@@ -2527,14 +2527,14 @@
       "id": "a8b2c4d6",
       "title": "Claude: render advisor tool blocks in chat history",
       "description": "Anthropic SDK 0.116.0 (TypeScript) adds the advisor tool \u2014 a new built-in tool type alongside bash, computer-use, text-editor, and web-search. When Claude uses the advisor tool, it appears in the live message stream and JSONL transcripts as a `tool_use` block with `type: 'advisor'` (or similar).\n\nRelay's JSONL parser and stream handler process `tool_use` blocks. Without an explicit handler, advisor tool blocks may be silently dropped or rendered with a generic fallback.\n\nNeeded:\n1. Verify the JSONL parser doesn't drop advisor tool blocks \u2014 add a case for the new type if needed.\n2. Add a render path in the chat message renderer with an appropriate icon and label (consistent with how bash/computer-use/web-search are rendered).\n3. Test against a real transcript containing an advisor tool use if available.\n\nScope: small (~1\u20132h). Touch points: JSONL parser (`server/core/providers/`), chat message renderer (`app/src/components/chat/`).\n\nBucket 2 \u2014 priority 2.\n\nRef: @anthropic-ai/sdk CHANGELOG v0.116.0 (TypeScript)",
-      "status": "open",
+      "status": "done",
       "priority": 2,
       "type": "task",
       "tags": ["provider-watch", "claude", "bucket-2"],
       "parent": null,
       "blockedBy": [],
       "createdAt": "2026-08-17T00:00:00.000Z",
-      "updatedAt": "2026-08-17T00:00:00.000Z"
+      "updatedAt": "2026-09-21T17:26:05.076Z"
     },
     {
       "id": "d9e3f5a7",
