@@ -1,3 +1,8 @@
+import {
+  hasInstallableProviderUpdate,
+  describeProviderUpdateResult,
+} from "#core/provider-update.js";
+import type { ProviderUpdateResult } from "#core/types.js";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -958,10 +963,7 @@ export async function refreshProviderVersionAdvisories(
   );
 }
 
-export type ProviderUpdateOutcome =
-  | { status: "no_update" }
-  | { status: "failed"; output: string }
-  | { status: "updated"; output: string };
+export type ProviderUpdateOutcome = ProviderUpdateResult;
 
 const inflightUpdates = new Map<ProviderKind, Promise<ProviderUpdateOutcome>>();
 
@@ -985,9 +987,16 @@ export function runProviderUpdate(provider: ProviderKind): Promise<ProviderUpdat
       advisory.status !== "behind_latest" ||
       !advisory.updateCommand ||
       !advisory.installMethod ||
-      advisory.installMethod === "manual"
+      advisory.installMethod === "manual" ||
+      !hasInstallableProviderUpdate(advisory)
     ) {
-      return { status: "no_update" };
+      return {
+        status: "no_update",
+        command: advisory?.updateCommand ?? null,
+        output: "",
+        message:
+          "No automatic update is currently available through the detected install method. Re-check availability and try again.",
+      };
     }
     const providerBinaryPath =
       advisory.installMethod === "native" ? PROVIDER_BINARY_LOCATORS[provider]?.() : null;
@@ -997,9 +1006,7 @@ export function runProviderUpdate(provider: ProviderKind): Promise<ProviderUpdat
     // Re-probe regardless of outcome so the advisory reflects reality (the
     // command may have partially succeeded, or failed after upgrading).
     await refreshProviderVersionAdvisories({ provider, force: true });
-    return result.ok
-      ? { status: "updated", output: result.output }
-      : { status: "failed", output: result.output };
+    return describeProviderUpdateResult(advisory, versionAdvisoryCache.get(provider), result);
   })().finally(() => {
     inflightUpdates.delete(provider);
   });

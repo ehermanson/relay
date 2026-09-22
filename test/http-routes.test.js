@@ -375,7 +375,7 @@ describe("HTTP Routes — Additional Coverage", () => {
       assert.equal(res.body.error, "Invalid provider");
     });
 
-    it("returns a clear conflict when no automatic update is available", async () => {
+    it("returns diagnostics and providers when no automatic update is available", async () => {
       getAvailableProviders = () => [
         {
           provider: "codex",
@@ -396,8 +396,11 @@ describe("HTTP Routes — Additional Coverage", () => {
       const res = await request(server, "POST", "/api/providers/update?provider=codex", {
         headers: { Cookie: `session=${session.id}` },
       });
-      assert.equal(res.status, 409);
-      assert.equal(res.body.error, "No automatic update is available for this provider");
+      assert.equal(res.status, 200);
+      assert.equal(res.body.result.status, "no_update");
+      assert.match(res.body.result.message, /No automatic update is currently available/);
+      assert.equal(res.body.result.output, "");
+      assert.deepEqual(res.body.providers, getAvailableProviders());
     });
   });
 

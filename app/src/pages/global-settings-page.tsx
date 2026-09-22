@@ -1,3 +1,4 @@
+import { hasInstallableProviderUpdate } from "@shared/provider-update";
 import { useRef, useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
@@ -799,9 +800,9 @@ export function ProvidersSettingsSection() {
 //
 // Shown inside each provider's row when the version probe has produced an
 // advisory. "behind_latest" → orange call-to-action with copyable update
-// command; "current" → muted "up to date" line. "unknown" is not rendered.
+// command when installable; channel lag and unknown probes offer a recheck.
 
-function ProviderVersionAdvisoryCard({
+export function ProviderVersionAdvisoryCard({
   provider,
   advisory,
 }: {
@@ -825,21 +826,36 @@ function ProviderVersionAdvisoryCard({
 
   const updateMutation = useMutation({
     mutationFn: () => runProviderUpdate(provider),
-    onSuccess: (providers) => {
+    onSuccess: ({ providers, result }) => {
       queryClient.setQueryData(["providers"], providers);
-      const refreshed = providers.find((p) => p.provider === provider)?.capabilities
-        .versionAdvisory;
-      if (refreshed?.status === "current" && refreshed.currentVersion) {
-        toast.success(`Updated to ${formatVersion(refreshed.currentVersion)}`);
-      } else {
-        toast.success("Update finished");
-      }
+      if (result.status === "updated") toast.success(result.message);
+      else if (result.status === "failed") toast.error(result.message);
+      else toast.warning(result.message);
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Update failed");
     },
     onSettled: () => setConfirmingUpdate(false),
   });
+
+  const result = updateMutation.data?.result;
+  const updateDetails = (result || updateMutation.error) && (
+    <div aria-live="polite" className="mt-2 text-[0.75rem] text-muted">
+      {updateMutation.error && <p>{updateMutation.error.message}</p>}
+      {result && (
+        <>
+          <p>{result.message}</p>
+          <details className="mt-1" open={result.status !== "updated"}>
+            <summary className="min-h-10 cursor-pointer py-2 text-accent">Command output</summary>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-bg/60 p-2 font-mono text-[0.6875rem]">
+              {result.command ? `$ ${result.command}\n` : ""}
+              {result.output || "No command output."}
+            </pre>
+          </details>
+        </>
+      )}
+    </div>
+  );
 
   const onCopy = async () => {
     if (!advisory.updateCommand) return;
@@ -857,127 +873,151 @@ function ProviderVersionAdvisoryCard({
     // aren't stuck waiting up to 30 min for the next background pass.
     const checked = advisory.checkedAt ? new Date(advisory.checkedAt) : null;
     return (
-      <div className="flex items-center gap-2 text-[0.75rem] text-muted">
-        <RefreshCw size={12} />
-        <span>
-          {checked
-            ? `Version check unavailable · last attempted ${formatRelativeTime(checked)}`
-            : "Checking for updates…"}
-        </span>
-        <button
-          type="button"
-          onClick={() => recheckMutation.mutate()}
-          disabled={recheckMutation.isPending}
-          className="text-accent hover:underline disabled:opacity-50"
-        >
-          {recheckMutation.isPending ? "Checking…" : "Check now"}
-        </button>
-      </div>
+      <>
+        <div className="flex items-center gap-2 text-[0.75rem] text-muted">
+          <RefreshCw size={12} />
+          <span>
+            {checked
+              ? `Version check unavailable · last attempted ${formatRelativeTime(checked)}`
+              : "Checking for updates…"}
+          </span>
+          <button
+            type="button"
+            onClick={() => recheckMutation.mutate()}
+            disabled={recheckMutation.isPending || updateMutation.isPending}
+            className="text-accent hover:underline disabled:opacity-50"
+          >
+            {recheckMutation.isPending ? "Checking…" : "Check now"}
+          </button>
+        </div>
+        {updateDetails}
+      </>
     );
   }
 
   if (advisory.status === "current") {
     const checked = advisory.checkedAt ? new Date(advisory.checkedAt) : null;
     return (
-      <div className="flex items-center gap-2 text-[0.75rem] text-muted">
-        <CheckCircle2 size={12} className="text-success" />
-        <span>
-          Up to date
-          {advisory.currentVersion ? ` · ${formatVersion(advisory.currentVersion)}` : ""}
-          {checked ? ` · checked ${formatRelativeTime(checked)}` : ""}
-        </span>
-        <button
-          type="button"
-          onClick={() => recheckMutation.mutate()}
-          disabled={recheckMutation.isPending}
-          className="text-accent hover:underline disabled:opacity-50"
-        >
-          {recheckMutation.isPending ? "Checking…" : "Re-check"}
-        </button>
-      </div>
+      <>
+        <div className="flex items-center gap-2 text-[0.75rem] text-muted">
+          <CheckCircle2 size={12} className="text-success" />
+          <span>
+            Up to date
+            {advisory.currentVersion ? ` · ${formatVersion(advisory.currentVersion)}` : ""}
+            {checked ? ` · checked ${formatRelativeTime(checked)}` : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => recheckMutation.mutate()}
+            disabled={recheckMutation.isPending || updateMutation.isPending}
+            className="text-accent hover:underline disabled:opacity-50"
+          >
+            {recheckMutation.isPending ? "Checking…" : "Re-check"}
+          </button>
+        </div>
+        {updateDetails}
+      </>
     );
   }
 
   // status === "behind_latest"
   const installLabel = advisory.installMethod ? INSTALL_METHOD_LABEL[advisory.installMethod] : null;
-  const canRunUpdate = !!advisory.updateCommand && advisory.installMethod !== "manual";
+  const installable = hasInstallableProviderUpdate(advisory);
+  const canRunUpdate =
+    !!advisory.updateCommand && advisory.installMethod !== "manual" && installable;
 
   return (
-    <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
-      <div className="flex items-start gap-2">
-        <DownloadCloud size={14} className="mt-0.5 shrink-0 text-warning" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[0.8125rem] font-medium text-text-bright">
-            Update available: {formatVersion(advisory.latestVersion)}
-          </div>
-          <div className="mt-0.5 text-[0.75rem] text-muted">
-            Installed{" "}
-            {advisory.currentVersion ? formatVersion(advisory.currentVersion) : "(unknown)"} →
-            latest {formatVersion(advisory.latestVersion)}
-            {installLabel ? ` · ${installLabel}` : ""}
-          </div>
-
-          {advisory.updateCommand && (
-            <div className="mt-2 flex items-center gap-2">
-              <code className="flex-1 truncate rounded bg-bg/60 px-2 py-1 font-mono text-[0.6875rem] text-text">
-                {advisory.updateCommand}
-              </code>
-              <button
-                type="button"
-                onClick={onCopy}
-                className="text-[0.6875rem] text-accent hover:underline"
-              >
-                {copied ? "Copied" : "Copy"}
-              </button>
+    <>
+      <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
+        <div className="flex items-start gap-2">
+          <DownloadCloud size={14} className="mt-0.5 shrink-0 text-warning" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[0.8125rem] font-medium text-text-bright">
+              {installable ? "Update available" : "New release"}:{" "}
+              {formatVersion(
+                installable
+                  ? (advisory.availableVersion ?? advisory.latestVersion)
+                  : advisory.latestVersion,
+              )}
             </div>
-          )}
+            <div className="mt-0.5 text-[0.75rem] text-muted">
+              Installed{" "}
+              {advisory.currentVersion ? formatVersion(advisory.currentVersion) : "(unknown)"} →
+              latest {formatVersion(advisory.latestVersion)}
+              {installLabel ? ` · ${installLabel}` : ""}
+            </div>
 
-          <div className="mt-2 flex items-center gap-3">
-            {canRunUpdate &&
-              (updateMutation.isPending ? (
-                <span className="flex items-center gap-1.5 text-[0.6875rem] text-muted">
-                  <Loader2 size={11} className="animate-spin" />
-                  Updating… this can take a minute
-                </span>
-              ) : confirmingUpdate ? (
-                <>
-                  <span className="text-[0.6875rem] text-muted">Run this update now?</span>
-                  <button
-                    type="button"
-                    onClick={() => updateMutation.mutate()}
-                    className="text-[0.6875rem] font-medium text-warning hover:underline"
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingUpdate(false)}
-                    className="text-[0.6875rem] text-muted hover:text-text"
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
+            {advisory.installMethod === "brew" && (
+              <p className="mt-2 text-[0.75rem] text-muted">
+                {advisory.availableVersion
+                  ? `Homebrew currently offers ${formatVersion(advisory.availableVersion)}.${!installable ? " No newer Homebrew version is available to install yet." : ""}`
+                  : "Homebrew availability could not be checked. Re-check before updating."}
+              </p>
+            )}
+
+            {advisory.updateCommand && installable && (
+              <div className="mt-2 flex items-center gap-2">
+                <code className="flex-1 truncate rounded bg-bg/60 px-2 py-1 font-mono text-[0.6875rem] text-text">
+                  {advisory.updateCommand}
+                </code>
                 <button
                   type="button"
-                  onClick={() => setConfirmingUpdate(true)}
-                  className="text-[0.6875rem] font-medium text-accent hover:underline"
+                  onClick={onCopy}
+                  className="text-[0.6875rem] text-accent hover:underline"
                 >
-                  Update now
+                  {copied ? "Copied" : "Copy"}
                 </button>
-              ))}
-            <button
-              type="button"
-              onClick={() => recheckMutation.mutate()}
-              disabled={recheckMutation.isPending || updateMutation.isPending}
-              className="text-[0.6875rem] text-muted hover:text-text disabled:opacity-50"
-            >
-              {recheckMutation.isPending ? "Checking…" : "Re-check now"}
-            </button>
+              </div>
+            )}
+
+            <div className="mt-2 flex items-center gap-3">
+              {canRunUpdate &&
+                (updateMutation.isPending ? (
+                  <span className="flex items-center gap-1.5 text-[0.6875rem] text-muted">
+                    <Loader2 size={11} className="animate-spin" />
+                    Updating… this can take a minute
+                  </span>
+                ) : confirmingUpdate ? (
+                  <>
+                    <span className="text-[0.6875rem] text-muted">Run this update now?</span>
+                    <button
+                      type="button"
+                      onClick={() => updateMutation.mutate()}
+                      className="text-[0.6875rem] font-medium text-warning hover:underline"
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingUpdate(false)}
+                      className="text-[0.6875rem] text-muted hover:text-text"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingUpdate(true)}
+                    className="text-[0.6875rem] font-medium text-accent hover:underline"
+                  >
+                    Update now
+                  </button>
+                ))}
+              <button
+                type="button"
+                onClick={() => recheckMutation.mutate()}
+                disabled={recheckMutation.isPending || updateMutation.isPending}
+                className="text-[0.6875rem] text-muted hover:text-text disabled:opacity-50"
+              >
+                {recheckMutation.isPending ? "Checking…" : "Re-check now"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+      {updateDetails}
+    </>
   );
 }
 

@@ -1,3 +1,4 @@
+import { hasInstallableProviderUpdate } from "@shared/provider-update";
 import type {
   ProviderDescriptor,
   ProviderInstallMethod,
@@ -26,7 +27,10 @@ export function isUpdateCandidate(
 } {
   const advisory = descriptor.capabilities.versionAdvisory;
   return (
-    !!advisory && advisory.status === "behind_latest" && typeof advisory.latestVersion === "string"
+    !!advisory &&
+    advisory.status === "behind_latest" &&
+    typeof advisory.latestVersion === "string" &&
+    hasInstallableProviderUpdate(advisory)
   );
 }
 
@@ -39,7 +43,12 @@ export function collectUpdateCandidates(
     out.push({
       provider: descriptor.provider,
       label: descriptor.label,
-      advisory: descriptor.capabilities.versionAdvisory as ProviderUpdateCandidate["advisory"],
+      advisory: {
+        ...descriptor.capabilities.versionAdvisory,
+        latestVersion:
+          descriptor.capabilities.versionAdvisory.availableVersion ??
+          descriptor.capabilities.versionAdvisory.latestVersion,
+      } as ProviderUpdateCandidate["advisory"],
     });
   }
   return out;

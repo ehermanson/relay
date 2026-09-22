@@ -6,6 +6,7 @@ import type {
   NativeOpenTargetsResponse,
   Project,
   ProviderDescriptor,
+  ProviderUpdateResponse,
   ProviderKind,
   ProviderModelsResponse,
   ProjectArtifacts,
@@ -233,20 +234,23 @@ export async function recheckProviderVersions(
 /**
  * Run the provider CLI's update command server-side. Resolves once the update
  * finishes and the server has re-probed the version advisory; returns the
- * refreshed provider list so callers can update react-query in one shot.
+ * verified outcome, command output, and refreshed provider list.
  */
-export async function runProviderUpdate(provider: ProviderKind): Promise<ProviderDescriptor[]> {
+export async function runProviderUpdate(provider: ProviderKind): Promise<ProviderUpdateResponse> {
   const res = await fetch(`/api/providers/update?provider=${encodeURIComponent(provider)}`, {
     method: "POST",
   });
   const data = (await res.json().catch(() => ({}))) as {
     error?: string;
+    result?: ProviderUpdateResponse["result"];
     providers?: ProviderDescriptor[];
   };
   if (!res.ok) {
     throw new Error(data.error || "Update failed");
   }
-  return data.providers ?? [];
+  if (!data.result)
+    throw new Error("Update response missing verification details. Refresh Relay and try again.");
+  return { result: data.result, providers: data.providers ?? [] };
 }
 
 export async function addProviderMcpServer(

@@ -463,6 +463,8 @@ export interface ProviderVersionAdvisory {
   status: ProviderVersionStatus;
   currentVersion: string | null;
   latestVersion: string | null;
+  /** Latest release in the detected install channel; null when its lookup failed. */
+  availableVersion?: string | null;
   /** npm package name (or equivalent), e.g. "@anthropic-ai/claude-code" */
   packageName: string | null;
   /** Human-readable update command, e.g. "npm install -g @anthropic-ai/claude-code@latest" */
@@ -477,6 +479,18 @@ export interface ProviderDescriptor {
   provider: ProviderKind;
   label: string;
   capabilities: ProviderCapabilities;
+}
+
+export interface ProviderUpdateResult {
+  status: "updated" | "unchanged" | "unverified" | "failed" | "no_update";
+  command: string | null;
+  output: string;
+  message: string;
+}
+
+export interface ProviderUpdateResponse {
+  result: ProviderUpdateResult;
+  providers: ProviderDescriptor[];
 }
 
 export interface ProviderModelOption {

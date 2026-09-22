@@ -76,17 +76,8 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Invalid provider" }, 400);
     }
     const result = await runProviderUpdate(providerParam as ProviderKind);
-    if (result.status === "no_update") {
-      return c.json({ error: "No automatic update is available for this provider" }, 409);
-    }
-    if (result.status === "failed") {
-      const tail = result.output.slice(-500).trim();
-      return c.json(
-        { error: tail ? `Update failed: ${tail}` : "Update failed", output: result.output },
-        500,
-      );
-    }
-    return c.json({ output: result.output, providers: deps.getAvailableProviders() });
+    // Completed attempts include diagnostics even when the command failed or did nothing.
+    return c.json({ result, providers: deps.getAvailableProviders() });
   });
 
   app.post("/api/providers/:provider/mcp-servers", async (c) => {

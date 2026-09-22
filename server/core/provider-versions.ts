@@ -7,18 +7,20 @@
  * to fire a launch toast + render a settings card.
  *
  * Architecture:
- * - Pure helpers (`classifyInstallMethod`, `buildUpdateCommand`,
- *   `compareSemver`) live here for unit testing.
+ * - Install classification and command builders are pure; semver comparison
+ *   lives in browser-safe semver.ts and is re-exported here.
  * - I/O helpers (`getInstalledVersion`, `fetchNpmLatest`) fail soft — they
  *   never throw to callers; on error they return `null` and leave the
- *   advisory in `status: "unknown"` so the UI shows nothing.
- * - The npm registry response is cached in-memory for 1h to avoid hammering
- *   registry.npmjs.org on every refresh cycle.
+ *   advisory in `status: "unknown"` so Settings can offer a recheck.
+ * - npm and Homebrew metadata are cached in-memory for 1h; manual rechecks
+ *   bypass both caches. Homebrew availability is separate from npm latest.
  *
  * No external deps — pure Node built-ins so the module can sit in core.
  */
 import { execFile, type ExecFileException } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { compareSemver } from "#core/semver.js";
+export { compareSemver } from "#core/semver.js";
 import type { ProviderInstallMethod, ProviderKind, ProviderVersionAdvisory } from "#core/types.js";
 
 // ─── Per-provider metadata table ────────────────────────────────────────────
@@ -26,7 +28,7 @@ import type { ProviderInstallMethod, ProviderKind, ProviderVersionAdvisory } fro
 export interface ProviderPackageMetadata {
   /** npm package name */
   npmPackageName: string;
-  /** Homebrew formula name (if installable via brew) */
+  /** Homebrew cask/formula name (if installable via brew) */
   homebrewFormula: string | null;
   /** If the binary supports `<bin> update` as a native self-update */
   nativeUpdate: { command: string; matches: (realpath: string) => boolean } | null;
@@ -59,111 +61,6 @@ export const PROVIDER_PACKAGE_METADATA: Partial<Record<ProviderKind, ProviderPac
 
 export function normalizeCommandPath(value: string): string {
   return value.replaceAll("\\", "/").toLowerCase();
-}
-
-interface ParsedVersion {
-  parts: number[];
-  /**
-   * Pre-release identifiers split on `.`, e.g. `["beta", "2"]`. Empty array
-   * means a stable release. Build metadata (after `+`) is ignored per semver.
-   */
-  prerelease: string[];
-}
-
-/**
- * Compare two semver-ish strings. Returns -1 if a<b, 0 if equal, 1 if a>b.
- *
- * Behavior:
- * - Strips a leading "v" (case-insensitive)
- * - Compares the numeric MAJOR.MINOR.PATCH triple first; non-numeric segments
- *   are treated as 0 for the main triple, but at least one segment must be a
- *   real number or the input is rejected
- * - Per semver, a version WITH a prerelease ranks BELOW the same version
- *   WITHOUT one (e.g. `1.2.3-beta` < `1.2.3`)
- * - When both have prereleases, prerelease identifiers are compared
- *   left-to-right: numeric identifiers compare numerically; alphanumeric
- *   identifiers compare ASCII; numeric ranks below alphanumeric; a shorter
- *   prerelease list with all prior identifiers equal ranks below a longer one
- * - Build metadata (after `+`) is ignored
- * - Returns 0 for unparseable input on either side — the caller treats that
- *   as "no advisory" so the UI stays in `status: "unknown"`
- */
-export function compareSemver(a: string, b: string): -1 | 0 | 1 {
-  const parse = (raw: string): ParsedVersion | null => {
-    const trimmed = raw.trim().replace(/^v/i, "");
-    if (!trimmed) return null;
-    // Strip build metadata (after `+`) entirely — semver says it doesn't
-    // affect precedence — then split the prerelease (after `-`) from the
-    // main triple.
-    const withoutBuild = trimmed.split("+", 1)[0];
-    const dashIdx = withoutBuild.indexOf("-");
-    const main = dashIdx >= 0 ? withoutBuild.slice(0, dashIdx) : withoutBuild;
-    const prerelease = dashIdx >= 0 ? withoutBuild.slice(dashIdx + 1).split(".") : [];
-    if (!main) return null;
-    let sawNumber = false;
-    const parts = main.split(".").map((p) => {
-      const n = parseInt(p, 10);
-      if (Number.isFinite(n)) {
-        sawNumber = true;
-        return n;
-      }
-      return 0;
-    });
-    if (!sawNumber) return null;
-    while (parts.length < 3) parts.push(0);
-    return { parts, prerelease };
-  };
-
-  const pa = parse(a);
-  const pb = parse(b);
-  if (!pa || !pb) return 0;
-
-  // Compare numeric triple first.
-  const len = Math.max(pa.parts.length, pb.parts.length);
-  for (let i = 0; i < len; i++) {
-    const av = pa.parts[i] ?? 0;
-    const bv = pb.parts[i] ?? 0;
-    if (av < bv) return -1;
-    if (av > bv) return 1;
-  }
-
-  // Triple is equal: a stable release outranks any prerelease.
-  if (pa.prerelease.length === 0 && pb.prerelease.length === 0) return 0;
-  if (pa.prerelease.length === 0) return 1; // a is stable, b is prerelease → a > b
-  if (pb.prerelease.length === 0) return -1; // a is prerelease, b is stable → a < b
-
-  // Both have prereleases: compare identifiers left-to-right.
-  return comparePrereleaseIdentifiers(pa.prerelease, pb.prerelease);
-}
-
-function comparePrereleaseIdentifiers(a: string[], b: string[]): -1 | 0 | 1 {
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    const cmp = compareSinglePrereleaseIdentifier(a[i], b[i]);
-    if (cmp !== 0) return cmp;
-  }
-  // All shared identifiers equal: shorter list ranks lower (e.g. 1.0.0-alpha < 1.0.0-alpha.1)
-  if (a.length < b.length) return -1;
-  if (a.length > b.length) return 1;
-  return 0;
-}
-
-function compareSinglePrereleaseIdentifier(a: string, b: string): -1 | 0 | 1 {
-  const aNum = /^\d+$/.test(a);
-  const bNum = /^\d+$/.test(b);
-  if (aNum && bNum) {
-    const av = parseInt(a, 10);
-    const bv = parseInt(b, 10);
-    if (av < bv) return -1;
-    if (av > bv) return 1;
-    return 0;
-  }
-  // Numeric identifiers rank below alphanumeric ones.
-  if (aNum) return -1;
-  if (bNum) return 1;
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
 }
 
 /**
@@ -340,6 +237,41 @@ export async function fetchNpmLatest(
   }
 }
 
+/** Homebrew's distribution can trail npm. Match the installed cask/formula. */
+const homebrewLatestCache = new Map<string, NpmLatestCacheEntry>();
+
+export async function fetchHomebrewLatest(
+  packageName: string,
+  kind: "cask" | "formula",
+  options: { force?: boolean } = {},
+): Promise<string | null> {
+  const url = `https://formulae.brew.sh/api/${kind}/${encodeURIComponent(packageName)}.json`;
+  const now = Date.now();
+  const cached = homebrewLatestCache.get(url);
+  if (!options.force && cached && cached.expiresAt > now) return cached.version;
+  let version: string | null = null;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(NPM_LATEST_TIMEOUT_MS) });
+    if (response.ok) {
+      const data = (await response.json()) as {
+        version?: unknown;
+        versions?: { stable?: unknown };
+      };
+      const candidate = kind === "cask" ? data.version : data.versions?.stable;
+      if (typeof candidate === "string" && /^v?\d+\.\d+\.\d+(?:[-+][\w.]+)?$/.test(candidate)) {
+        version = candidate;
+      }
+    }
+  } catch {
+    // Unknown availability must never imply an installable update.
+  }
+  homebrewLatestCache.set(url, {
+    expiresAt: now + (version ? NPM_LATEST_CACHE_TTL_MS : 60_000),
+    version,
+  });
+  return version;
+}
+
 const UPDATE_COMMAND_TIMEOUT_MS = 10 * 60 * 1_000;
 const UPDATE_OUTPUT_MAX_BUFFER = 10 * 1024 * 1024;
 
@@ -443,14 +375,14 @@ function safeRealpath(path: string): string {
 export interface BuildVersionAdvisoryInput {
   provider: ProviderKind;
   binaryPath: string | null;
-  /** Force-bypass the npm registry cache (used by manual recheck endpoint) */
+  /** Force-bypass distribution caches (used by manual recheck endpoint) */
   force?: boolean;
 }
 
 /**
  * Probe an installed provider and produce a version advisory. Never throws —
- * returns `status: "unknown"` for any failure path so the UI shows nothing
- * instead of an error state.
+ * Missing installed/npm versions produce an unknown advisory; Homebrew
+ * lookup failures leave availableVersion null and disable automatic updates.
  */
 export async function buildVersionAdvisory(
   input: BuildVersionAdvisoryInput,
@@ -471,12 +403,21 @@ export async function buildVersionAdvisory(
     return baseUnknown;
   }
 
-  const [currentVersion, latestVersion] = await Promise.all([
+  const realpath = safeRealpath(input.binaryPath);
+  const installMethod = classifyInstallMethod(realpath, metadata);
+  const [currentVersion, latestVersion, brewVersion] = await Promise.all([
     getInstalledVersion(input.binaryPath),
     fetchNpmLatest(metadata.npmPackageName, { force: input.force }),
+    installMethod === "brew" && metadata.homebrewFormula
+      ? fetchHomebrewLatest(
+          metadata.homebrewFormula,
+          normalizeCommandPath(realpath).includes("/cellar/") ? "formula" : "cask",
+          { force: input.force },
+        )
+      : Promise.resolve(null),
   ]);
 
-  const installMethod = classifyInstallMethod(safeRealpath(input.binaryPath), metadata);
+  const availableVersion = installMethod === "brew" ? brewVersion : latestVersion;
   const updateCommand = buildUpdateCommand(installMethod, metadata);
 
   if (!currentVersion || !latestVersion) {
@@ -484,6 +425,7 @@ export async function buildVersionAdvisory(
       ...baseUnknown,
       currentVersion,
       latestVersion,
+      availableVersion,
       installMethod,
       updateCommand,
       checkedAt,
@@ -495,6 +437,7 @@ export async function buildVersionAdvisory(
     status: cmp < 0 ? "behind_latest" : "current",
     currentVersion,
     latestVersion,
+    availableVersion,
     packageName: metadata.npmPackageName,
     updateCommand,
     installMethod,
