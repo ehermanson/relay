@@ -34,7 +34,10 @@ import type { InlineReplyFragment } from "@/components/chat/message-relay-contex
 import { ProjectContext } from "@/context/project-context";
 import { useWSMethods } from "@/context/websocket-context";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { expandTaskReferences } from "@/lib/composer-mentions";
+import { expandTaskReferences, getTaskReferenceIds } from "@/lib/composer-mentions";
+import { fetchTask } from "@/lib/api";
+import { useScopedTasks } from "@/hooks/use-scoped-tasks";
+import { hasRevisionedTaskShape, normalizeTaskSpaceId } from "@/lib/task-scope";
 import { shouldAutoFocusComposer } from "@/lib/composer-focus";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -63,6 +66,8 @@ interface InputAreaProps {
   isConnected: boolean;
   onReconnect?: () => void;
   instanceId: string;
+  projectId?: string;
+  spaceId?: string;
   isStopped?: boolean;
   provider: ProviderKind;
   preferredModel?: string;
@@ -195,6 +200,8 @@ export function InputArea({
   isProcessing,
   isConnected,
   instanceId,
+  projectId,
+  spaceId,
   isStopped,
   provider,
   preferredModel,
@@ -223,6 +230,14 @@ export function InputArea({
   const [retrying, setRetrying] = useState(false);
   const isMobile = useMediaQuery("(max-width: 768px)");
   const projectCtx = useContext(ProjectContext);
+  const taskProjectId = projectId ?? projectCtx?.artifacts.projectId;
+  const taskSpaceId = normalizeTaskSpaceId(spaceId, projectCtx?.artifacts.spaces);
+  const { data: scopedTasks } = useScopedTasks(taskProjectId, taskSpaceId, {
+    initialData:
+      !taskSpaceId && hasRevisionedTaskShape(projectCtx?.artifacts.tasks)
+        ? projectCtx.artifacts.tasks
+        : undefined,
+  });
   const { send } = useWSMethods();
   const {
     attachments,
@@ -499,9 +514,19 @@ export function InputArea({
     }
 
     // Expand task references into structured XML blocks for the model
-    const projectTasks = projectCtx?.artifacts.tasks;
-    if (projectTasks) {
-      text = expandTaskReferences(text, projectTasks);
+    if (taskProjectId) {
+      const taskMap = new Map((scopedTasks ?? []).map((task) => [task.id.toLowerCase(), task]));
+      const missingIds = getTaskReferenceIds(text).filter((id) => !taskMap.has(id));
+      if (missingIds.length > 0) {
+        const resolved = await Promise.allSettled(
+          missingIds.map((taskId) => fetchTask(taskProjectId, taskId, { spaceId: taskSpaceId })),
+        );
+        for (const result of resolved) {
+          const task = result.status === "fulfilled" ? result.value : null;
+          if (task) taskMap.set(task.id.toLowerCase(), task);
+        }
+      }
+      text = expandTaskReferences(text, [...taskMap.values()]);
     }
 
     let uploaded: { images: string[]; attachments: string[] } | undefined;
@@ -625,7 +650,7 @@ export function InputArea({
     isMobile,
     slashCommands: dedupedSlashCommands,
     skills: providerSkills,
-    tasks: projectCtx?.artifacts.tasks ?? null,
+    tasks: scopedTasks ?? null,
     draftText: isInSpecialMode ? "" : draftText,
     composerSelectionOffset: isInSpecialMode ? 0 : composerSelectionOffset,
     mentionEntries,
@@ -992,6 +1017,9 @@ export function InputArea({
               <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
             ) : null}
             <ComposerPanel
+              projectId={taskProjectId}
+              spaceId={taskSpaceId}
+              tasks={scopedTasks ?? null}
               compact={isMobile}
               disabled={composerDisabled}
               value={composerValue}

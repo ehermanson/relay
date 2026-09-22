@@ -27,12 +27,12 @@
 
 ## Planning and tasking
 
-| Term                    | Definition                                                                         | Aliases to avoid               |
-| ----------------------- | ---------------------------------------------------------------------------------- | ------------------------------ |
-| **Task**                | A tracked unit of work for a **Project** persisted in `.relay/tasks.json`.         | Ticket, todo, issue            |
-| **Plan review**         | A structured interaction where the agent proposes a plan for approval or revision. | Plain assistant message, notes |
-| **Pending plan**        | A plan proposal awaiting user review before execution proceeds.                    | Draft response, paused chat    |
-| **Custom instructions** | Project-specific guidance injected into new managed chats as bootstrap context.    | First prompt, system message   |
+| Term                    | Definition                                                                                                 | Aliases to avoid               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **Task**                | A tracked unit of work with **Project**-wide identity and state in each **Space**’s `.relay/tasks/` files. | Ticket, todo, issue            |
+| **Plan review**         | A structured interaction where the agent proposes a plan for approval or revision.                         | Plain assistant message, notes |
+| **Pending plan**        | A plan proposal awaiting user review before execution proceeds.                                            | Draft response, paused chat    |
+| **Custom instructions** | Project-specific guidance injected into new managed chats as bootstrap context.                            | First prompt, system message   |
 
 ## Space lifecycle
 

@@ -19,7 +19,11 @@ commented on (check existing comments to avoid duplicates), do the review below.
 
 ## Evaluate
 
-A triage PR should only touch `.relay/tasks.json` and `.relay/changelog-watch-state.json`.
+New task intake is published directly under the narrow policy in `provider-watch-prompt.md`.
+This review routine remains for fallback PRs required by branch protection and old triage PRs.
+A new triage PR may touch only `.relay/tasks/**`, `.relay/task-discussion/**`, and
+`.relay/changelog-watch-state.json`. A legacy snapshot PR must be rebased and translated to
+task files before merging; never restore `.relay/tasks.json`.
 
 1. Confirm the diff touches only those data files — flag any source change immediately.
 2. For each task it filed, spot-check against the actual changelog entry (fetch the linked

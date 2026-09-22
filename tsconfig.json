@@ -15,7 +15,8 @@
     "noUnusedParameters": true,
     "paths": {
       "#core/*": ["./server/core/*"],
-      "#server/*": ["./server/*"]
+      "#server/*": ["./server/*"],
+      "#cli/*": ["./cli/*"]
     }
   },
   "include": ["server/**/*", "cli/**/*"],

@@ -20,6 +20,10 @@
     "#server/*.js": {
       "relay-dev": "./server/*.ts",
       "default": "./dist/server/*.js"
+    },
+    "#cli/*.js": {
+      "relay-dev": "./cli/*.ts",
+      "default": "./dist/cli/*.js"
     }
   },
   "exports": {
@@ -39,6 +43,7 @@
     "start": "node dist/cli/bin.js",
     "dev": "node scripts/dev.js",
     "test": "pnpm exec node --import ./test/test-env.js --test test/*.test.js && pnpm --filter relay-app test",
+    "tasks:check": "node --conditions=relay-dev --experimental-strip-types cli/bin.ts tasks validate && node --conditions=relay-dev --experimental-strip-types cli/bin.ts tasks format --check",
     "typecheck": "tsc --noEmit && pnpm --filter relay-app typecheck",
     "typecheck:app": "pnpm --filter relay-app typecheck",
     "fmt": "oxfmt server/ cli/ app/src/",
@@ -46,7 +51,7 @@
     "lint": "oxlint server/ cli/ app/src/",
     "lint:fix": "oxlint --fix server/ cli/ app/src/",
     "knip": "knip",
-    "ci-check": "pnpm build && pnpm typecheck && pnpm lint && pnpm test",
+    "ci-check": "pnpm build && pnpm typecheck && pnpm lint && pnpm tasks:check && pnpm test",
     "prepare": "husky"
   },
   "dependencies": {
@@ -58,7 +63,8 @@
     "diff": "^8.0.4",
     "hono": "^4.12.25",
     "node-pty": "^1.1.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@types/cookie": "^0.6.0",

@@ -787,6 +787,8 @@ export function InstanceViewContent() {
               isConnected={shared.isConnected}
               onReconnect={reconnectNow}
               instanceId={shared.id}
+              projectId={shared.instance.projectId}
+              spaceId={shared.instance.spaceId}
               isStopped={shared.isStopped}
               provider={shared.instance.provider}
               preferredModel={shared.instance.preferredModel}

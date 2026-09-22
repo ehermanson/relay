@@ -9,6 +9,7 @@ import process from "node:process";
 import { createRelay } from "#server/index.js";
 import { startTunnel, stopTunnel } from "#server/tunnel.js";
 import { UpdateManager } from "#server/update-manager.js";
+import { runTasksCommand } from "#cli/tasks.js";
 
 const CLI_CHILD_MODE_ENV_VAR = "RELAY_CLI_CHILD_MODE";
 const CLI_UPDATE_RESTART_EXIT_CODE = 75;
@@ -99,6 +100,9 @@ async function runRelayRuntime(argv: string[]): Promise<number> {
     printUsage();
     return 0;
   }
+  if (command === "tasks") {
+    return runTasksCommand(argv.slice(1));
+  }
   if (command && command !== "start") {
     console.error(`Unknown command: ${command}\n`);
     printUsage();
@@ -111,11 +115,14 @@ async function runRelayRuntime(argv: string[]): Promise<number> {
 function printUsage(): void {
   console.log(`Usage:
   relay start [--port <number>] [--password <string>] [--tunnel]
+  relay tasks [--dir <path>] <command> [options]
 
 Options:
   --port <number>     Server port (default: 7777)
   --password <string> Require password for authentication
   --tunnel            Start a cloudflared tunnel to this Relay server
+
+Run \`relay tasks --help\` for offline task-file commands.
 
 Notes:
   - When no password is set, the server runs in open mode (no login required).

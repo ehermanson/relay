@@ -1257,7 +1257,8 @@ export interface ProjectsChangedMessage {
 export interface TasksChangedMessage {
   type: "tasks_changed";
   projectId: string;
-  tasks: Task[];
+  /** Omitted for the Project's Main space. */
+  spaceId?: string;
 }
 
 export interface SpaceCreatedMessage {
@@ -1514,7 +1515,7 @@ export interface NativeOpenRequest {
   rememberForProject?: boolean;
 }
 
-export type TaskStatus = "open" | "in_progress" | "blocked" | "done";
+export type TaskStatus = "open" | "in_progress" | "blocked" | "done" | "cancelled";
 export type TaskType = "epic" | "task" | "bug";
 
 export interface Task {
@@ -1529,8 +1530,20 @@ export interface Task {
   blockedBy: string[];
   createdAt: string;
   updatedAt: string;
-  /** Tombstone flag for append-only deletion */
-  deleted?: boolean;
+  closedAt: string | null;
+  /** Content hash used for optimistic concurrency checks. */
+  revision: string;
+  /** Whether the canonical file lives under `.relay/tasks/archive/`. */
+  archived: boolean;
+}
+
+export interface TaskComment {
+  id: string;
+  taskId: string;
+  body: string;
+  author: string | null;
+  replyTo: string | null;
+  createdAt: string;
 }
 
 export interface SkillInfo {
@@ -1593,7 +1606,7 @@ export interface ProjectArtifacts {
   stats: ProjectStats;
   /** GitHub/GitLab repository URL for this project (from git remote) */
   githubUrl: string | null;
-  /** Tasks from .relay/tasks.json, if present in the project */
+  /** Current task records from the Project's Main space, when tracking is initialized. */
   tasks: Task[] | null;
   /** Installed skills discovered from .claude/skills/, ~/.claude/skills/, etc. */
   skills: SkillInfo[];

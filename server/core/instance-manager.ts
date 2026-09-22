@@ -22,7 +22,9 @@ import {
   openSync,
   readSync,
   closeSync,
+  watch as watchFs,
 } from "fs";
+import type { FSWatcher } from "fs";
 import { basename, join, resolve } from "path";
 import { homedir } from "os";
 import { execFile, execFileSync } from "child_process";
@@ -126,7 +128,6 @@ import type {
   LastMessagePreview,
   InstanceInfo,
   HistoryEntry,
-  Task,
   TaskItem,
   FileChange,
   SessionStats,
@@ -397,7 +398,8 @@ export interface InstanceManagerEvents {
   "instances:changed": [];
   "scan:complete": [];
   "projects:changed": [];
-  "tasks:changed": [projectId: string, tasks: Task[]];
+  /** Invalidate task queries for Main (omitted spaceId) or one active Space. */
+  "tasks:changed": [projectId: string, spaceId?: string];
   "provider_global_state:updated": [
     provider: import("#core/types.js").ProviderKind,
     state: import("#core/types.js").ProviderGlobalState,
@@ -426,6 +428,8 @@ const DISCOVERY_INTERVAL = 30_000; // 30s
 const SLOW_DISCOVERY_WARN_MS = 1_000;
 /** Git branch refresh runs at most this often (multiple of discovery interval) */
 const GIT_REFRESH_INTERVAL = 30_000; // 30s
+const TASK_WATCH_RECONCILE_INTERVAL = 5_000;
+const TASK_WATCH_DEBOUNCE_MS = 75;
 const execFileAsync = promisify(execFile);
 
 const WATCH_POLL_INTERVAL = 2_000; // 2s
@@ -1398,6 +1402,13 @@ export class InstanceManager extends EventEmitter {
   private instanceCounter = 0;
   private discoveryInterval: ReturnType<typeof setInterval> | null = null;
   private watchIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  /** Filesystem watches exist only for Main plus currently active Spaces. */
+  private taskWatchInterval: ReturnType<typeof setInterval> | null = null;
+  private taskWatchers = new Map<
+    string,
+    { watcher: FSWatcher; directory: string; relayIdentity: string }
+  >();
+  private taskWatchDebounces = new Map<string, ReturnType<typeof setTimeout>>();
   /** Tracks consecutive discovery misses per external instance (grace period before marking stopped) */
   private staleCounts = new Map<string, number>();
   /** Instance IDs that were auto-continued after a restart — excluded from the next processing-at-shutdown save to prevent restart loops */
@@ -1901,7 +1912,10 @@ export class InstanceManager extends EventEmitter {
     return buildSessionBootstrapContext({
       customInstructionBlocks,
       relayInstructionBlocks,
-      includeTaskContext: project && includeTaskContext ? hasTasks(project.directory) : false,
+      includeTaskContext:
+        project && includeTaskContext
+          ? hasTasks(options?.workingDirectory ?? project.directory)
+          : false,
     });
   }
 
@@ -3164,7 +3178,7 @@ export class InstanceManager extends EventEmitter {
     if (!instance.taskContextInjected && !internal && instance.info.projectId) {
       instance.taskContextInjected = true;
       const taskProject = this._projectManager.getProject(instance.info.projectId);
-      if (taskProject && hasTasks(taskProject.directory)) {
+      if (taskProject && hasTasks(this.resolveRunnableCwd(instance))) {
         shouldInjectTaskContext = true;
       }
     }
@@ -4754,8 +4768,17 @@ export class InstanceManager extends EventEmitter {
     // GitHub URL from git remote
     const githubUrl = getRemoteUrl(directory);
 
-    // Tasks
-    const tasks = hasTasks(directory) ? loadTasks(directory) : null;
+    // Active task records are retained here for older clients. Task history is
+    // loaded only by the scoped task routes. Corruption must not make the
+    // otherwise unrelated Project overview fail to initialize.
+    let tasks: ProjectArtifacts["tasks"] = null;
+    try {
+      tasks = hasTasks(directory) ? loadTasks(directory) : null;
+    } catch (error) {
+      this.baseConfig.logger.warn(
+        `[InstanceManager] Could not load task files for Project artifacts in ${directory}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     // Skills
     const skills = discoverSkills(directory || undefined);
@@ -4971,6 +4994,7 @@ export class InstanceManager extends EventEmitter {
     this.discoveryInterval = setInterval(() => {
       this.discoverExisting();
     }, DISCOVERY_INTERVAL);
+    this.startTaskWatcher();
     this.baseConfig.logger.debug("[InstanceManager] Session discovery started");
   }
 
@@ -4983,6 +5007,182 @@ export class InstanceManager extends EventEmitter {
       clearInterval(interval);
     }
     this.watchIntervals.clear();
+    if (this.taskWatchInterval) {
+      clearInterval(this.taskWatchInterval);
+      this.taskWatchInterval = null;
+    }
+    for (const watched of this.taskWatchers.values()) watched.watcher.close();
+    this.taskWatchers.clear();
+    for (const timeout of this.taskWatchDebounces.values()) clearTimeout(timeout);
+    this.taskWatchDebounces.clear();
+  }
+
+  /** Broadcast a scoped invalidation after a server-side task mutation. */
+  notifyTasksChanged(projectId: string, spaceId?: string): void {
+    this.emit("tasks:changed", projectId, spaceId);
+  }
+
+  private taskWatchKey(projectId: string, spaceId?: string): string {
+    return `${projectId}\0${spaceId ?? ""}`;
+  }
+
+  private taskRelayIdentity(directory: string): string {
+    try {
+      const stat = statSync(join(directory, ".relay"));
+      return `${stat.dev}:${stat.ino}`;
+    } catch {
+      return "missing";
+    }
+  }
+
+  private currentTaskWatchScopes(): Array<{
+    key: string;
+    projectId: string;
+    directory: string;
+    spaceId?: string;
+  }> {
+    const scopes: Array<{
+      key: string;
+      projectId: string;
+      directory: string;
+      spaceId?: string;
+    }> = [];
+    for (const project of this._projectManager.listProjects()) {
+      scopes.push({
+        key: this.taskWatchKey(project.id),
+        projectId: project.id,
+        directory: project.directory,
+      });
+      for (const space of this.spaceManager.listAllSpaces(project.directory)) {
+        if (
+          space.isDefault ||
+          space.status !== "active" ||
+          !space.worktreePath ||
+          !existsSync(space.worktreePath)
+        ) {
+          continue;
+        }
+        scopes.push({
+          key: this.taskWatchKey(project.id, space.id),
+          projectId: project.id,
+          directory: space.worktreePath,
+          spaceId: space.id,
+        });
+      }
+    }
+    return scopes;
+  }
+
+  private isTaskWatchEvent(filename: string | Buffer | null, watchingRelay: boolean): boolean {
+    if (filename === null) return true;
+    const path = filename.toString().replaceAll("\\", "/");
+    if (watchingRelay) {
+      return (
+        path === "tasks.json" ||
+        path === "tasks" ||
+        path.startsWith("tasks/") ||
+        path === "task-discussion" ||
+        path.startsWith("task-discussion/")
+      );
+    }
+    return path === ".relay" || path.startsWith(".relay/");
+  }
+
+  private scheduleTaskInvalidation(scope: {
+    key: string;
+    projectId: string;
+    directory: string;
+    spaceId?: string;
+  }): void {
+    const existing = this.taskWatchDebounces.get(scope.key);
+    if (existing) clearTimeout(existing);
+    const timeout = setTimeout(() => {
+      this.taskWatchDebounces.delete(scope.key);
+      this.emit("tasks:changed", scope.projectId, scope.spaceId);
+    }, TASK_WATCH_DEBOUNCE_MS);
+    this.taskWatchDebounces.set(scope.key, timeout);
+  }
+
+  private closeTaskWatcher(key: string): void {
+    this.taskWatchers.get(key)?.watcher.close();
+    this.taskWatchers.delete(key);
+    const timeout = this.taskWatchDebounces.get(key);
+    if (timeout) clearTimeout(timeout);
+    this.taskWatchDebounces.delete(key);
+  }
+
+  private addTaskWatcher(scope: {
+    key: string;
+    projectId: string;
+    directory: string;
+    spaceId?: string;
+  }): void {
+    const relayIdentity = this.taskRelayIdentity(scope.directory);
+    const watchingRelay = relayIdentity !== "missing";
+    const target = watchingRelay ? join(scope.directory, ".relay") : scope.directory;
+    try {
+      const watcher = watchFs(target, { recursive: watchingRelay }, (_event, filename) => {
+        if (this.isTaskWatchEvent(filename, watchingRelay)) {
+          this.scheduleTaskInvalidation(scope);
+          // A newly created or wholesale-replaced `.relay` directory requires
+          // rebinding the watcher to the new inode. Normal file replacement is
+          // already covered by the recursive watcher.
+          if (!watchingRelay || filename === null) {
+            queueMicrotask(() => {
+              if (!this.shuttingDown) this.reconcileTaskWatchers();
+            });
+          }
+        }
+      });
+      watcher.on("error", (error) => {
+        this.baseConfig.logger.warn(
+          `[InstanceManager] Task watcher failed for ${scope.directory}: ${error.message}`,
+        );
+        if (this.taskWatchers.get(scope.key)?.watcher === watcher) {
+          this.closeTaskWatcher(scope.key);
+        }
+      });
+      this.taskWatchers.set(scope.key, { watcher, directory: scope.directory, relayIdentity });
+    } catch (error) {
+      this.baseConfig.logger.warn(
+        `[InstanceManager] Could not watch task files in ${scope.directory}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private reconcileTaskWatchers(): void {
+    if (this.shuttingDown || !this.taskWatchInterval) return;
+    const activeKeys = new Set<string>();
+    for (const scope of this.currentTaskWatchScopes()) {
+      activeKeys.add(scope.key);
+      const existing = this.taskWatchers.get(scope.key);
+      const relayIdentity = this.taskRelayIdentity(scope.directory);
+      if (
+        existing &&
+        existing.directory === scope.directory &&
+        existing.relayIdentity === relayIdentity
+      ) {
+        continue;
+      }
+      if (existing) {
+        this.closeTaskWatcher(scope.key);
+        this.scheduleTaskInvalidation(scope);
+      }
+      this.addTaskWatcher(scope);
+    }
+
+    for (const key of this.taskWatchers.keys()) {
+      if (!activeKeys.has(key)) this.closeTaskWatcher(key);
+    }
+  }
+
+  private startTaskWatcher(): void {
+    if (this.taskWatchInterval) return;
+    this.taskWatchInterval = setInterval(
+      () => this.reconcileTaskWatchers(),
+      TASK_WATCH_RECONCILE_INTERVAL,
+    );
+    this.reconcileTaskWatchers();
   }
 
   private async discoverExisting(): Promise<void> {

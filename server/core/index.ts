@@ -184,6 +184,7 @@ export type {
   ModelUsageStats,
   ProjectArtifacts,
   Task,
+  TaskComment,
   TaskStatus,
   TaskType,
   TasksChangedMessage,
@@ -197,12 +198,31 @@ export type {
 } from "#core/types.js";
 
 export {
+  TaskError,
   loadTasks,
+  getTask,
   createTask,
   updateTask,
   deleteTask,
   hasTasks,
   initTasks,
+  listTaskComments,
+  addTaskComment,
+  validateTasks,
+  archiveTasks,
+  migrateTasks,
+  formatTasks,
+} from "#core/task-manager.js";
+export type {
+  TaskErrorCode,
+  LoadTasksOptions,
+  CreateTaskInput,
+  UpdateTaskInput,
+  AddTaskCommentInput,
+  TaskValidationResult,
+  ArchiveTasksResult,
+  FormatTasksResult,
+  MigrateTasksResult,
 } from "#core/task-manager.js";
 
 export {

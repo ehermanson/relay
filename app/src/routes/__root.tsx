@@ -43,7 +43,9 @@ const persistOptions = {
   // v3: Inbox is now the default layout. Caches from v2 hold the old server's
   // null→"projects" normalization, which would flash Projects before the
   // refetch corrects it — clearing them lets first paint use the new default.
-  buster: "v3",
+  // v4: Task records gained revision, archive, and closure metadata. Old
+  // Project artifact caches must not seed edits without an expected revision.
+  buster: "v4",
   dehydrateOptions: {
     // Structurally typed (not `Query`) to avoid nominal-type clashes between
     // the query-core copies hoisted by react-query vs the persist packages.

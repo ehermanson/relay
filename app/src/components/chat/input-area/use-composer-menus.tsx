@@ -145,7 +145,6 @@ export function useComposerMenus({
       .filter(
         (t) =>
           t.status === "open" &&
-          !t.deleted &&
           (q === "" ||
             q === "task" ||
             q.startsWith("task") ||

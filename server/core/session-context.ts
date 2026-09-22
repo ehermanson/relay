@@ -10,7 +10,8 @@ export const CUSTOM_INSTRUCTIONS_BLOCK_KIND = "custom_instructions";
 export const SPACE_CONTEXT_BLOCK_KIND = "space_context";
 export const RUNTIME_CONTEXT_PREFIX = "Runtime context for this turn:";
 
-export const TASK_CONTEXT_MSG =
+/** Kept for recognizing bootstrap prompts recorded before task files moved to Markdown. */
+export const LEGACY_TASK_CONTEXT_MSG =
   "This project tracks tasks in .relay/tasks.json (Relay-managed snapshot JSON). " +
   "Do not create a task for every request. Create a task only when explicitly asked, pick up an existing task when explicitly asked or when the request clearly matches one, and otherwise just do the work without creating a new task. Ask if unsure whether a request should map to a task. " +
   "Fields: id (8-char hex), title, description (markdown), status (open|in_progress|done), " +
@@ -18,6 +19,13 @@ export const TASK_CONTEXT_MSG =
   "blockedBy (task ID[]), createdAt, updatedAt (ISO timestamps). " +
   "Blocked status is auto-derived from unresolved blockedBy refs. " +
   "When asked to pick up a task (e.g. 'pick up task a1b2c3d4'), read .relay/tasks.json to find it.";
+
+export const TASK_CONTEXT_MSG =
+  "This project tracks tasks as Markdown files under .relay/tasks/. " +
+  "Do not create a task for every request. Create a task only when explicitly asked, pick up an existing task when explicitly asked or when the request clearly matches one, and otherwise just do the work without creating a new task. Ask if unsure whether a request should map to a task. " +
+  "Use `relay tasks` commands from the current working directory to list, inspect, create, update, comment on, validate, and archive tasks so edits follow the shared validation and concurrency rules. " +
+  "Task IDs may be legacy IDs or UUIDs. Stored statuses are open, in_progress, done, and cancelled; blocked is derived from unresolved blockers. " +
+  "When asked to pick up work, use `relay tasks list --ready --json`, choose priority 0 before higher numbers, inspect it with `relay tasks show <id>`, and update it through the CLI.";
 
 const TASK_CONTEXT_FOLLOWUP =
   "Do not mention, restate, or acknowledge the task-tracking guidance unless the user directly asks about tasks.";
@@ -45,10 +53,10 @@ export function buildSessionBootstrapContext(options: {
   const taskBlocks: ProviderContextBlock[] = options.includeTaskContext
     ? [
         {
-          key: "tasks-json-guidance",
+          key: "task-files-guidance",
           kind: TASK_CONTEXT_BLOCK_KIND,
           title: "Task tracking guidance",
-          source: ".relay/tasks.json",
+          source: ".relay/tasks/",
           text: `${TASK_CONTEXT_MSG}\n\n${TASK_CONTEXT_FOLLOWUP}`,
         },
       ]

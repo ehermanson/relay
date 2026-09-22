@@ -1,10 +1,10 @@
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Circle, CircleDashed, CircleCheck, Ban, ListChecks } from "lucide-react";
 import type { Task } from "@shared/types";
 import { Badge } from "@/components/ui/badge";
 import { Popover } from "@/components/ui/popover";
 import { MarkdownContent } from "@/components/chat/markdown-content";
-import { ProjectContext } from "@/context/project-context";
+import { fetchTask } from "@/lib/api";
 
 // ── Shared constants (mirrors tasks-page.tsx) ──────────────────────────────
 
@@ -29,6 +29,7 @@ const statusLabels: Record<string, string> = {
   in_progress: "In Progress",
   blocked: "Blocked",
   done: "Done",
+  cancelled: "Cancelled",
 };
 
 const typeLabels: Record<string, string> = {
@@ -48,6 +49,8 @@ function StatusIcon({ status, size = 14 }: { status: string; size?: number }) {
       return <Ban size={size} strokeWidth={sw} className="text-error" />;
     case "done":
       return <CircleCheck size={size} strokeWidth={sw} className="text-accent" />;
+    case "cancelled":
+      return <Ban size={size} strokeWidth={sw} className="text-muted" />;
     default:
       return null;
   }
@@ -124,8 +127,10 @@ interface PopoverState {
   anchor: HTMLElement;
 }
 
-export function useTaskMentionPopover(containerRef: React.RefObject<HTMLElement | null>) {
-  const projectCtx = useContext(ProjectContext);
+export function useTaskMentionPopover(
+  containerRef: React.RefObject<HTMLElement | null>,
+  options: { projectId?: string; spaceId?: string; tasks: Task[] | null },
+) {
   const [popoverState, setPopoverState] = useState<PopoverState | null>(null);
 
   const handleChipClick = useCallback(
@@ -134,13 +139,21 @@ export function useTaskMentionPopover(containerRef: React.RefObject<HTMLElement 
         taskId: string;
         anchor: HTMLElement;
       };
-      const tasks = projectCtx?.artifacts.tasks;
-      if (!tasks) return;
-      const task = tasks.find((t) => t.id === taskId);
-      if (!task) return;
-      setPopoverState((prev) => (prev?.task.id === taskId ? null : { task, anchor }));
+      const task = options.tasks?.find((candidate) => candidate.id === taskId);
+      if (task) {
+        setPopoverState((prev) => (prev?.task.id === taskId ? null : { task, anchor }));
+        return;
+      }
+      if (!options.projectId) return;
+      void fetchTask(options.projectId, taskId, { spaceId: options.spaceId })
+        .then((resolved) => {
+          if (resolved) setPopoverState({ task: resolved, anchor });
+        })
+        .catch(() => {
+          // Keep the mention usable when the task was removed or its file is temporarily invalid.
+        });
     },
-    [projectCtx],
+    [options.projectId, options.spaceId, options.tasks],
   );
 
   useEffect(() => {

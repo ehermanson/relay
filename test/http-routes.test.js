@@ -17,6 +17,7 @@ import { tmpdir, homedir } from "node:os";
 import { createRequestHandler } from "../dist/server/http.js";
 import { AuthManager } from "../dist/server/auth.js";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
+import { archiveTasks } from "../dist/server/core/task-manager.js";
 import { resolveConfig } from "../dist/server/config.js";
 
 const noopLogger = {
@@ -773,16 +774,22 @@ describe("HTTP Routes — Additional Coverage", () => {
   });
 
   describe("Task routes", () => {
-    it("deletes tasks from the canonical tasks snapshot", async () => {
-      const session = auth.createSession();
-      const projectDir = join(tempDir, "task-project");
+    function createTaskProject(name) {
+      const projectDir = join(tempDir, name);
       mkdirSync(projectDir, { recursive: true });
       execSync("git init", { cwd: projectDir, stdio: "pipe" });
       execSync("git config user.email test@test.com", { cwd: projectDir, stdio: "pipe" });
       execSync("git config user.name Test", { cwd: projectDir, stdio: "pipe" });
-      writeFileSync(join(projectDir, "README.md"), "# Task project\n");
+      writeFileSync(join(projectDir, "README.md"), `# ${name}\n`);
       execSync("git add .", { cwd: projectDir, stdio: "pipe" });
       execSync("git commit -m initial", { cwd: projectDir, stdio: "pipe" });
+      return manager.projectManager.addProject(projectDir);
+    }
+
+    it("reads legacy tasks but rejects mutation until explicit migration", async () => {
+      const session = auth.createSession();
+      const project = createTaskProject("task-project");
+      const projectDir = project.directory;
       mkdirSync(join(projectDir, ".relay"), { recursive: true });
       writeFileSync(
         join(projectDir, ".relay", "tasks.json"),
@@ -805,18 +812,205 @@ describe("HTTP Routes — Additional Coverage", () => {
           ],
         }) + "\n",
       );
-      const project = manager.projectManager.addProject(projectDir);
-
-      const res = await request(server, "DELETE", `/api/projects/${project.id}/tasks/517e8e5b`, {
-        headers: { Cookie: `session=${session.id}` },
-      });
-      assert.equal(res.status, 204);
 
       const listRes = await request(server, "GET", `/api/projects/${project.id}/tasks`, {
         headers: { Cookie: `session=${session.id}` },
       });
       assert.equal(listRes.status, 200);
-      assert.deepEqual(listRes.body.tasks, []);
+      assert.equal(listRes.body.tasks.length, 1);
+
+      const res = await request(server, "DELETE", `/api/projects/${project.id}/tasks/517e8e5b`, {
+        headers: { Cookie: `session=${session.id}` },
+      });
+      assert.equal(res.status, 409);
+      assert.equal(res.body.code, "legacy_requires_migration");
+    });
+
+    it("isolates Main and Space task files", async () => {
+      const session = auth.createSession();
+      const project = createTaskProject("scoped-task-project");
+      const space = manager.getSpaceManager().createSpace(project.directory, {
+        name: "Scoped tasks",
+      });
+      assert.ok(space.worktreePath);
+      const authHeaders = { Cookie: `session=${session.id}` };
+      const scoped = `?spaceId=${encodeURIComponent(space.id)}`;
+
+      assert.equal(
+        (
+          await request(server, "POST", `/api/projects/${project.id}/tasks/init`, {
+            headers: authHeaders,
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await request(server, "POST", `/api/projects/${project.id}/tasks/init${scoped}`, {
+            headers: authHeaders,
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await request(server, "POST", `/api/projects/${project.id}/tasks`, {
+            headers: authHeaders,
+            body: { title: "Main task" },
+          })
+        ).status,
+        201,
+      );
+      assert.equal(
+        (
+          await request(server, "POST", `/api/projects/${project.id}/tasks${scoped}`, {
+            headers: authHeaders,
+            body: { title: "Space task" },
+          })
+        ).status,
+        201,
+      );
+
+      const main = await request(server, "GET", `/api/projects/${project.id}/tasks`, {
+        headers: authHeaders,
+      });
+      const inSpace = await request(server, "GET", `/api/projects/${project.id}/tasks${scoped}`, {
+        headers: authHeaders,
+      });
+      assert.deepEqual(
+        main.body.tasks.map((task) => task.title),
+        ["Main task"],
+      );
+      assert.deepEqual(
+        inSpace.body.tasks.map((task) => task.title),
+        ["Space task"],
+      );
+    });
+
+    it("rejects a Space from another Project and closed or broken Space scopes", async () => {
+      const session = auth.createSession();
+      const first = createTaskProject("first-task-project");
+      const second = createTaskProject("second-task-project");
+      const foreignSpace = manager.getSpaceManager().createSpace(first.directory, {
+        name: "Foreign tasks",
+      });
+      const headers = { Cookie: `session=${session.id}` };
+      const foreignQuery = `?spaceId=${encodeURIComponent(foreignSpace.id)}`;
+
+      const crossProject = await request(
+        server,
+        "GET",
+        `/api/projects/${second.id}/tasks${foreignQuery}`,
+        { headers },
+      );
+      assert.equal(crossProject.status, 404);
+      assert.equal(crossProject.body.code, "scope_not_found");
+
+      manager.getSpaceManager().deleteSpace(foreignSpace.id);
+      const closed = await request(
+        server,
+        "POST",
+        `/api/projects/${first.id}/tasks${foreignQuery}`,
+        { headers, body: { title: "Nope" } },
+      );
+      assert.equal(closed.status, 409);
+      assert.equal(closed.body.code, "scope_unavailable");
+
+      const brokenSpace = manager.getSpaceManager().createSpace(second.directory, {
+        name: "Broken tasks",
+      });
+      assert.ok(brokenSpace.worktreePath);
+      rmSync(brokenSpace.worktreePath, { recursive: true, force: true });
+      const broken = await request(
+        server,
+        "POST",
+        `/api/projects/${second.id}/tasks?spaceId=${encodeURIComponent(brokenSpace.id)}`,
+        { headers, body: { title: "Nope" } },
+      );
+      assert.equal(broken.status, 409);
+      assert.equal(broken.body.code, "scope_unavailable");
+    });
+
+    it("supports revisions, comments, and archived task detail", async () => {
+      const session = auth.createSession();
+      const project = createTaskProject("task-detail-project");
+      const headers = { Cookie: `session=${session.id}` };
+      await request(server, "POST", `/api/projects/${project.id}/tasks/init`, { headers });
+      const created = await request(server, "POST", `/api/projects/${project.id}/tasks`, {
+        headers,
+        body: { title: "Detailed task" },
+      });
+      assert.equal(created.status, 201);
+
+      const stale = await request(
+        server,
+        "PATCH",
+        `/api/projects/${project.id}/tasks/${created.body.id}`,
+        { headers, body: { title: "Stale edit", expectedRevision: "stale" } },
+      );
+      assert.equal(stale.status, 409);
+      assert.equal(stale.body.code, "conflict");
+
+      const comment = await request(
+        server,
+        "POST",
+        `/api/projects/${project.id}/tasks/${created.body.id}/comments`,
+        { headers, body: { body: "A useful note", author: "Tester" } },
+      );
+      assert.equal(comment.status, 201);
+      assert.equal(comment.body.taskId, created.body.id);
+      const comments = await request(
+        server,
+        "GET",
+        `/api/projects/${project.id}/tasks/${created.body.id}/comments`,
+        { headers },
+      );
+      assert.deepEqual(
+        comments.body.comments.map((item) => item.body),
+        ["A useful note"],
+      );
+
+      const completed = await request(
+        server,
+        "PATCH",
+        `/api/projects/${project.id}/tasks/${created.body.id}`,
+        { headers, body: { status: "done", expectedRevision: created.body.revision } },
+      );
+      assert.equal(completed.status, 200);
+      archiveTasks(project.directory, { days: 0 });
+
+      const detail = await request(
+        server,
+        "GET",
+        `/api/projects/${project.id}/tasks/${created.body.id}`,
+        { headers },
+      );
+      assert.equal(detail.status, 200);
+      assert.equal(detail.body.archived, true);
+    });
+
+    it("surfaces corrupt task diagnostics without breaking Project artifacts", async () => {
+      const session = auth.createSession();
+      const project = createTaskProject("corrupt-task-project");
+      const headers = { Cookie: `session=${session.id}` };
+      await request(server, "POST", `/api/projects/${project.id}/tasks/init`, { headers });
+      writeFileSync(
+        join(project.directory, ".relay", "tasks", "broken.md"),
+        '---\nid: "not-an-id"\n---\nBroken\n',
+      );
+
+      const tasks = await request(server, "GET", `/api/projects/${project.id}/tasks`, {
+        headers,
+      });
+      assert.equal(tasks.status, 400);
+      assert.equal(tasks.body.code, "validation");
+      assert.match(tasks.body.error, /broken\.md|YAML|front matter/i);
+
+      const artifacts = await request(server, "GET", `/api/project-artifacts/${project.id}`, {
+        headers,
+      });
+      assert.equal(artifacts.status, 200);
+      assert.equal(artifacts.body.tasks, null);
     });
   });
 });

@@ -495,7 +495,7 @@ function getStatusLines(dir: string): string[] {
 /**
  * Check if a worktree has uncommitted changes that are commitable by Relay.
  * Ephemeral Relay metadata should be ignored by git itself; durable files like
- * `.relay/tasks.json` are treated as normal repo state.
+ * `.relay/tasks/` are treated as normal repo state.
  */
 export function isWorktreeDirty(worktreePath: string): boolean {
   try {

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import hljs from "../../lib/markdown";
 import { openNativePath } from "../../lib/api";
 import { FileIcon } from "@/components/ui/file-icon";
+import { TASK_ID_PATTERN_SOURCE } from "@/lib/task-links";
 import { videoContentType } from "@shared/video-attachments";
 
 interface MarkdownContentProps {
@@ -38,8 +39,10 @@ function preprocessAttachments(text: string): string {
 
 // Matches @file/@task mentions OR /skill-name tokens, both requiring word boundaries.
 // Group 1: leading whitespace. Group 2: @mention token. Group 3: /skill name (no slash).
-const TOKEN_AST_RE =
-  /((?:^|\s))(?:@(task:[a-f0-9]{8}(?::[^\s@]*)?|[^\s@]+)|\/((?=[a-zA-Z])[\w-]+))(?=\s|$)/g;
+const TOKEN_AST_RE = new RegExp(
+  `((?:^|\\s))(?:@(task:${TASK_ID_PATTERN_SOURCE}(?![a-f0-9-])(?::[^\\s@]*)?|[^\\s@]+)|/((?=[a-zA-Z])[\\w-]+))(?=\\s|$)`,
+  "gi",
+);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MdastNode = any;

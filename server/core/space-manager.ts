@@ -1149,7 +1149,7 @@ export class SpaceManager extends EventEmitter {
 
   /**
    * Ignore ephemeral Relay metadata in the worktree without hiding durable
-   * repo-local files like `.relay/tasks.json` from git.
+   * repo-local files like `.relay/tasks/` from git.
    */
   private excludeRelayDir(worktreePath: string): void {
     try {

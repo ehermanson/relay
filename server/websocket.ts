@@ -359,8 +359,8 @@ export function createWebSocketServer(
     });
   });
 
-  instanceManager.on("tasks:changed", (projectId: string, tasks) => {
-    broadcast({ type: "tasks_changed", projectId, tasks });
+  instanceManager.on("tasks:changed", (projectId: string, spaceId?: string) => {
+    broadcast({ type: "tasks_changed", projectId, spaceId });
   });
 
   spaceManager.on("space:created", (space) => {

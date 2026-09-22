@@ -155,7 +155,7 @@ Each project can have:
 
 - Chats
 - Spaces
-- Tasks stored in `.relay/tasks.json`
+- Tasks stored as readable Markdown files in `.relay/tasks/`, with each Space using its own worktree
 - Plans collected from chats
 - Project instructions
 - Default provider and model settings
@@ -163,6 +163,26 @@ Each project can have:
 - Usage stats grouped by provider and model
 
 Relay keeps history on disk and lazily loads the full chat state when you open it, so the sidebar stays fast even with a larger project.
+
+## Tasks, offline and in Spaces
+
+The Project Tasks tab defaults to the Main space. Select another Space to work with its branch’s task state. Task files travel with code in Git; agents can use them without a running Relay server or network connection.
+
+```bash
+relay tasks list --ready --json
+relay tasks show <id>
+relay tasks update <id> --status in_progress
+relay tasks update <id> --status done
+relay tasks validate
+relay tasks format --check
+relay tasks archive --days 30
+```
+
+Run commands from the intended worktree. Each task is `.relay/tasks/<id>.md`, with YAML metadata and a Markdown description. Discussion lives separately in `.relay/task-discussion/`. Done and cancelled tasks move to tracked `.relay/tasks/archive/` when maintenance runs; `list --include-archived` includes history and `show` resolves archived IDs. Cancellation does not satisfy blockers. Delete only tasks with no incoming references.
+
+For an existing snapshot, run `relay tasks migrate --dry-run`, then `relay tasks migrate --apply` and review the changes in Git. Existing task IDs and links are preserved, including legacy readable slug IDs. Old branches must rebase through the migration before editing tasks. Direct Markdown edits are supported; `pnpm tasks:check` validates this repository’s task graph and formatting.
+
+Task-only automation can publish accepted work without a PR under the provider-watch instructions. Code changes still go through code review. Two Spaces can independently pick up the same task; Git resolves their overlapping task edits when the branches merge.
 
 ## Provider Features
 

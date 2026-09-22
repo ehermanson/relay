@@ -4,7 +4,7 @@
 
 - **Self-maintenance**: After any codebase change, check whether AGENTS.md and/or README.md need updating. Stale docs are worse than no docs.
 - **Plan mode**: Make the plan extremely concise. Sacrifice grammar for the sake of concision. At the end of each plan, give a list of unresolved questions to answer, if any.
-- **Workflow**: For anything beyond a trivial fix, create tasks in `.relay/tasks.json` before starting work. Relay manages this snapshot file atomically; update the canonical task object and persist the full snapshot. Set `status: "in_progress"` when starting, `status: "done"` when complete.
+- **Workflow**: For anything beyond a trivial fix, create or pick up a task before starting work. Tasks live in `.relay/tasks/<id>.md` in the current Space’s worktree. Prefer `relay tasks` for validated offline writes; set `in_progress` when starting and `done` when finished. Never edit a different worktree’s task to track this Space’s work.
 
 ## Ubiquitous Language
 
@@ -63,7 +63,7 @@ pnpm dev            # server from TS source (no tsc) + vite dev
 
 Always `pnpm build:server` before `pnpm test` — tests import from `dist/`.
 
-`pnpm ci-check` runs the full CI gate locally in order (`build → typecheck → lint → test`; build first so tests see fresh `dist/`). A Husky `pre-push` hook (`.husky/pre-push`) runs it automatically, but **skips** when the pushed commits touch only docs/non-code files (`*.md`, `*.txt`, `docs/`, etc.) — any other changed path forces the full check. Bypass with `git push --no-verify` only when you know CI will pass.
+`pnpm ci-check` runs the full CI gate locally in order (`build → typecheck → lint → task checks → test`; build first so tests see fresh `dist/`). A Husky `pre-push` hook (`.husky/pre-push`) runs it automatically, but **skips** when the pushed commits touch only docs/non-code files (`*.md`, `*.txt`, `docs/`, etc.) — task Markdown still runs the lightweight `pnpm tasks:check` gate, and any other changed path forces the full check. Bypass with `git push --no-verify` only when you know CI will pass.
 
 ### Dev Mode
 
@@ -81,6 +81,7 @@ Server + CLI use Node.js native subpath imports (`#` prefix):
 
 - `#core/foo.js` → `server/core/foo.ts` (compile) / `dist/server/core/foo.js` (runtime)
 - `#server/foo.js` → `server/foo.ts` (compile) / `dist/server/foo.js` (runtime)
+- `#cli/foo.js` → `cli/foo.ts` (compile) / `dist/cli/foo.js` (runtime)
 
 App uses Vite resolve.alias:
 
@@ -362,15 +363,19 @@ Subagents/teammates are represented through one shared contract in `types.ts`: `
 
 ### Task Tracking
 
-- Tasks stored in `.relay/tasks.json` (Relay-managed snapshot JSON)
-- Not every request needs a task. Create a task only when the user asks to create one, pick up a task only when the user asks or the request clearly matches an existing task, and otherwise just do the work without creating a new task. Ask the user if it's unclear whether a request should map to a task.
-- Fields: `id` (8-char hex), `title`, `description` (markdown), `status` (open|in_progress|done), `priority` (0-4), `type` (epic|task|bug), `tags` (string[]), `parent` (nullable task ID), `blockedBy` (task ID[]), `createdAt`, `updatedAt` (ISO timestamps)
-- `blocked` status auto-derived from unresolved `blockedBy` refs — never set manually
-- Create/update/delete: rewrite `.relay/tasks.json` atomically with the new canonical snapshot
-- Relay rewrites the canonical snapshot atomically on every write through the API
-- Core module: `server/core/task-manager.ts` (pure functions, no server deps)
-- API: `GET|POST /api/projects/:id/tasks`, `PATCH|DELETE /api/projects/:id/tasks/:taskId`
-- On managed session start, Relay injects an internal message telling the model about the task format
+- Canonical tasks are tracked Markdown files with YAML front matter: `.relay/tasks/<id>.md`; terminal history lives in `.relay/tasks/archive/<id>.md`. Discussion is separate, append-only files in `.relay/task-discussion/<task-id>/<comment-id>.md`.
+- Tasks have Project-wide identity and branch-specific state. Each Space reads/writes its own worktree. Project Tasks defaults to the Main space; API callers select another Space with `?spaceId=`. Never use the Main space path for a chat running elsewhere.
+- For this repository, create/pick up a task for nontrivial work (see Workflow above). Relay's generic bootstrap default does not require every request in every Project to create a task; explicit Project instructions override that default.
+- Prefer the offline `relay tasks` CLI: `list --ready --json` for work discovery, `show <id>` for detail, `update <id> --status in_progress` / `done` for progress, `comment <id>` for reports. No server or network is required. Read only selected tasks and their relevant dependencies, not the entire archive.
+- Schema v2 keeps `id`, `title`, Markdown description/body, `priority` (0–4, P0 first), `type` (epic|task|bug), `tags`, `parent`, `blockedBy`, `createdAt`, `updatedAt`, and nullable `closedAt`. Stored status is open|in_progress|done|cancelled; blocked is derived. Existing eight-hex and safe legacy slug IDs remain stable; new tasks use UUIDs. Revisions are content hashes, never manually incremented counters.
+- Cancelled blockers remain unresolved. Cancelling a task does not satisfy its dependents. Delete only tasks with no incoming references; otherwise cancel and explicitly repair dependencies as appropriate. A parent cannot be marked done while unfinished children remain.
+- CLI/API share strict validation and deterministic formatting. Mutations use a worktree-local lock, atomic per-file writes, and expected revision checks. Direct edits remain supported, but editors do not participate in that lock; run `pnpm tasks:check` before publishing. Malformed files must never be treated as an empty store or overwritten silently.
+- A crash can leave `.relay/.tasks.lock-gate/`; this gate deliberately fails closed. Stop Relay and other task commands before manually removing an abandoned gate, then rerun validation. Never remove a live writer’s lock.
+- `relay tasks archive --days 30` moves old done/cancelled tasks into tracked history; run it in scheduled maintenance, never as a read side effect. Reopening restores a task to the active directory. Canonical history stays in Git; generated indexes/locks are disposable.
+- `relay tasks migrate --dry-run` then `--apply` converts a legacy `.relay/tasks.json`, preserves IDs/fields/references, and archives existing terminal records. Legacy snapshots are read-only until migrated; never dual-write the two formats. Rebase old branches across migration and translate remaining snapshot edits.
+- Unrelated task files merge normally. Resolve competing edits to the same task explicitly, regenerate updatedAt, and validate the merged graph. Never use a union merge driver, last-writer-wins timestamps, or “done always wins.” Agents may independently pick up work in separate Spaces; no global claim service exists.
+- Core: `server/core/task-manager.ts` and helpers, no server dependencies. Task CRUD stays under `/api/projects/:id/tasks`; detail and comments load on demand. Space-scoped updates invalidate matching UI queries. Provider task_list activities remain separate from these repository tasks.
+- Provider-watch may publish accepted task intake and bookkeeping without a PR, in an isolated maintenance worktree. Source implementation still requires a code PR. See `.relay/provider-watch-prompt.md`; never push unrelated files or force-push.
 
 ## Common Pitfalls
 

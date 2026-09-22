@@ -34,5 +34,8 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Validate task files
+        run: pnpm tasks:check
+
       - name: Test
         run: pnpm test

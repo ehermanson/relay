@@ -3,9 +3,13 @@ import { AnimatePresence, motion } from "motion/react";
 import type { ComposerEditorHandle } from "../composer-editor";
 import { ComposerEditor } from "../composer-editor";
 import { useTaskMentionPopover, TaskMentionPopoverOverlay } from "../task-mention-popover";
+import type { Task } from "@shared/types";
 
 interface ComposerPanelProps {
   compact: boolean;
+  projectId?: string;
+  spaceId?: string;
+  tasks: Task[] | null;
   disabled: boolean;
   value: string;
   placeholder: string;
@@ -24,6 +28,9 @@ interface ComposerPanelProps {
 
 export function ComposerPanel({
   compact,
+  projectId,
+  spaceId,
+  tasks,
   disabled,
   value,
   placeholder,
@@ -39,7 +46,11 @@ export function ComposerPanel({
   expanded,
 }: ComposerPanelProps) {
   const editorContainerRef = useRef<HTMLDivElement>(null);
-  const { popoverState, close: closeTaskPopover } = useTaskMentionPopover(editorContainerRef);
+  const { popoverState, close: closeTaskPopover } = useTaskMentionPopover(editorContainerRef, {
+    projectId,
+    spaceId,
+    tasks,
+  });
 
   return (
     <>

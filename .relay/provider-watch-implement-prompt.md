@@ -10,16 +10,17 @@ Work from the root of the checked-out `ehermanson/relay` repo (default branch).
 
 - `CLAUDE.md` — architecture, conventions, build/test commands, common pitfalls.
 - `.relay/provider-strategy.md` — bucket definitions.
-- `.relay/tasks.json` — the task list.
+- `relay tasks list --json` — current work in the selected worktree; use `show <id>` for details.
 
 ## Close out merged work (do this first, every run)
 
-Sweep `.relay/tasks.json` for tasks tagged `provider-watch` with status `in_progress`. For
+Run `relay tasks list --json` for tasks tagged `provider-watch` with status `in_progress`. For
 each, check whether its impl PR merged (`gh pr list --state merged --search "<taskId>"` or
 look for branch `provider-watch/impl-<taskId>`). If merged, the work shipped but the task
-was never closed: set its status to `done` (update `updatedAt`). If any flips were made,
-deliver them as one small PR on branch `provider-watch/close-out-<YYYY-MM-DD>` — plain-language
-body listing which tasks were closed and the merged PR each one shipped in. Then continue.
+was never closed: use `relay tasks update <id> --status done`, and add a task comment
+linking the merged PR. Publish these task-only changes from an isolated maintenance
+worktree under the direct-publication policy in `provider-watch-prompt.md`; no PR is needed
+for this bookkeeping. A failed push remains pending. Then continue with code work.
 
 ## Select the eligible tasks
 
@@ -39,13 +40,14 @@ ship first if the run is interrupted. If none are eligible, do nothing and repor
    capability-declaration-shaped: usually a `ProviderCapabilities` field plus a UI control
    that renders from it.
 3. If the task turns out NOT to be mechanical (needs design decisions, broad refactor,
-   ambiguous scope), skip it — do not force it. Leave a note in the task description, keep
+   ambiguous scope), skip it — do not force it. Add a separate task comment, keep
    its status `open`, report it as "kicked back, needs human design," and move on to the
    next eligible task (do not abort the whole run).
 4. Update AGENTS.md / README.md if the change makes the docs stale (CLAUDE.md self-maintenance
    rule).
-5. In the same branch, set the task's status to `in_progress` in `.relay/tasks.json` so it
-   isn't re-picked after merge.
+5. In this branch’s worktree, use `relay tasks update <id> --status in_progress`. Include
+   only this task’s state/comment changes in its code PR. Open-PR checks above prevent a
+   second implementation run before merge; other Spaces may independently pick up work.
 
 ## Verify (required — include the output in the PR body)
 

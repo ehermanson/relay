@@ -1,4 +1,5 @@
 import type { Task } from "@shared/types";
+import { TASK_ID_PATTERN_SOURCE } from "@/lib/task-links";
 
 interface ComposerTextSegment {
   kind: "text";
@@ -180,7 +181,14 @@ export function replacePromptRange(
 
 // ─── Task reference expansion ──────────────────────────────────────────────
 
-const TASK_REF_RE = /@task:([a-f0-9]{8})(?::[^\s@]*)?\b/g;
+const TASK_REF_RE = new RegExp(
+  `@task:(${TASK_ID_PATTERN_SOURCE})(?![a-f0-9-])(?::[^\\s@]*)?\\b`,
+  "gi",
+);
+
+export function getTaskReferenceIds(text: string): string[] {
+  return [...text.matchAll(TASK_REF_RE)].map((match) => match[1].toLowerCase());
+}
 
 /** Escape a string for safe use inside an XML attribute (double-quoted). */
 function escapeXmlAttr(s: string): string {
@@ -202,7 +210,7 @@ function escapeXmlText(s: string): string {
  */
 export function expandTaskReferences(text: string, tasks: Task[]): string {
   return text.replace(TASK_REF_RE, (match, taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
+    const task = tasks.find((candidate) => candidate.id.toLowerCase() === taskId.toLowerCase());
     if (!task) return match;
     const desc = task.description ? `\n${escapeXmlText(task.description)}` : "";
     return `<task_reference id="${escapeXmlAttr(task.id)}" title="${escapeXmlAttr(task.title)}">${desc}\n</task_reference>`;

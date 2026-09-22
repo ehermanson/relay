@@ -1,6 +1,6 @@
 export PATH="/usr/local/bin:$HOME/.cargo/bin:$PATH"
 
-# Pre-push gate: mirror CI (build → typecheck → lint → test), but skip the heavy
+# Pre-push gate: mirror CI (build → typecheck → lint → task checks → test), but skip the heavy
 # checks when the push contains only docs / non-code changes.
 #
 # Git feeds ref updates on stdin, one per line:
@@ -41,6 +41,20 @@ if [ -z "$changed" ]; then
   exit 0
 fi
 
+# Task Markdown is executable workflow data even on a docs-only push.
+tasks_changed=0
+while IFS= read -r f; do
+  case "$f" in
+    .relay/tasks/*|.relay/task-discussion/*|.relay/tasks.json)
+      tasks_changed=1 ;;
+  esac
+done <<EOF
+$changed
+EOF
+if [ "$tasks_changed" -eq 1 ]; then
+  pnpm tasks:check || exit $?
+fi
+
 # A file is "ignorable" if it cannot change build/typecheck/lint/test results.
 # Everything that is NOT ignorable forces the full check. This is intentionally
 # conservative: unknown file types run the checks.
@@ -63,5 +77,5 @@ if [ "$code_changed" -eq 0 ]; then
   exit 0
 fi
 
-echo "pre-push: code changed — running CI checks (build → typecheck → lint → test)…"
+echo "pre-push: code changed — running CI checks (build → typecheck → lint → task checks → test)…"
 pnpm ci-check

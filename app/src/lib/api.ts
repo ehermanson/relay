@@ -26,6 +26,16 @@ export class ApiError extends Error {
   }
 }
 
+export class TaskApiError extends ApiError {
+  code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message, status);
+    this.name = "TaskApiError";
+    this.code = code;
+  }
+}
+
 /**
  * Thrown by createInstance when the server rejects with the concurrent-process
  * cap (`code: "max_processes"`). Callers can catch this to open the
@@ -452,13 +462,35 @@ interface UpdateTaskInput {
   tags?: string[];
   parent?: string | null;
   blockedBy?: string[];
+  expectedRevision?: string;
+}
+
+export interface TaskScopeOptions {
+  spaceId?: string;
+  includeArchived?: boolean;
+}
+
+function taskScopeQuery(options: TaskScopeOptions = {}): string {
+  const params = new URLSearchParams();
+  if (options.spaceId) params.set("spaceId", options.spaceId);
+  if (options.includeArchived) params.set("includeArchived", "true");
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+async function taskApiError(res: Response, fallback: string): Promise<TaskApiError> {
+  const data = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
+  return new TaskApiError(data?.error || fallback, res.status, data?.code);
 }
 
 export async function fetchTasks(
   projectId: string,
+  options: TaskScopeOptions = {},
 ): Promise<import("@shared/types").Task[] | null> {
-  const res = await fetch(`/api/projects/${projectId}/tasks`);
-  if (!res.ok) return null;
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks${taskScopeQuery(options)}`,
+  );
+  if (!res.ok) throw await taskApiError(res, "Failed to load tasks");
   const data = await res.json();
   return data.tasks;
 }
@@ -466,15 +498,18 @@ export async function fetchTasks(
 export async function createTaskApi(
   projectId: string,
   input: CreateTaskInput,
+  options: TaskScopeOptions = {},
 ): Promise<import("@shared/types").Task> {
-  const res = await fetch(`/api/projects/${projectId}/tasks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks${taskScopeQuery(options)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Failed to create task" }));
-    throw new Error(err.error);
+    throw await taskApiError(res, "Failed to create task");
   }
   return res.json();
 }
@@ -483,33 +518,94 @@ export async function updateTaskApi(
   projectId: string,
   taskId: string,
   patch: UpdateTaskInput,
+  options: TaskScopeOptions = {},
 ): Promise<import("@shared/types").Task> {
-  const res = await fetch(`/api/projects/${projectId}/tasks/${encodeURIComponent(taskId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}${taskScopeQuery(options)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Failed to update task" }));
-    throw new Error(err.error);
+    throw await taskApiError(res, "Failed to update task");
   }
   return res.json();
 }
 
-export async function deleteTaskApi(projectId: string, taskId: string): Promise<void> {
-  const res = await fetch(`/api/projects/${projectId}/tasks/${encodeURIComponent(taskId)}`, {
-    method: "DELETE",
-  });
+export async function deleteTaskApi(
+  projectId: string,
+  taskId: string,
+  expectedRevision: string,
+  options: TaskScopeOptions = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (options.spaceId) params.set("spaceId", options.spaceId);
+  params.set("expectedRevision", expectedRevision);
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?${params}`,
+    { method: "DELETE" },
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Failed to delete task" }));
-    throw new Error(err.error);
+    throw await taskApiError(res, "Failed to delete task");
   }
 }
 
-export async function initTasksApi(projectId: string): Promise<{ snippet: string }> {
-  const res = await fetch(`/api/projects/${projectId}/tasks/init`, {
-    method: "POST",
-  });
+export async function fetchTask(
+  projectId: string,
+  taskId: string,
+  options: TaskScopeOptions = {},
+): Promise<import("@shared/types").Task | null> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}${taskScopeQuery(options)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw await taskApiError(res, "Failed to load task");
+  return res.json();
+}
+
+export async function fetchTaskComments(
+  projectId: string,
+  taskId: string,
+  options: TaskScopeOptions = {},
+): Promise<import("@shared/types").TaskComment[]> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/comments${taskScopeQuery(options)}`,
+  );
+  if (!res.ok) throw await taskApiError(res, "Failed to load discussion");
+  const data = await res.json();
+  return data.comments;
+}
+
+export async function addTaskCommentApi(
+  projectId: string,
+  taskId: string,
+  input: { body: string; author?: string; replyTo?: string },
+  options: TaskScopeOptions = {},
+): Promise<import("@shared/types").TaskComment> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/comments${taskScopeQuery(options)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!res.ok) throw await taskApiError(res, "Failed to add comment");
+  return res.json();
+}
+
+export async function initTasksApi(
+  projectId: string,
+  options: TaskScopeOptions = {},
+): Promise<{ snippet: string }> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/init${taskScopeQuery(options)}`,
+    {
+      method: "POST",
+    },
+  );
   if (!res.ok) throw new Error("Failed to initialize tasks");
   return res.json();
 }

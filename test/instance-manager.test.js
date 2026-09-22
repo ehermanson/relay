@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
   readdirSync,
@@ -16,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
 import { SessionDB } from "../dist/server/core/db.js";
+import { createTask, initTasks } from "../dist/server/core/task-manager.js";
 import { resolveConfig } from "../dist/server/config.js";
 
 // Use a noop logger to keep test output clean
@@ -77,6 +79,15 @@ function runGit(cwd, args) {
     stdio: "pipe",
     timeout: 15000,
   });
+}
+
+async function waitFor(check, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail("Timed out waiting for condition");
 }
 
 let seedRepoDir;
@@ -504,6 +515,114 @@ describe("InstanceManager", () => {
           process.env.RELAY_WORKTREE_BASE = previousBase;
         }
       }
+    });
+  });
+
+  describe("task file integration", () => {
+    it("builds first-turn and follow-up task guidance from the managed session's actual Space cwd", async () => {
+      const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
+      initTasks(project.directory);
+      const space = manager.getSpaceManager().createSpace(project.directory, {
+        name: "Task cwd",
+      });
+      assert.ok(space.worktreePath);
+
+      const fakeProc = new FakeProviderSession("codex");
+      manager.createProviderSession = (_config, options) => {
+        fakeProc.bootstrapContext = options?.bootstrapContext;
+        return fakeProc;
+      };
+      const info = manager.createInstance({ provider: "codex", spaceId: space.id });
+      await manager.sendMessage(info.id, "work only in this Space");
+      assert.deepEqual(fakeProc.sent, ["work only in this Space"]);
+      assert.equal(
+        fakeProc.bootstrapContext.blocks.some((block) => block.kind === "task_guidance"),
+        false,
+      );
+
+      const withoutSpaceTasks = manager.buildBootstrapContext(project, {
+        spaceId: space.id,
+        workingDirectory: space.worktreePath,
+      });
+      assert.equal(
+        withoutSpaceTasks.blocks.some((block) => block.kind === "task_guidance"),
+        false,
+      );
+
+      initTasks(space.worktreePath);
+      const withSpaceTasks = manager.buildBootstrapContext(project, {
+        spaceId: space.id,
+        workingDirectory: space.worktreePath,
+      });
+      assert.equal(
+        withSpaceTasks.blocks.some((block) => block.kind === "task_guidance"),
+        true,
+      );
+      const taskBlock = withSpaceTasks.blocks.find((block) => block.kind === "task_guidance");
+      assert.match(taskBlock.text, /relay tasks list --ready --json/);
+      assert.equal(taskBlock.source, ".relay/tasks/");
+    });
+
+    it("invalidates Main and Space scopes after direct atomic task-file edits", async () => {
+      const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
+      initTasks(project.directory);
+      const space = manager.getSpaceManager().createSpace(project.directory, {
+        name: "Watched tasks",
+      });
+      assert.ok(space.worktreePath);
+      initTasks(space.worktreePath);
+
+      const changes = [];
+      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.startDiscovery();
+
+      createTask(project.directory, { title: "Main direct edit" });
+      createTask(space.worktreePath, { title: "Space direct edit" });
+
+      await waitFor(
+        () =>
+          changes.some((change) => change.projectId === project.id && !change.spaceId) &&
+          changes.some((change) => change.projectId === project.id && change.spaceId === space.id),
+      );
+    });
+
+    it("starts watching when a missing .relay directory is created", async () => {
+      const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
+      assert.equal(existsSync(join(project.directory, ".relay")), false);
+      const changes = [];
+      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.startDiscovery();
+
+      initTasks(project.directory);
+
+      await waitFor(
+        () => changes.some((change) => change.projectId === project.id && !change.spaceId),
+        7000,
+      );
+    });
+
+    it("rebinds after the .relay directory is replaced by a checkout", async () => {
+      const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
+      initTasks(project.directory);
+      const changes = [];
+      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.startDiscovery();
+
+      const replacementRoot = join(project.directory, ".task-replacement");
+      mkdirSync(replacementRoot, { recursive: true });
+      initTasks(replacementRoot);
+      renameSync(join(project.directory, ".relay"), join(project.directory, ".relay-before"));
+      renameSync(join(replacementRoot, ".relay"), join(project.directory, ".relay"));
+
+      await waitFor(
+        () => changes.some((change) => change.projectId === project.id && !change.spaceId),
+        7000,
+      );
+      changes.length = 0;
+      createTask(project.directory, { title: "After checkout" });
+      await waitFor(() =>
+        changes.some((change) => change.projectId === project.id && !change.spaceId),
+      );
     });
   });
 
@@ -2453,7 +2572,12 @@ describe("InstanceManager", () => {
         {
           timestamp: "2026-09-17T20:07:39.000Z",
           type: "session_meta",
-          payload: { id: PARENT_ID, timestamp: "2026-09-17T20:07:39.000Z", cwd: dir, cli_version: "0.154.0" },
+          payload: {
+            id: PARENT_ID,
+            timestamp: "2026-09-17T20:07:39.000Z",
+            cwd: dir,
+            cli_version: "0.154.0",
+          },
         },
         subAgentStarted("2026-09-17T20:07:56.258Z"),
       ];

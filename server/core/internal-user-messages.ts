@@ -1,4 +1,8 @@
-import { RUNTIME_CONTEXT_PREFIX, TASK_CONTEXT_MSG } from "#core/session-context.js";
+import {
+  LEGACY_TASK_CONTEXT_MSG,
+  RUNTIME_CONTEXT_PREFIX,
+  TASK_CONTEXT_MSG,
+} from "#core/session-context.js";
 
 export const AUTO_CONTINUE_MSG =
   "The relay server restarted while you were mid-turn. Please continue from where you left off.";
@@ -34,6 +38,7 @@ export function isInternalInjectedUserText(text: string): boolean {
   return (
     text === AUTO_CONTINUE_MSG ||
     text.startsWith(TASK_CONTEXT_MSG) ||
+    text.startsWith(LEGACY_TASK_CONTEXT_MSG) ||
     text.startsWith(CUSTOM_INSTRUCTIONS_PREFIX) ||
     text.startsWith(SPACE_CONTEXT_PREFIX) ||
     text.startsWith(RUNTIME_CONTEXT_PREFIX) ||
@@ -51,6 +56,7 @@ const USER_REQUEST_MARKER = "User request:\n";
 export function stripInjectedWrapper(text: string): string {
   if (
     text.startsWith(TASK_CONTEXT_MSG) ||
+    text.startsWith(LEGACY_TASK_CONTEXT_MSG) ||
     text.startsWith(CUSTOM_INSTRUCTIONS_PREFIX) ||
     text.startsWith(SPACE_CONTEXT_PREFIX) ||
     text.startsWith(RUNTIME_CONTEXT_PREFIX)
