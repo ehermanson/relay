@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMobileHome, homeActivity, keepHomeOrder } from "./mobile-home";
+import { buildMobileHome, homeActivity, homeEntryChat } from "./mobile-home";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
 import type { InboxSourceGroup } from "./inbox";
 
@@ -70,6 +70,26 @@ describe("mobile Home", () => {
       buildMobileHome([group("project", [chat("one", 10, { spaceId: "unknown" })])]).recent[0].id,
     ).toBe("chat:one");
   });
+  it("leads with everything waiting on the user, uncapped, then caps the rest by recency", () => {
+    const model = buildMobileHome([
+      group(
+        "project",
+        [
+          chat("plan", 1, { status: "processing", pendingPlan: "Review this plan" }),
+          chat("error", 2, { status: "error" }),
+          chat("r1", 10),
+          chat("r2", 20),
+          chat("r3", 30),
+          chat("r4", 40),
+          chat("r5", 50),
+          chat("spaced", 60, { spaceId: "s", status: "processing", pendingTool: "Bash" }),
+        ],
+        [space("s")],
+      ),
+    ]);
+    expect(model.needsInput.map((e) => e.id)).toEqual(["space:s", "chat:error", "chat:plan"]);
+    expect(model.recent.map((e) => e.id)).toEqual(["chat:r5", "chat:r4", "chat:r3", "chat:r2"]);
+  });
   it("counts waiting work separately from running and ignores stopped requests", () => {
     expect(
       homeActivity([
@@ -80,9 +100,15 @@ describe("mobile Home", () => {
       ]),
     ).toEqual({ recencyAt: 4, attention: 2, running: 1 });
   });
-  it("preserves positions through activity updates, removes missing entries and appends new ones", () => {
-    expect(
-      keepHomeOrder(["new", "second", "first"], ["first", "removed", "second"], (id) => id),
-    ).toEqual(["first", "second", "new"]);
+  it("previews a space's destination chat, falling back to its most recent member", () => {
+    const [entry] = buildMobileHome([
+      group(
+        "project",
+        [chat("a", 10, { spaceId: "s" }), chat("b", 20, { spaceId: "s" })],
+        [space("s")],
+      ),
+    ]).recent;
+    expect(homeEntryChat(entry, "a")?.id).toBe("a");
+    expect(homeEntryChat(entry, "missing")?.id).toBe("b");
   });
 });

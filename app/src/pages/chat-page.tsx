@@ -247,13 +247,13 @@ function ProjectCard({
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
 export function Dashboard() {
-  const { instances } = useWSState();
+  const { instances, isSyncing } = useWSState();
   const { send } = useWSMethods();
   const { trackInstanceCreate } = useActionToasts();
   // Same merged model as the sidebar: REST chat summaries (react-query cached,
   // persisted across loads) merged with live WS instances, in the shared
-  // user-defined project order on desktop. Mobile Home derives its own
-  // recency order from the same data without waiting on the WebSocket.
+  // user-defined project order on desktop. Mobile Home sorts the same data
+  // live by recency, painting from cache without waiting on the WebSocket.
   const {
     groups: projectGroups,
     projectByDir,
@@ -363,7 +363,10 @@ export function Dashboard() {
     return (
       <MobileHome
         groups={groups}
+        // Placeholders only: with nothing cached, "Loading…" is right until
+        // both the summaries and the WS instance list have landed.
         loading={
+          isSyncing ||
           projectsLoading ||
           Object.values(chatsLoadingByProjectId).some(Boolean) ||
           Object.values(spacesLoadingByDir).some(Boolean)

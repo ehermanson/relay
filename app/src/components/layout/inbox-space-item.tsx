@@ -30,23 +30,13 @@ import { ProjectAvatar } from "@/components/ui/project-avatar";
 import { TerminalRunningIndicator } from "@/components/ui/terminal-running-indicator";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
-import type { InboxSpaceEntry } from "@/lib/inbox";
+import { getAttentionLabel, type InboxSpaceEntry } from "@/lib/inbox";
 import { getInboxSpaceRoute } from "@/lib/space-navigation";
 import { formatTimeAgo } from "@/lib/utils";
 import { selectHasUnread, useUnreadStore } from "@/stores/unread-store";
-import type { InstanceInfo } from "@shared/types";
 
 function plural(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-function attentionLabel(instance: InstanceInfo) {
-  if (instance.pendingPlan) return "Plan needs approval";
-  if (instance.pendingPermission?.kind === "user_input") return "Needs your answer";
-  if (instance.pendingPermission?.kind === "terminal_input") return "Needs terminal input";
-  if (instance.pendingPermission || instance.pendingTool) return "Waiting for permission";
-  if (instance.status === "error") return "Chat error";
-  return "Needs attention";
 }
 
 function SpaceGlyph({
@@ -209,10 +199,10 @@ function AttentionAction({
   if (attention.length === 1) {
     const instance = attention[0];
     return (
-      <Tooltip content={attentionLabel(instance)} side="top">
+      <Tooltip content={getAttentionLabel(instance)} side="top">
         <Link
           {...getInboxSpaceRoute(entry, instance.id)}
-          aria-label={`Open ${instance.name}: ${attentionLabel(instance)}`}
+          aria-label={`Open ${instance.name}: ${getAttentionLabel(instance)}`}
           onClick={(event: React.MouseEvent) => event.stopPropagation()}
           className={triggerClass}
         >
@@ -254,7 +244,7 @@ function AttentionAction({
             <span className="min-w-0">
               <span className="block truncate">{instance.name}</span>
               <span className="block truncate text-[0.6875rem] text-muted">
-                {attentionLabel(instance)}
+                {getAttentionLabel(instance)}
               </span>
             </span>
             <ChevronRight size={13} className="ml-auto mt-0.5 shrink-0 text-muted" />

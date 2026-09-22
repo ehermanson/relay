@@ -77,6 +77,16 @@ export interface InboxSourceGroup {
   project?: { id?: string };
 }
 
+/** Why a chat is waiting on the user — one wording for every surface that says so. */
+export function getAttentionLabel(instance: InstanceInfo): string {
+  if (instance.pendingPlan) return "Plan needs approval";
+  if (instance.pendingPermission?.kind === "user_input") return "Needs your answer";
+  if (instance.pendingPermission?.kind === "terminal_input") return "Needs terminal input";
+  if (instance.pendingPermission || instance.pendingTool) return "Waiting for permission";
+  if (instance.status === "error") return "Chat error";
+  return "Needs attention";
+}
+
 function isAttentionInstance(instance: InstanceInfo): boolean {
   if (instance.status === "stopped") return false;
   // These are provider-normalized fields; no driver-specific tool/status names
