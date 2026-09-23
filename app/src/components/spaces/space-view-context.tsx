@@ -44,6 +44,8 @@ type SpaceViewContextValue = {
     terminalHeight: number;
     pathCopied: boolean;
     spaceDiff: string | null;
+    /** Space diff failed to load (distinct from an empty diff). */
+    spaceDiffError: string | null;
     showDiffDrawer: boolean;
     diffScrollToFile?: string;
     mergeDialog: SpaceMergeDialogState;
@@ -52,6 +54,8 @@ type SpaceViewContextValue = {
     deletePending: boolean;
     showDebug: boolean;
     commitDialogOpen: boolean;
+    /** Git action in flight; the header disables git actions until it settles. */
+    pendingGitAction: "commit" | "push" | null;
     ghCliDialogOpen: boolean;
     ghCliReason: "not-installed" | "not-authenticated";
     editingSpaceName: boolean;
@@ -79,6 +83,7 @@ type SpaceViewContextValue = {
     handleRenameTab: (instanceId: string, name: string) => void;
     setCloseTabId: (id: string | null) => void;
     openDiff: (scrollTo?: string) => void;
+    retrySpaceDiff: () => void;
     handleGoToMainWorkspace: () => void;
     handleCopyPath: () => void;
     handleTerminalResizeStart: (e: MouseEvent) => void;

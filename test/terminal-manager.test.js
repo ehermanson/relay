@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Unit tests for TerminalManager.
  *

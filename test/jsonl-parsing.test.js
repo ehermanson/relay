@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Tests for JSONL parsing, utility functions, and plan-parent linking.
  * Covers: parseJsonl, convertJsonlEntry, stripInternalTags, generateTitle,

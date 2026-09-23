@@ -25,7 +25,7 @@ import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Tooltip } from "../ui/tooltip";
 import { Menu } from "../ui/menu";
-import { GitBadge } from "../ui/git-badge";
+import { GitBadge, type GitBadgePendingAction } from "../ui/git-badge";
 import {
   ViewHeader,
   ViewHeaderTitle,
@@ -45,6 +45,7 @@ import {
   gitPushInstance,
 } from "../../lib/api";
 import { deriveInstanceStatusPresentation } from "../../lib/utils";
+import { useRepoStatus } from "@/hooks/use-repo-status";
 import type { InstanceInfo, ProviderKind, ProviderNotice, SessionStats } from "@shared/types";
 import type { SidecarTab } from "./sidecar";
 
@@ -397,8 +398,22 @@ export function InstanceHeader({
     [queryClient, instance.id],
   );
 
+  // Push-based: the server publishes repo_status when the worktree changes
+  // (turn end, Relay git mutations, background fetch). Its fingerprint drives
+  // refetches of the badge status and the diff drawer — no polling.
+  useRepoStatus(displayBranch ? { kind: "instance", instanceId: instance.id } : null, {
+    invalidate: [
+      ["instance-git-status", instance.id],
+      ["instanceDiff", instance.id],
+    ],
+  });
+
   // Lightweight git status query for the badge indicators
-  const { data: gitStatus, isLoading: gitStatusLoading } = useQuery({
+  const {
+    data: gitStatus,
+    isLoading: gitStatusLoading,
+    error: gitStatusError,
+  } = useQuery({
     queryKey: ["instance-git-status", instance.id],
     queryFn: () => fetchInstanceGitStatus(instance.id),
     staleTime: 30_000,
@@ -411,6 +426,23 @@ export function InstanceHeader({
   const [pushStatus, setPushStatus] = useState<InstanceGitStatus | null>(null);
   const [pushStatusError, setPushStatusError] = useState<string | null>(null);
   const [pushing, setPushing] = useState(false);
+  // One git action at a time: the ref blocks same-tick re-entry (double
+  // clicks), the state drives the badge's disabled/pending UI.
+  const [pendingGitAction, setPendingGitAction] = useState<GitBadgePendingAction | null>(null);
+  const pendingGitActionRef = useRef<GitBadgePendingAction | null>(null);
+  const runGitAction = async (action: GitBadgePendingAction, fn: () => Promise<void>) => {
+    if (pendingGitActionRef.current) return;
+    pendingGitActionRef.current = action;
+    setPendingGitAction(action);
+    try {
+      await fn();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `Git ${action} failed`);
+    } finally {
+      pendingGitActionRef.current = null;
+      setPendingGitAction(null);
+    }
+  };
 
   // Inline rename state
   const [editingName, setEditingName] = useState(false);
@@ -437,39 +469,42 @@ export function InstanceHeader({
     if (e.key === "Escape") setEditingName(false);
   };
 
-  const handleCommit = async (message: string) => {
-    const result = await gitCommitInstance(instance.id, { message });
-    if (result.success) {
-      toast.success("Changes committed");
-      invalidateGitStatus();
-    } else {
-      toast.error(result.error || "Commit failed");
-    }
-  };
+  const handleCommit = (message: string) =>
+    runGitAction("commit", async () => {
+      const result = await gitCommitInstance(instance.id, { message });
+      if (result.success) {
+        toast.success("Changes committed");
+        invalidateGitStatus();
+      } else {
+        toast.error(result.error || "Commit failed");
+      }
+    });
 
-  const handleFetch = async () => {
-    const result = await gitFetchInstance(instance.id);
-    if (result.success) {
-      toast.success("Fetched from remote");
-      invalidateGitStatus();
-    } else {
-      toast.error(result.error || "Fetch failed");
-    }
-  };
+  const handleFetch = () =>
+    runGitAction("fetch", async () => {
+      const result = await gitFetchInstance(instance.id);
+      if (result.success) {
+        toast.success("Fetched from remote");
+        invalidateGitStatus();
+      } else {
+        toast.error(result.error || "Fetch failed");
+      }
+    });
 
-  const handlePull = async () => {
-    const ahead = gitStatus?.aheadBehind?.ahead ?? 0;
-    const behind = gitStatus?.aheadBehind?.behind ?? 0;
-    // Diverged (ahead *and* behind) can't fast-forward — rebase onto remote.
-    const diverged = ahead > 0 && behind > 0;
-    const result = await gitPullInstance(instance.id, { rebase: diverged });
-    if (result.success) {
-      toast.success(diverged ? "Rebased onto remote" : "Pulled from remote");
-      invalidateGitStatus();
-    } else {
-      toast.error(result.error || "Pull failed");
-    }
-  };
+  const handlePull = () =>
+    runGitAction("pull", async () => {
+      const ahead = gitStatus?.aheadBehind?.ahead ?? 0;
+      const behind = gitStatus?.aheadBehind?.behind ?? 0;
+      // Diverged (ahead *and* behind) can't fast-forward — rebase onto remote.
+      const diverged = ahead > 0 && behind > 0;
+      const result = await gitPullInstance(instance.id, { rebase: diverged });
+      if (result.success) {
+        toast.success(diverged ? "Rebased onto remote" : "Pulled from remote");
+        invalidateGitStatus();
+      } else {
+        toast.error(result.error || "Pull failed");
+      }
+    });
 
   const openPushDialog = () => {
     setPushDialogOpen(true);
@@ -483,6 +518,9 @@ export function InstanceHeader({
   };
 
   const handlePush = async (commitMessage?: string) => {
+    if (pendingGitActionRef.current) return;
+    pendingGitActionRef.current = "push";
+    setPendingGitAction("push");
     setPushing(true);
     try {
       const result = await gitPushInstance(instance.id, {
@@ -504,6 +542,8 @@ export function InstanceHeader({
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Push failed");
     } finally {
+      pendingGitActionRef.current = null;
+      setPendingGitAction(null);
       setPushing(false);
     }
   };
@@ -654,6 +694,8 @@ export function InstanceHeader({
             ahead={gitStatus?.aheadBehind?.ahead}
             behind={gitStatus?.aheadBehind?.behind}
             statusLoading={gitStatusLoading}
+            statusError={gitStatusError ? gitStatusError.message : null}
+            pendingAction={pendingGitAction}
             onCommit={gitStatus?.dirty ? () => setCommitDialogOpen(true) : undefined}
             onFetch={() => void handleFetch()}
             onPull={() => void handlePull()}

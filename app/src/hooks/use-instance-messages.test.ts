@@ -1158,3 +1158,31 @@ describe("delegated agent routing", () => {
     );
   });
 });
+
+describe("useInstanceMessages file_stats", () => {
+  it("merges debounced diff stats without marking the chat processing", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => {
+      result.current.setInstanceId("instance-1");
+      result.current.handleMessage("instance-1", {
+        type: "instance_history",
+        instanceId: "instance-1",
+        history: [],
+        replayMode: "full",
+        latestSequence: 0,
+      });
+    });
+    act(() => {
+      result.current.handleMessage("instance-1", {
+        type: "file_stats",
+        instanceId: "instance-1",
+        eventSequence: 3,
+        files: [{ path: "/repo/a.ts", editCount: 2, type: "edited", additions: 4, deletions: 1 }],
+      });
+    });
+    expect(result.current.isProcessing).toBe(false);
+    expect(result.current.currentFiles).toEqual([
+      { path: "/repo/a.ts", editCount: 2, type: "edited", additions: 4, deletions: 1 },
+    ]);
+  });
+});

@@ -25,9 +25,9 @@ import {
   watch as watchFs,
 } from "fs";
 import type { FSWatcher } from "fs";
-import { basename, join, resolve } from "path";
+import { basename, join } from "path";
 import { homedir } from "os";
-import { execFile, execFileSync } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { findProjectIcon } from "#core/favicon-scanner.js";
 import type { ProviderSession } from "#core/provider.js";
@@ -130,6 +130,7 @@ import type {
   HistoryEntry,
   TaskItem,
   FileChange,
+  FileStatsMessage,
   SessionStats,
   ProjectArtifacts,
   ProjectPlan,
@@ -212,7 +213,6 @@ import { buildSessionInitEvent } from "#core/session-init.js";
 import {
   isGitRepo,
   getRepoRoot,
-  getRemoteUrl,
   getCurrentBranch,
   removeWorktree,
   isWorktreeDirty,
@@ -224,12 +224,11 @@ import {
   isGitWorktree,
   resolveAnyWorktreeOrigin,
   enrichDiffStats,
-  enrichDiffStatsAsync,
-  getCurrentBranchAsync,
-  getGitInfoAsync,
-  hasWorktreeChangesAsync,
+  getGitInfo as getGitInfoAsync,
+  readGitHeadInfo,
   getFullDiff,
   getFileDiff,
+  withRepoLock,
 } from "#core/git.js";
 import {
   explicitOrInferredSpaceIdForPersistenceRow,
@@ -239,6 +238,8 @@ import {
   resolveManagedRestorePaths,
 } from "#core/instance-restore.js";
 import { searchWorkspaceEntries, type WorkspaceEntry } from "#core/workspace-entries.js";
+import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
+import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 
 // =============================================================================
@@ -395,6 +396,7 @@ export interface InstanceManagerEvents {
   ];
   /** Sparse upsert of a delegated agent (replayable, broadcast like activity). */
   "instance:agent_update": [instanceId: string, message: AgentUpdateMessage];
+  "instance:file_stats": [instanceId: string, message: FileStatsMessage];
   /** A bulk mutation touched many chats at once — re-send the whole list. */
   "instances:changed": [];
   "scan:complete": [];
@@ -434,6 +436,10 @@ const TASK_WATCH_DEBOUNCE_MS = 75;
 const execFileAsync = promisify(execFile);
 
 const WATCH_POLL_INTERVAL = 2_000; // 2s
+/** Quiet period before a chat's diff stats are recomputed after file edits. */
+const FILE_STATS_DEBOUNCE_MS = 800;
+/** Upper bound on how long a continuous edit burst can defer diff stats. */
+const FILE_STATS_MAX_WAIT_MS = 5_000;
 const WATCH_DEDUP_GRACE_MS = 2_000; // Allow JSONL writes to catch up to managed process output
 /** Number of consecutive discovery misses before marking an external session as ended */
 const STALE_THRESHOLD = 3; // 3 × 30s = 90s grace period
@@ -1258,41 +1264,15 @@ const gitInfoCache = new Map<
   { info: { branch: string; isWorktree: boolean } | null; cachedAt: number }
 >();
 const GIT_CACHE_TTL = 60_000;
-const GIT_INFO_TIMEOUT_MS = Number(process.env.RELAY_GIT_TIMEOUT_MS || "1500");
 
+/**
+ * Synchronous git info for restore/scan paths. Filesystem-only (reads HEAD /
+ * commondir; never spawns git), cached per directory.
+ */
 function getGitInfo(dir: string): { branch: string; isWorktree: boolean } | null {
   const cached = gitInfoCache.get(dir);
   if (cached && Date.now() - cached.cachedAt < GIT_CACHE_TTL) return cached.info;
-
-  let info: { branch: string; isWorktree: boolean } | null = null;
-  try {
-    if (isRelayWorktreePath(dir) && !existsSync(join(dir, ".git"))) {
-      gitInfoCache.set(dir, { info: null, cachedAt: Date.now() });
-      return null;
-    }
-    const opts = {
-      cwd: dir,
-      timeout: GIT_INFO_TIMEOUT_MS,
-      encoding: "utf8" as const,
-      stdio: "pipe" as const,
-    };
-    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts).trim();
-    if (!branch || branch === "HEAD") {
-      gitInfoCache.set(dir, { info: null, cachedAt: Date.now() });
-      return null;
-    }
-    // Detect worktrees: in a worktree, --git-dir points to main-repo/.git/worktrees/<name>
-    // while --git-common-dir points to main-repo/.git. In the main repo they are equal.
-    // (--show-toplevel returns the worktree's own root, so it can't distinguish worktrees.)
-    const gitDir = resolve(dir, execFileSync("git", ["rev-parse", "--git-dir"], opts).trim());
-    const gitCommonDir = resolve(
-      dir,
-      execFileSync("git", ["rev-parse", "--git-common-dir"], opts).trim(),
-    );
-    info = { branch, isWorktree: gitDir !== gitCommonDir };
-  } catch {
-    // Not a git repo or git not available
-  }
+  const info = readGitHeadInfo(dir);
   gitInfoCache.set(dir, { info, cachedAt: Date.now() });
   return info;
 }
@@ -1416,6 +1396,19 @@ export class InstanceManager extends EventEmitter {
     { watcher: FSWatcher; directory: string; relayIdentity: string }
   >();
   private taskWatchDebounces = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Per-chat diff-stat enrichment. `file_list` events are emitted immediately
+   * with last-known stats; one trailing-debounced git pass per chat then
+   * refreshes additions/deletions and emits `instance:file_stats`. Never
+   * overlaps itself per chat; forced (immediate) at turn end.
+   */
+  private fileStatsDebouncer = new KeyedTrailingDebouncer({
+    delayMs: FILE_STATS_DEBOUNCE_MS,
+    maxWaitMs: FILE_STATS_MAX_WAIT_MS,
+    run: (id) => this.refreshFileStats(id),
+    onError: (id, err) =>
+      this.baseConfig.logger.debug(`[InstanceManager] Diff stats failed for ${id}: ${err}`),
+  });
   /** Tracks consecutive discovery misses per external instance (grace period before marking stopped) */
   private staleCounts = new Map<string, number>();
   /** Instance IDs that were auto-continued after a restart — excluded from the next processing-at-shutdown save to prevent restart loops */
@@ -1459,6 +1452,10 @@ export class InstanceManager extends EventEmitter {
     };
     this.db = new SessionDB(config.dbPath, config.logger);
     this.spaceManager = new SpaceManager(this.db, config.logger);
+    // Complete/Archive stop (never delete) the space's chats before removing its worktree.
+    this.spaceManager.setSpaceChatStopper((spaceId) => this.stopSpaceChats(spaceId));
+    // Merges/pushes/archives refresh pushed repo status (see repo-status-service.ts).
+    this.spaceManager.setRepoStatusInvalidator(invalidateRepoStatus);
     this.spinOffManager = new SpinOffManager(this.db, config.logger);
     this._projectManager = new ProjectManager(this.db, config.logger);
     // Keep in-memory instances aligned with project registration changes.
@@ -2304,7 +2301,7 @@ export class InstanceManager extends EventEmitter {
       lastActivityAt: now,
       gitInfo: initialGitInfo,
       gitBranch: spaceGitBranch,
-      originalGitBranch: initialGitInfo?.branch ?? getCurrentBranch(workingDirectory) ?? undefined,
+      originalGitBranch: initialGitInfo?.branch,
       parentSessionId: options?.parentSessionId,
       preferredModel: isExplicitModel ? model : undefined,
       modelOptions,
@@ -2381,13 +2378,11 @@ export class InstanceManager extends EventEmitter {
         if (files.size > 0) {
           instance.files = files;
           instance.fileStateRevision += 1;
-          const diffCwd = instance.actualCwd || instance.info.workingDirectory;
-          const origBranch = instance.originalDirectory
-            ? (getCurrentBranch(instance.originalDirectory) ?? undefined)
-            : undefined;
-          enrichDiffStats(diffCwd, instance.files, {
-            originalBranch: origBranch,
-            sessionCreatedAt: instance.info.createdAt,
+          // Diff stats need git — enrich asynchronously (emits a status update).
+          this.enrichGitDataAsync(id, instance).catch((err) => {
+            this.baseConfig.logger.debug(
+              `[InstanceManager] Git enrichment failed for ${id}: ${err}`,
+            );
           });
         }
         if (hasSessionStats(stats)) info.stats = stats;
@@ -2496,6 +2491,7 @@ export class InstanceManager extends EventEmitter {
     }
     this.staleCounts.delete(id);
     this.missingRunnableCwdWarnings.delete(id);
+    this.fileStatsDebouncer.cancel(id);
 
     instance.info.status = "stopped";
 
@@ -2525,14 +2521,15 @@ export class InstanceManager extends EventEmitter {
     ) {
       const repoRoot = getRepoRoot(instance.originalDirectory);
       if (repoRoot) {
-        try {
-          removeWorktree(repoRoot, instance.worktreePath, instance.gitBranch);
-          this.baseConfig.logger.info(
-            `[InstanceManager] Removed worktree ${instance.worktreePath} and branch ${instance.gitBranch}`,
-          );
-        } catch (err) {
-          this.baseConfig.logger.warn(`[InstanceManager] Failed to remove worktree: ${err}`);
-        }
+        const { worktreePath, gitBranch } = instance;
+        removeWorktree(repoRoot, worktreePath, gitBranch).then(
+          () =>
+            this.baseConfig.logger.info(
+              `[InstanceManager] Removed worktree ${worktreePath} and branch ${gitBranch}`,
+            ),
+          (err) =>
+            this.baseConfig.logger.warn(`[InstanceManager] Failed to remove worktree: ${err}`),
+        );
       }
     }
 
@@ -2540,6 +2537,20 @@ export class InstanceManager extends EventEmitter {
       `[InstanceManager] ${purge ? "Purged" : "Removed"} instance "${instance.info.name}" (${id})`,
     );
     return true;
+  }
+
+  /**
+   * Stop every running managed chat in a space (the same path as a manual
+   * pause). Chats stay listed and resume lazily on their next message.
+   * Returns how many were stopped.
+   */
+  stopSpaceChats(spaceId: string): number {
+    let stopped = 0;
+    for (const instance of this.instances.values()) {
+      if (instance.info.spaceId !== spaceId || !instance.process) continue;
+      if (this.stopInstance(instance.info.id)) stopped++;
+    }
+    return stopped;
   }
 
   /**
@@ -2593,37 +2604,40 @@ export class InstanceManager extends EventEmitter {
    *
    * Throws if the instance has no worktree, the worktree is dirty, or the merge fails.
    */
-  mergeInstance(id: string): { targetBranch: string } {
+  async mergeInstance(id: string): Promise<{ targetBranch: string }> {
     const instance = this.instances.get(id);
     if (!instance) throw new Error(`Instance ${id} not found`);
 
     if (!instance.worktreePath || !instance.gitBranch || !instance.originalDirectory) {
       throw new Error("Instance does not have a worktree to merge");
     }
-
-    // Auto-commit dirty worktrees — safe because worktrees are isolated Claude work
-    if (isWorktreeDirty(instance.worktreePath)) {
-      const commitMsg = instance.info.name || "Relay work";
-      this.baseConfig.logger.info(
-        `[InstanceManager] Auto-committing changes in worktree for "${commitMsg}"`,
-      );
-      const commitResult = commitAll(instance.worktreePath, commitMsg);
-      if (!commitResult.success) {
-        throw new Error(`Auto-commit failed: ${commitResult.error}`);
-      }
-    }
+    const { worktreePath, gitBranch } = instance;
 
     const repoRoot = getRepoRoot(instance.originalDirectory);
     if (!repoRoot) {
       throw new Error("Could not determine git repository root");
     }
 
-    const targetBranch = getCurrentBranch(repoRoot) || "unknown";
+    const targetBranch = await withRepoLock(repoRoot, async () => {
+      // Auto-commit dirty worktrees — safe because worktrees are isolated Claude work
+      if (await isWorktreeDirty(worktreePath)) {
+        const commitMsg = instance.info.name || "Relay work";
+        this.baseConfig.logger.info(
+          `[InstanceManager] Auto-committing changes in worktree for "${commitMsg}"`,
+        );
+        const commitResult = await commitAll(worktreePath, commitMsg);
+        if (!commitResult.success) {
+          throw new Error(`Auto-commit failed: ${commitResult.error}`);
+        }
+      }
 
-    const result = mergeWorktreeBranch(repoRoot, instance.gitBranch);
-    if (!result.success) {
-      throw new Error(`Merge failed: ${result.error}`);
-    }
+      const branch = (await getCurrentBranch(repoRoot)) || "unknown";
+      const result = await mergeWorktreeBranch(repoRoot, gitBranch);
+      if (!result.success) {
+        throw new Error(`Merge failed: ${result.error}`);
+      }
+      return branch;
+    });
 
     this.baseConfig.logger.info(
       `[InstanceManager] Merged branch ${instance.gitBranch} into ${targetBranch}`,
@@ -3118,7 +3132,7 @@ export class InstanceManager extends EventEmitter {
     return sortChatsByLastActivity(attachReviewLinks(Array.from(chats.values())));
   }
 
-  getWorkspaceEntries(id: string, query: string): WorkspaceEntry[] | null {
+  async getWorkspaceEntries(id: string, query: string): Promise<WorkspaceEntry[] | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
     const root = instance.actualCwd || instance.info.workingDirectory;
@@ -3144,12 +3158,12 @@ export class InstanceManager extends EventEmitter {
     return getProviderModels(provider, this.getProviderContext());
   }
 
-  getInstanceDiff(id: string, filePath?: string): string | null {
+  async getInstanceDiff(id: string, filePath?: string): Promise<string | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
     const cwd = this.resolveRunnableCwd(instance);
     const origBranch = instance.originalDirectory
-      ? (getCurrentBranch(instance.originalDirectory) ?? undefined)
+      ? ((await getCurrentBranch(instance.originalDirectory).catch(() => null)) ?? undefined)
       : undefined;
     const opts = {
       originalBranch: origBranch,
@@ -4282,16 +4296,14 @@ export class InstanceManager extends EventEmitter {
    * delivery isn't blocked by synchronous git subprocess calls.
    */
   private async enrichGitDataAsync(id: string, instance: Instance): Promise<void> {
-    const diffCwd = instance.actualCwd || instance.info.workingDirectory;
-    const fileStateRevision = instance.fileStateRevision;
-    const needsDiffStats = Boolean(instance.files && instance.files.size > 0);
+    // Diff stats go through the shared debounced pass (emits file_stats).
+    if (instance.files && instance.files.size > 0) {
+      this.fileStatsDebouncer.schedule(id, { immediate: true });
+    }
     const needsGitInfo = !instance.info.gitInfo;
     const hasWorktree = Boolean(instance.worktreePath && instance.originalDirectory);
 
-    const [origBranch, gitInfo, hasChanges] = await Promise.all([
-      needsDiffStats && instance.originalDirectory
-        ? getCurrentBranchAsync(instance.originalDirectory)
-        : Promise.resolve(null),
+    const [gitInfo, hasChanges] = await Promise.all([
       needsGitInfo
         ? getGitInfoAsync(
             instance.info.external && instance.worktreePath
@@ -4300,24 +4312,12 @@ export class InstanceManager extends EventEmitter {
           )
         : Promise.resolve(null),
       hasWorktree
-        ? hasWorktreeChangesAsync(instance.worktreePath!, instance.originalDirectory!)
+        ? hasWorktreeChanges(instance.worktreePath!, instance.originalDirectory!)
         : Promise.resolve(null),
     ]);
 
-    await this.enqueueInstanceMutation(id, async (live) => {
+    await this.enqueueInstanceMutation(id, (live) => {
       let changed = false;
-      if (
-        needsDiffStats &&
-        live.fileStateRevision === fileStateRevision &&
-        live.files &&
-        live.files.size > 0
-      ) {
-        await enrichDiffStatsAsync(diffCwd, live.files, {
-          originalBranch: origBranch ?? undefined,
-          sessionCreatedAt: live.info.createdAt,
-        });
-        changed = true;
-      }
       if (!live.info.gitInfo && gitInfo) {
         live.info.gitInfo = gitInfo;
         changed = true;
@@ -4356,7 +4356,9 @@ export class InstanceManager extends EventEmitter {
     if (!prep) return;
 
     try {
-      const currentBranch = await getCurrentBranchAsync(prep.cwd);
+      // Filesystem-only HEAD read — this runs every watcher tick, so it must
+      // never spawn git.
+      const currentBranch = readGitHeadInfo(prep.cwd)?.branch ?? null;
       await this.enqueueInstanceMutation(id, (live) => {
         let changed = false;
         if (currentBranch) {
@@ -4784,7 +4786,11 @@ export class InstanceManager extends EventEmitter {
     const stats = { ...baseStats, modelUsage };
 
     // GitHub URL from git remote
-    const githubUrl = getRemoteUrl(directory);
+    // Cached on the project row (refreshed asynchronously by ProjectManager).
+    const githubUrl =
+      registeredProject?.remoteUrl ??
+      this._projectManager.getProjectByDirectory(directory)?.remoteUrl ??
+      null;
 
     // Active task records are retained here for older clients. Task history is
     // loaded only by the scoped task routes. Corruption must not make the
@@ -4895,6 +4901,7 @@ export class InstanceManager extends EventEmitter {
 
   async stopAllGracefully(): Promise<void> {
     this.stopDiscovery();
+    this.fileStatsDebouncer.cancelAll();
     await this.flushInstanceMutations();
     this.shuttingDown = true;
 
@@ -4963,6 +4970,7 @@ export class InstanceManager extends EventEmitter {
 
   stopAll(): void {
     this.shuttingDown = true;
+    this.fileStatsDebouncer.cancelAll();
     const processingIds: string[] = [];
     for (const instance of this.instances.values()) {
       const wasProcessing = instance.process?.isProcessing ?? false;
@@ -5703,9 +5711,9 @@ export class InstanceManager extends EventEmitter {
     if (instance.files && instance.files.size > 0) {
       const diffCwd = instance.actualCwd || workingDirectory;
       const origBranch = originalDirectory
-        ? ((await getCurrentBranchAsync(originalDirectory)) ?? undefined)
+        ? ((await getCurrentBranch(originalDirectory).catch(() => null)) ?? undefined)
         : undefined;
-      await enrichDiffStatsAsync(diffCwd, instance.files, {
+      await enrichDiffStats(diffCwd, instance.files, {
         originalBranch: origBranch,
         sessionCreatedAt: instance.info.createdAt,
       });
@@ -7105,6 +7113,7 @@ export class InstanceManager extends EventEmitter {
         const output = msg as OutputMessage;
         if (output.isWaiting) {
           this.checkWorktreeChanges(instance);
+          this.onTurnEndGitRefresh(instance);
           this.setStatus(instance, "idle");
           this.doRefreshTitle(instance);
         } else {
@@ -7117,16 +7126,10 @@ export class InstanceManager extends EventEmitter {
         this.emitPendingStateIfChanged(instance, pendingStateBefore);
         if (activity.activity === "file_list" && activity.files && instance.files) {
           instance.fileStateRevision += 1;
-          // Enrich with git diff stats for watcher path
-          const diffCwd = instance.actualCwd || instance.info.workingDirectory;
-          const origBranch = instance.originalDirectory
-            ? (getCurrentBranch(instance.originalDirectory) ?? undefined)
-            : undefined;
-          enrichDiffStats(diffCwd, instance.files, {
-            originalBranch: origBranch,
-            sessionCreatedAt: instance.info.createdAt,
-          });
+          // Emit with the stats known so far; the debounced pass refreshes
+          // them and emits instance:file_stats.
           activity.files = Array.from(instance.files.values()).map((f) => ({ ...f }));
+          this.fileStatsDebouncer.schedule(instanceId);
         }
         this.setStatus(instance, "processing");
         this.emit("instance:activity", instanceId, activity);
@@ -8515,6 +8518,7 @@ export class InstanceManager extends EventEmitter {
             );
           } else {
             this.checkWorktreeChanges(live);
+            this.onTurnEndGitRefresh(live);
             this.refreshPendingPlan(live);
             this.setStatus(live, "idle");
             this.doRefreshTitle(live);
@@ -8529,7 +8533,7 @@ export class InstanceManager extends EventEmitter {
     });
 
     proc.on("activity", (message) => {
-      void this.enqueueInstanceMutation(id, (live) => {
+      void this.enqueueInstanceMutation(id, async (live) => {
         if (this.shuttingDown || live.process !== proc) return;
         this.noteManagedProcessActivity(live);
         live.providerBinding = mergeProviderBinding(live.providerBinding, proc.getRuntimeBinding());
@@ -8553,21 +8557,20 @@ export class InstanceManager extends EventEmitter {
           }
         }
         if (message.activity === "file_list" && message.files) {
-          if (!live.files) live.files = new Map();
-          live.files.clear();
+          // Emit now with last-known stats; the debounced pass refreshes them.
+          const previous = live.files;
+          live.files = new Map();
           live.fileStateRevision += 1;
           for (const file of message.files) {
-            live.files.set(file.path, { ...file });
+            const known = previous?.get(file.path);
+            live.files.set(file.path, {
+              ...file,
+              additions: file.additions ?? known?.additions,
+              deletions: file.deletions ?? known?.deletions,
+            });
           }
-          const diffCwd = live.actualCwd || live.info.workingDirectory;
-          const origBranch = live.originalDirectory
-            ? (getCurrentBranch(live.originalDirectory) ?? undefined)
-            : undefined;
-          enrichDiffStats(diffCwd, live.files, {
-            originalBranch: origBranch,
-            sessionCreatedAt: live.info.createdAt,
-          });
           message.files = Array.from(live.files.values()).map((file) => ({ ...file }));
+          this.fileStatsDebouncer.schedule(id);
         }
         if (
           live.info.runtimeMode === "plan" &&
@@ -9642,11 +9645,67 @@ export class InstanceManager extends EventEmitter {
     return false;
   }
 
+  /**
+   * Debounced diff-stat pass (see `fileStatsDebouncer`). Computes stats on a
+   * snapshot outside the per-chat mutation queue, so the chat's events are
+   * never delayed by git; applies them in the queue and emits
+   * `instance:file_stats` only when a count actually changed.
+   */
+  private async refreshFileStats(id: string): Promise<void> {
+    const instance = this.instances.get(id);
+    if (!instance?.files || instance.files.size === 0 || this.shuttingDown) return;
+    const diffCwd = instance.actualCwd || instance.info.workingDirectory;
+    const snapshot = new Map<string, FileChange>();
+    for (const [path, file] of instance.files) snapshot.set(path, { ...file });
+    const origBranch = instance.originalDirectory
+      ? ((await getCurrentBranch(instance.originalDirectory).catch(() => null)) ?? undefined)
+      : undefined;
+    await enrichDiffStats(diffCwd, snapshot, {
+      originalBranch: origBranch,
+      sessionCreatedAt: instance.info.createdAt,
+    });
+    await this.enqueueInstanceMutation(id, (live) => {
+      if (this.shuttingDown || !live.files) return;
+      let changed = false;
+      // Paths are still current even if a newer file_list replaced the map;
+      // a newer list also scheduled its own trailing pass.
+      for (const [path, stats] of snapshot) {
+        const file = live.files.get(path);
+        if (!file) continue;
+        if (file.additions !== stats.additions || file.deletions !== stats.deletions) {
+          file.additions = stats.additions;
+          file.deletions = stats.deletions;
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      this.emit("instance:file_stats", id, {
+        type: "file_stats",
+        files: Array.from(live.files.values()).map((file) => ({ ...file })),
+      } satisfies FileStatsMessage);
+    });
+    invalidateRepoStatus(diffCwd);
+  }
+
+  /** Turn end: force a diff-stat pass and a repo-status refresh for the chat's worktree. */
+  private onTurnEndGitRefresh(instance: Instance): void {
+    if (instance.files && instance.files.size > 0) {
+      this.fileStatsDebouncer.schedule(instance.info.id, { immediate: true });
+    }
+    invalidateRepoStatus(instance.actualCwd || instance.info.workingDirectory);
+  }
+
+  /** Refresh `hasChanges` for a worktree chat in the background; emits status on change. */
   private checkWorktreeChanges(instance: Instance): void {
     if (!instance.worktreePath || !instance.originalDirectory) return;
-    instance.info.hasChanges = hasWorktreeChanges(
-      instance.worktreePath,
-      instance.originalDirectory,
+    const id = instance.info.id;
+    void hasWorktreeChanges(instance.worktreePath, instance.originalDirectory).then(
+      (hasChanges) => {
+        const live = this.instances.get(id);
+        if (!live || live.info.hasChanges === hasChanges) return;
+        live.info.hasChanges = hasChanges;
+        this.emitInstanceStatus(live);
+      },
     );
   }
 

@@ -22,6 +22,7 @@ import { Menu } from "../ui/menu";
 import { Badge } from "../ui/badge";
 import { Tooltip } from "../ui/tooltip";
 import { TerminalRunningIndicator } from "../ui/terminal-running-indicator";
+import { SpacePrStateChip } from "@/components/spaces/space-pr-badge";
 import { dotClassToTextColor } from "../ui/session-indicator";
 import { deriveInstanceStatusPresentation } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
@@ -194,6 +195,7 @@ export function SidebarSpaceGroup({
                 Archived
               </Badge>
             )}
+            <SpacePrStateChip space={space} />
             <TerminalRunningIndicator
               scope={{ type: "space", spaceId: space.id }}
               active={isActive}

@@ -19,13 +19,13 @@ import { OpenInMenu } from "@/components/project/open-in-menu";
 import { GhCliRequiredDialog } from "@/components/git/gh-cli-required-dialog";
 import { CommitMessageDialog } from "@/components/git/commit-message-dialog";
 import { useSpaceViewContext } from "@/components/spaces/space-view-context";
+import { SpacePrBadge } from "@/components/spaces/space-pr-badge";
 import {
   Archive,
   BookOpen,
   Bug,
   Check,
   EllipsisVertical,
-  ExternalLink,
   FileText,
   GitBranch,
   LayoutGrid,
@@ -113,29 +113,7 @@ export function SpaceViewHeader() {
               Archived
             </Badge>
           )}
-          {shared.isActive && shared.space.remoteStatus === "pr-open" && (
-            <Badge
-              variant="accent"
-              size="sm"
-              className={shared.space.prUrl ? "cursor-pointer" : ""}
-              onClick={
-                shared.space.prUrl ? () => window.open(shared.space.prUrl!, "_blank") : undefined
-              }
-            >
-              PR open
-              {shared.space.prUrl && <ExternalLink size={10} />}
-            </Badge>
-          )}
-          {shared.isActive && shared.space.remoteStatus === "pushed" && (
-            <Badge variant="accent" size="sm">
-              Pushed
-            </Badge>
-          )}
-          {shared.isActive && !shared.space.remoteStatus && (
-            <Badge variant="default" size="sm">
-              Local only
-            </Badge>
-          )}
+          {shared.isActive && <SpacePrBadge space={shared.space} />}
         </span>
         <Menu.Root>
           <Menu.Trigger className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-all duration-150 hover:bg-surface-hover hover:text-text">
@@ -184,6 +162,7 @@ export function SpaceViewHeader() {
                 onMerge={() => actions.setMergeDialog({ phase: "confirm" })}
                 mergeDisabled={shared.spaceInstances.length === 0}
                 worktreePath={shared.space.worktreePath || undefined}
+                pendingAction={shared.pendingGitAction}
               />
             )}
             <HeaderTerminalToggle

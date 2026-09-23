@@ -5,6 +5,7 @@ import {
   checkoutBranch,
   commitAll,
   getAheadBehind,
+  getStatusSummary,
   gitFetch,
   gitPull,
   gitPush,
@@ -15,6 +16,7 @@ import {
 import { resolveSuggestions } from "#core/actions.js";
 import { searchWorkspaceEntries } from "#core/workspace-entries.js";
 import { readJsonBody } from "#server/hono-utils.js";
+import { gitErrorResponse, gitResultStatus } from "#server/git-http.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
 import type { Project, SuggestionsConfig } from "#core/types.js";
 
@@ -280,7 +282,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       if (!body.name || typeof body.name !== "string") {
         return c.json({ error: "Missing name" }, 400);
       }
-      const project = instanceManager.projectManager.initProject(
+      const project = await instanceManager.projectManager.initProject(
         body.parentDirectory,
         body.name.trim(),
       );
@@ -379,34 +381,47 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   // Project-scoped file/dir search for @-mentions outside a running session
   // (e.g. the settings instructions editor). Mirrors /api/workspace-entries but
   // keys off the project's root directory instead of an instance's CWD.
-  app.get("/api/projects/:id/workspace-entries", (c) => {
+  app.get("/api/projects/:id/workspace-entries", async (c) => {
     const project = instanceManager.projectManager.getProject(c.req.param("id"));
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
     const query = c.req.query("q") || "";
-    const entries = searchWorkspaceEntries(project.directory, query);
+    const entries = await searchWorkspaceEntries(project.directory, query);
     return c.json({ entries });
   });
 
-  app.get("/api/projects/:id/branches", (c) => {
+  app.get("/api/projects/:id/branches", async (c) => {
     const project = instanceManager.projectManager.getProject(c.req.param("id"));
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
     const dir = project.repoRoot || project.directory;
-    const branches = listBranches(dir);
-    const aheadBehind = getAheadBehind(dir);
-    const dirty = isWorktreeDirty(dir);
-    const spaceManager = instanceManager.getSpaceManager();
-    const worktrees = listWorktrees(dir)
-      .filter((w) => !w.isPrimary && w.branch)
-      .map((w) => ({
-        branch: w.branch as string,
-        path: w.path,
-        spaceId: spaceManager.getSpaceByWorktreePath(w.path)?.id,
-      }));
-    return c.json({ ...branches, aheadBehind, dirty, worktrees });
+    try {
+      const [branches, summary, worktreeList] = await Promise.all([
+        listBranches(dir),
+        getStatusSummary(dir),
+        listWorktrees(dir),
+      ]);
+      const spaceManager = instanceManager.getSpaceManager();
+      const worktrees = worktreeList
+        .filter((w) => !w.isPrimary && w.branch)
+        .map((w) => ({
+          branch: w.branch as string,
+          path: w.path,
+          spaceId: spaceManager.getSpaceByWorktreePath(w.path)?.id,
+        }));
+      return c.json({
+        ...branches,
+        aheadBehind: { ahead: summary.ahead ?? 0, behind: summary.behind ?? 0 },
+        hasUpstream: summary.ahead != null && summary.behind != null,
+        dirty: summary.dirty,
+        worktrees,
+      });
+    } catch (err) {
+      const { body, status } = gitErrorResponse(err, "Failed to read branches");
+      return c.json(body, status);
+    }
   });
 
   app.post("/api/projects/:id/checkout", async (c) => {
@@ -420,15 +435,16 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         return c.json({ error: "branch is required" }, 400);
       }
       const dir = project.repoRoot || project.directory;
-      checkoutBranch(dir, body.branch);
-      const branches = listBranches(dir);
-      const aheadBehind = getAheadBehind(dir);
-      return c.json({ ...branches, aheadBehind });
+      await checkoutBranch(dir, body.branch);
+      const [branches, aheadBehind] = await Promise.all([listBranches(dir), getAheadBehind(dir)]);
+      return c.json({
+        ...branches,
+        aheadBehind: aheadBehind ?? { ahead: 0, behind: 0 },
+        hasUpstream: aheadBehind != null,
+      });
     } catch (err) {
-      return c.json(
-        { error: err instanceof Error ? err.message : "Failed to checkout branch" },
-        400,
-      );
+      const { body, status } = gitErrorResponse(err, "Failed to checkout branch");
+      return c.json(body, status);
     }
   });
 
@@ -439,7 +455,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     }
     const dir = project.repoRoot || project.directory;
     const result = await gitFetch(dir);
-    return c.json(result, result.success ? 200 : 400);
+    return c.json(result, gitResultStatus(result));
   });
 
   app.post("/api/projects/:id/git/pull", async (c) => {
@@ -452,7 +468,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       () => ({}) as { rebase?: boolean },
     );
     const result = await gitPull(dir, { rebase: body.rebase === true });
-    return c.json(result, result.success ? 200 : 400);
+    return c.json(result, gitResultStatus(result));
   });
 
   app.post("/api/projects/:id/git/push", async (c) => {
@@ -467,9 +483,10 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       }>(c);
       const dir = project.repoRoot || project.directory;
       const result = await gitPush(dir, body.branch, body.setUpstream);
-      return c.json(result, result.success ? 200 : 400);
+      return c.json(result, gitResultStatus(result));
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Failed to push" }, 400);
+      const { body, status } = gitErrorResponse(err, "Failed to push");
+      return c.json(body, status);
     }
   });
 
@@ -481,13 +498,14 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     try {
       const body = await readJsonBody<{ message?: string }>(c);
       const dir = project.repoRoot || project.directory;
-      if (!isWorktreeDirty(dir)) {
+      if (!(await isWorktreeDirty(dir))) {
         return c.json({ success: false, error: "Nothing to commit — working tree is clean" }, 400);
       }
-      const result = commitAll(dir, body.message || "Commit via Relay");
-      return c.json(result, result.success ? 200 : 400);
+      const result = await commitAll(dir, body.message || "Commit via Relay");
+      return c.json(result, gitResultStatus(result));
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Failed to commit" }, 400);
+      const { body, status } = gitErrorResponse(err, "Failed to commit");
+      return c.json(body, status);
     }
   });
 }

@@ -58,16 +58,19 @@ export function ConfirmMergeDialog({
         <div className="flex flex-col gap-3 text-sm">
           <div className="flex flex-col gap-1.5 text-text-muted">
             <p>
-              Relay will merge this space back into the main workspace
+              Relay will merge this space into{" "}
               {targetBranch ? (
-                <>
-                  {" "}
-                  on <span className="font-medium text-text">{targetBranch}</span>
-                </>
-              ) : null}
-              .
+                <span className="font-medium text-text">{targetBranch}</span>
+              ) : (
+                "its target branch"
+              )}
+              , even if your main workspace has a different branch checked out.
             </p>
-            <p>If this space has uncommitted changes, Relay will commit them before merging.</p>
+            <p>
+              Running chats in this space are stopped, and uncommitted changes in the space are
+              committed before merging. Untracked files in your main workspace never block the merge
+              and are never deleted.
+            </p>
             <p>
               After merge, this space becomes read-only and its separate working copy is removed.
             </p>
@@ -113,7 +116,8 @@ export function ConfirmMergeDialog({
           )}
 
           <p className="text-xs text-text-muted">
-            If the target branch has diverged, Relay may ask you to resolve conflicts.
+            If the space conflicts with the target branch, nothing is merged and Relay lists the
+            conflicting files so you can resolve them in the space.
           </p>
         </div>
         <div className="mt-3 flex justify-end gap-2">

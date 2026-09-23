@@ -18,6 +18,12 @@ import { MaxProcessesError } from "#core/instance-manager.js";
 import type { TerminalManager } from "#core/terminal-manager.js";
 import type { InstanceInfo } from "#core/types.js";
 import { getPrimaryRemote } from "#core/git.js";
+import { getRepoStatusService } from "#core/repo-status-service.js";
+import {
+  isRepoStatusTarget,
+  repoStatusTargetKey,
+  resolveRepoStatusDir,
+} from "#server/repo-status-targets.js";
 import type { RelayConfig } from "#server/config.js";
 import type {
   ClientMessage,
@@ -29,6 +35,8 @@ import type {
   AgentUpdateMessage,
   UserMessage,
   QueuedRemovedMessage,
+  FileStatsMessage,
+  RepoStatusTarget,
   ProviderGlobalState,
   ProviderKind,
 } from "#core/types.js";
@@ -70,6 +78,48 @@ export function createWebSocketServer(
 
   // Per-client terminal subscriptions (terminalId sets)
   const terminalSubscriptions = new Map<WebSocket, Set<string>>();
+
+  // ── Repo status subscriptions (push-based git status) ──
+  // Per client: target key → unsubscribe from the shared status service.
+  const repoStatusSubscriptions = new Map<WebSocket, Map<string, () => void>>();
+  const repoStatusService = getRepoStatusService();
+
+  function subscribeRepoStatus(ws: WebSocket, target: RepoStatusTarget): void {
+    const key = repoStatusTargetKey(target);
+    let subs = repoStatusSubscriptions.get(ws);
+    if (!subs) {
+      subs = new Map();
+      repoStatusSubscriptions.set(ws, subs);
+    }
+    if (subs.has(key)) {
+      // Re-subscribe (e.g. a second view mounted): resend the snapshot.
+      subs.get(key)?.();
+      subs.delete(key);
+    }
+    const dir = resolveRepoStatusDir(instanceManager, target);
+    if (!dir) {
+      sendMessage(ws, { type: "repo_status", target, status: null, error: "Target not found" });
+      return;
+    }
+    const unsubscribe = repoStatusService.subscribe(dir, (status) => {
+      sendMessage(ws, { type: "repo_status", target, status });
+    });
+    subs.set(key, unsubscribe);
+  }
+
+  function unsubscribeRepoStatus(ws: WebSocket, target: RepoStatusTarget): void {
+    const subs = repoStatusSubscriptions.get(ws);
+    const key = repoStatusTargetKey(target);
+    subs?.get(key)?.();
+    subs?.delete(key);
+  }
+
+  function clearRepoStatusSubscriptions(ws: WebSocket): void {
+    const subs = repoStatusSubscriptions.get(ws);
+    if (!subs) return;
+    for (const unsubscribe of subs.values()) unsubscribe();
+    repoStatusSubscriptions.delete(ws);
+  }
   const MAX_REPLAY_EVENTS = 500;
   type ReplayableServerMessage =
     | OutputMessage
@@ -78,7 +128,8 @@ export function createWebSocketServer(
     | ExitMessage
     | AgentUpdateMessage
     | UserMessage
-    | QueuedRemovedMessage;
+    | QueuedRemovedMessage
+    | FileStatsMessage;
   type ReplayEntry = { sequence: number; message: ReplayableServerMessage };
   type ReplayBuffer = { nextSequence: number; events: ReplayEntry[] };
   const replayBuffers = new Map<string, ReplayBuffer>();
@@ -245,7 +296,10 @@ export function createWebSocketServer(
       sendMessage(ws, { type: "heartbeat" });
     }
   }, PING_INTERVAL);
-  wss.on("close", () => clearInterval(pingTimer));
+  wss.on("close", () => {
+    clearInterval(pingTimer);
+    for (const ws of Array.from(repoStatusSubscriptions.keys())) clearRepoStatusSubscriptions(ws);
+  });
 
   // Broadcast to all authenticated clients
   function broadcast(message: ServerMessage): void {
@@ -334,6 +388,10 @@ export function createWebSocketServer(
   );
 
   instanceManager.on("instance:agent_update", (instanceId: string, message: AgentUpdateMessage) => {
+    sendToSubscribers(instanceId, appendReplayEvent(instanceId, message));
+  });
+
+  instanceManager.on("instance:file_stats", (instanceId: string, message: FileStatsMessage) => {
     sendToSubscribers(instanceId, appendReplayEvent(instanceId, message));
   });
 
@@ -850,12 +908,12 @@ export function createWebSocketServer(
               }
               const branchSource = project?.spaceBranchSource ?? globalSettings.space_branch_source;
               if (effectiveBranch && branchSource === "remote" && project?.repoRoot) {
-                const remote = getPrimaryRemote(project.repoRoot);
-                if (!effectiveBranch.includes("/")) {
+                const remote = await getPrimaryRemote(project.repoRoot);
+                if (remote && !effectiveBranch.includes("/")) {
                   effectiveBranch = `${remote}/${effectiveBranch}`;
                 }
               }
-              instanceManager.getSpaceManager().createSpace(message.projectDirectory, {
+              await instanceManager.getSpaceManager().createSpace(message.projectDirectory, {
                 name: message.name,
                 baseBranch: effectiveBranch,
               });
@@ -870,7 +928,7 @@ export function createWebSocketServer(
 
           case "complete_space": {
             try {
-              const { targetBranch } = instanceManager
+              const { targetBranch } = await instanceManager
                 .getSpaceManager()
                 .completeSpace(message.spaceId, {
                   mergeMethod: message.mergeMethod,
@@ -891,7 +949,7 @@ export function createWebSocketServer(
 
           case "mark_space_merged": {
             try {
-              const { targetBranch } = instanceManager
+              const { targetBranch } = await instanceManager
                 .getSpaceManager()
                 .markSpaceMerged(message.spaceId);
               sendMessage(ws, {
@@ -909,7 +967,7 @@ export function createWebSocketServer(
 
           case "delete_space": {
             try {
-              instanceManager.getSpaceManager().deleteSpace(message.spaceId);
+              await instanceManager.getSpaceManager().deleteSpace(message.spaceId);
             } catch (err) {
               sendMessage(ws, {
                 type: "error",
@@ -920,7 +978,7 @@ export function createWebSocketServer(
           }
           case "merge_instance": {
             try {
-              const { targetBranch } = instanceManager.mergeInstance(message.instanceId);
+              const { targetBranch } = await instanceManager.mergeInstance(message.instanceId);
               // Clean up subscriptions (instance is removed)
               for (const [, subs] of subscriptions) {
                 subs.delete(message.instanceId);
@@ -1062,6 +1120,16 @@ export function createWebSocketServer(
             break;
           }
 
+          case "repo_status_subscribe": {
+            if (isRepoStatusTarget(message.target)) subscribeRepoStatus(ws, message.target);
+            break;
+          }
+
+          case "repo_status_unsubscribe": {
+            if (isRepoStatusTarget(message.target)) unsubscribeRepoStatus(ws, message.target);
+            break;
+          }
+
           case "terminal_list": {
             const tm = bindTerminalManager();
             if (!canAccessTerminalScope(ws, message.scope)) {
@@ -1100,6 +1168,7 @@ export function createWebSocketServer(
       log.debug(`WebSocket disconnected: ${connectionLabel}`);
       subscriptions.delete(ws);
       terminalSubscriptions.delete(ws);
+      clearRepoStatusSubscriptions(ws);
       missedPongs.delete(ws);
     });
   });

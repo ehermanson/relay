@@ -5,6 +5,7 @@ import { ChevronRight, WrapText, X } from "lucide-react";
 import type { FileChange } from "@shared/types";
 import { useTheme } from "@/stores/theme-store";
 import { fetchInstanceDiff } from "../../lib/api";
+import { useRepoStatus } from "@/hooks/use-repo-status";
 import { Button } from "../ui/button";
 import { FileIcon } from "../ui/file-icon";
 import { MiddleTruncate } from "../ui/middle-truncate";
@@ -62,6 +63,10 @@ function dirname(filePath: string): string {
 interface DiffDrawerProps {
   instanceId?: string;
   rawDiff?: string;
+  /** Load error for a caller-supplied diff (`rawDiff` mode). */
+  rawError?: string | null;
+  /** Retry handler shown with any load error. */
+  onRetry?: () => void;
   knownFiles?: FileChange[];
   workingDirectory?: string;
   onClose: () => void;
@@ -71,23 +76,33 @@ interface DiffDrawerProps {
 export function DiffDrawer({
   instanceId,
   rawDiff,
+  rawError,
+  onRetry,
   knownFiles,
   workingDirectory,
   onClose,
   scrollToFile,
 }: DiffDrawerProps) {
   const { theme } = useTheme();
+  const usesQuery = rawDiff == null && rawError == null && !!instanceId;
   const {
     data: queriedDiff = null,
     isLoading: loading,
     error: queryError,
+    refetch,
   } = useQuery({
     queryKey: ["instanceDiff", instanceId],
     queryFn: () => fetchInstanceDiff(instanceId!),
-    enabled: rawDiff == null && !!instanceId,
+    enabled: usesQuery,
+  });
+  // Refetch while open only when the worktree actually changed (repo_status
+  // fingerprint); no interval polling.
+  useRepoStatus(usesQuery ? { kind: "instance", instanceId: instanceId! } : null, {
+    invalidate: [["instanceDiff", instanceId]],
   });
   const diff = rawDiff ?? queriedDiff;
-  const error = queryError ? (queryError as Error).message : null;
+  const error = rawError ?? (queryError ? (queryError as Error).message : null);
+  const retry = onRetry ?? (usesQuery ? () => void refetch() : undefined);
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified");
   const [wordWrap, setWordWrap] = useState(false);
   const [diffScope, setDiffScope] = useState<"chat" | "all">("chat");
@@ -355,14 +370,21 @@ export function DiffDrawer({
           )}
 
           <div className="flex-1 overflow-auto" ref={contentRef}>
-            {loading && rawDiff == null && (
+            {loading && usesQuery && (
               <div className="flex items-center justify-center py-20">
                 <Spinner size={24} />
               </div>
             )}
 
             {error && (
-              <div className="px-6 py-10 text-center text-[0.875rem] text-red-400">{error}</div>
+              <div className="flex flex-col items-center gap-3 px-6 py-10 text-center text-[0.875rem]">
+                <span className="text-red-400">{error}</span>
+                {retry && (
+                  <Button variant="ghost" size="sm" onClick={retry}>
+                    Retry
+                  </Button>
+                )}
+              </div>
             )}
 
             {!loading && !error && diff !== null && (

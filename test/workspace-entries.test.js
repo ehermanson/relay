@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
@@ -8,7 +10,7 @@ import { searchWorkspaceEntries } from "../dist/server/core/workspace-entries.js
 describe("searchWorkspaceEntries", () => {
   let rootDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     rootDir = mkdtempSync(join(tmpdir(), "relay-ws-test-"));
     // Create a small project structure
     mkdirSync(join(rootDir, "src"), { recursive: true });
@@ -23,12 +25,12 @@ describe("searchWorkspaceEntries", () => {
     writeFileSync(join(rootDir, "test", "index.test.ts"), "test()");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("returns results for an empty query (top-level entries first)", () => {
-    const results = searchWorkspaceEntries(rootDir, "");
+  it("returns results for an empty query (top-level entries first)", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "");
     assert.ok(results.length > 0);
     // Should include both files and directories
     const kinds = new Set(results.map((r) => r.kind));
@@ -36,71 +38,71 @@ describe("searchWorkspaceEntries", () => {
     assert.ok(kinds.has("directory"));
   });
 
-  it("matches files by basename", () => {
-    const results = searchWorkspaceEntries(rootDir, "button");
+  it("matches files by basename", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "button");
     assert.ok(results.length >= 1);
     assert.ok(results.some((r) => r.path.includes("button.tsx")));
   });
 
-  it("matches files by path segment", () => {
-    const results = searchWorkspaceEntries(rootDir, "components");
+  it("matches files by path segment", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "components");
     assert.ok(results.length >= 1);
     // Should match the directory and files inside
     assert.ok(results.some((r) => r.path.includes("components")));
   });
 
-  it("matches directories", () => {
-    const results = searchWorkspaceEntries(rootDir, "src");
+  it("matches directories", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "src");
     assert.ok(results.some((r) => r.kind === "directory" && r.path === "src"));
   });
 
-  it("strips leading @ from query (mention syntax)", () => {
-    const results = searchWorkspaceEntries(rootDir, "@utils");
+  it("strips leading @ from query (mention syntax)", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "@utils");
     assert.ok(results.some((r) => r.path.includes("utils.ts")));
   });
 
-  it("is case-insensitive", () => {
-    const results = searchWorkspaceEntries(rootDir, "README");
+  it("is case-insensitive", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "README");
     assert.ok(results.some((r) => r.path.includes("README.md")));
   });
 
-  it("returns empty for non-matching query", () => {
-    const results = searchWorkspaceEntries(rootDir, "zzzznonexistent");
+  it("returns empty for non-matching query", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "zzzznonexistent");
     assert.equal(results.length, 0);
   });
 
-  it("returns empty for nonexistent directory", () => {
-    const results = searchWorkspaceEntries("/nonexistent/dir", "test");
+  it("returns empty for nonexistent directory", async () => {
+    const results = await searchWorkspaceEntries("/nonexistent/dir", "test");
     assert.equal(results.length, 0);
   });
 
-  it("skips node_modules and .git directories", () => {
+  it("skips node_modules and .git directories", async () => {
     mkdirSync(join(rootDir, "node_modules", "pkg"), { recursive: true });
     writeFileSync(join(rootDir, "node_modules", "pkg", "index.js"), "");
     mkdirSync(join(rootDir, ".git", "objects"), { recursive: true });
     writeFileSync(join(rootDir, ".git", "config"), "");
 
-    const results = searchWorkspaceEntries(rootDir, "");
+    const results = await searchWorkspaceEntries(rootDir, "");
     const paths = results.map((r) => r.path);
     assert.ok(!paths.some((p) => p.startsWith("node_modules")));
     assert.ok(!paths.some((p) => p.startsWith(".git")));
   });
 
-  it("ranks exact basename matches higher than partial matches", () => {
-    const results = searchWorkspaceEntries(rootDir, "index.ts");
+  it("ranks exact basename matches higher than partial matches", async () => {
+    const results = await searchWorkspaceEntries(rootDir, "index.ts");
     assert.ok(results.length >= 1);
     // The exact match should be first
     assert.equal(results[0].path, "src/index.ts");
   });
 
-  it("limits results to max 25", () => {
+  it("limits results to max 25", async () => {
     // Create many files
     mkdirSync(join(rootDir, "many"), { recursive: true });
     for (let i = 0; i < 50; i++) {
       writeFileSync(join(rootDir, "many", `file${i}.txt`), "");
     }
 
-    const results = searchWorkspaceEntries(rootDir, "file");
+    const results = await searchWorkspaceEntries(rootDir, "file");
     assert.ok(results.length <= 25);
   });
 });

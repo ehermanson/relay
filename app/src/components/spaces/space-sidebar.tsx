@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { ContextPanel } from "@/components/chat/context-panel";
+import { Button } from "@/components/ui/button";
 import { FilesPanel } from "@/components/chat/files-panel";
 import { SidecarShell, type SidecarTabDef } from "@/components/chat/sidecar-shell";
 import { SpaceContextPanel } from "@/components/spaces/space-context-panel";
@@ -25,6 +26,8 @@ export function SpaceSidebar({
   onClose,
   stats,
   fileChanges,
+  diffError,
+  onRetryDiff,
   onOpenDiff,
   isMobileOverlay,
 }: {
@@ -38,6 +41,9 @@ export function SpaceSidebar({
   onClose?: () => void;
   stats: SessionStats | null;
   fileChanges: FileChange[];
+  /** The space diff failed to load — shown instead of "No files changed". */
+  diffError?: string | null;
+  onRetryDiff?: () => void;
   onOpenDiff: (scrollToFile?: string) => void;
   isMobileOverlay?: boolean;
 }) {
@@ -67,6 +73,19 @@ export function SpaceSidebar({
       );
     }
     if (key === "files" && hasFiles) {
+      if (fileChanges.length === 0 && diffError) {
+        return (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+            <p className="text-sm text-error">Couldn't load changes</p>
+            <p className="text-[0.75rem] text-muted">{diffError}</p>
+            {onRetryDiff && (
+              <Button variant="ghost" size="sm" onClick={onRetryDiff}>
+                Retry
+              </Button>
+            )}
+          </div>
+        );
+      }
       if (fileChanges.length === 0) {
         return (
           <div className="flex flex-1 flex-col items-center justify-center px-4 py-10 text-center text-muted">

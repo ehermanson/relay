@@ -7,34 +7,136 @@
  */
 
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, realpathSync } from "fs";
-import { execSync, execFileSync } from "child_process";
-import { basename, join } from "path";
+import {
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  copyFileSync,
+  realpathSync,
+  readdirSync,
+} from "fs";
+import { rm } from "fs/promises";
+import { basename, join, resolve } from "path";
 import { EventEmitter } from "events";
 
 import type { SessionDB } from "#core/db.js";
 import { relayDir } from "#core/config.js";
 import type { SpaceRow } from "#core/db.js";
 import type { Logger } from "#core/logger.js";
-import type { SpaceInfo, SpaceStatus, MergeMethod } from "#core/types.js";
+import type {
+  SpaceInfo,
+  SpaceStatus,
+  MergeMethod,
+  SpacePrStatus,
+  SpacePrStatusResponse,
+} from "#core/types.js";
 import type { SpaceOwnershipCandidate } from "#core/instance-restore.js";
 import {
   isGitRepo,
   getRepoRoot,
   getDefaultBranch,
   getCurrentBranch,
+  addWorktree,
   removeWorktree,
   isWorktreeDirty,
+  isAncestor,
   commitAll,
-  mergeWorktreeBranch,
-  squashMergeBranch,
+  mergeBranchIntoTarget,
+  MergeTargetError,
+  getStatusSummary,
+  resolveLocalTargetBranch,
+  inspectWorktreeGitPointer,
   getWorktreeDiff,
   gitPush,
   getWorktreeBase,
+  resolveGitDirs,
   resolveWorktreeOrigin,
   listWorktrees,
+  withRepoLock,
   type WorktreeEntry,
+  type WorktreeRemovalResult,
 } from "#core/git.js";
+import { GitCommandError, isGitCommandError, runGit, GIT_TIMEOUTS } from "#core/git-runner.js";
+import {
+  PrStatusReader,
+  checkGhAvailability,
+  createPullRequest,
+  findOpenPullRequest,
+  remoteStatusForPr,
+} from "#core/space-pr.js";
+
+function parsePrStatus(json: string | null | undefined): SpacePrStatus | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as SpacePrStatus;
+    return parsed && typeof parsed === "object" && typeof parsed.url === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a Complete was refused. `conflict` carries the conflicting paths. */
+export type SpaceCompletionErrorCode =
+  | "conflict"
+  | "target_missing"
+  | "target_checked_out"
+  | "target_dirty"
+  | "checkout_blocked"
+  | "ref_moved"
+  | "unsupported";
+
+/** Complete refused before anything was merged (the space stays active). */
+export class SpaceCompletionError extends Error {
+  readonly code: SpaceCompletionErrorCode;
+  readonly targetBranch: string;
+  readonly conflicts: string[];
+  readonly worktreePath: string | null;
+  constructor(opts: {
+    code: SpaceCompletionErrorCode;
+    message: string;
+    targetBranch: string;
+    conflicts?: string[];
+    worktreePath?: string | null;
+  }) {
+    super(opts.message);
+    this.name = "SpaceCompletionError";
+    this.code = opts.code;
+    this.targetBranch = opts.targetBranch;
+    this.conflicts = opts.conflicts ?? [];
+    this.worktreePath = opts.worktreePath ?? null;
+  }
+}
+
+export interface PushSpaceResult {
+  pushed: boolean;
+  prUrl?: string;
+  /** `created` = new PR; `opened_existing` = an open PR for this branch already existed. */
+  prAction?: "created" | "opened_existing";
+  error?: string;
+  errorKind?: string;
+  ghNotFound?: boolean;
+  ghNotAuthenticated?: boolean;
+}
+
+export interface CompleteSpaceResult {
+  targetBranch: string;
+  mergeCommit?: string;
+  mergeMethod: MergeMethod;
+  /** Checkout whose files were fast-forwarded, or null when only the branch ref moved. */
+  updatedCheckout?: string | null;
+  /** True when the space branch was already contained in the target. */
+  alreadyMerged?: boolean;
+  worktreeRemoval?: WorktreeRemovalResult;
+}
+
+export interface OrphanWorktreeSweepResult {
+  removed: string[];
+  /** Valid worktrees under the base that no space row references (logged, never removed). */
+  unreferenced: string[];
+  /** Dangling worktrees kept because an active space still references them. */
+  keptReferenced: string[];
+}
 
 function rowToInfo(row: SpaceRow, chatCount: number): SpaceInfo {
   return {
@@ -56,6 +158,8 @@ function rowToInfo(row: SpaceRow, chatCount: number): SpaceInfo {
     targetBranch: row.target_branch,
     remoteStatus: row.remote_status,
     prUrl: row.pr_url,
+    baseBranch: row.base_branch ?? null,
+    prStatus: parsePrStatus(row.pr_status_json),
   };
 }
 
@@ -87,11 +191,94 @@ export interface SpaceManager {
 export class SpaceManager extends EventEmitter {
   private db: SessionDB;
   private logger: Logger;
+  private prStatusReader: PrStatusReader;
+  private stopSpaceChats: ((spaceId: string) => number) | null = null;
+  private repoStatusInvalidator: ((dir: string) => void) | null = null;
 
-  constructor(db: SessionDB, logger: Logger) {
+  constructor(db: SessionDB, logger: Logger, opts?: { prStatusReader?: PrStatusReader }) {
     super();
     this.db = db;
     this.logger = logger;
+    this.prStatusReader = opts?.prStatusReader ?? new PrStatusReader();
+  }
+
+  /**
+   * Register how to stop (never delete) a space's running chats. Complete,
+   * mark-merged, and Archive call it before auto-committing and removing the
+   * worktree so no agent is writing into a directory that disappears.
+   * Injected by InstanceManager to avoid an import cycle.
+   */
+  setSpaceChatStopper(stopper: ((spaceId: string) => number) | null): void {
+    this.stopSpaceChats = stopper;
+  }
+
+  /** Register the repo-status invalidation hook (called after merges/pushes). */
+  setRepoStatusInvalidator(invalidate: ((dir: string) => void) | null): void {
+    this.repoStatusInvalidator = invalidate;
+  }
+
+  private invalidateRepoStatus(...dirs: Array<string | null | undefined>): void {
+    if (!this.repoStatusInvalidator) return;
+    for (const dir of new Set(dirs.filter((d): d is string => Boolean(d)))) {
+      try {
+        this.repoStatusInvalidator(dir);
+      } catch (err) {
+        this.logger.debug(
+          `[SpaceManager] Repo status invalidation failed for ${dir}: ${String(err)}`,
+        );
+      }
+    }
+  }
+
+  private stopChatsInSpace(spaceId: string): void {
+    if (!this.stopSpaceChats) return;
+    try {
+      const stopped = this.stopSpaceChats(spaceId);
+      if (stopped > 0) {
+        this.logger.info(`[SpaceManager] Stopped ${stopped} running chat(s) in space ${spaceId}`);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[SpaceManager] Failed to stop chats in space ${spaceId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private logWorktreeRemoval(spaceId: string, path: string, result: WorktreeRemovalResult): void {
+    if (result.removed) {
+      if (result.method === "fallback-delete") {
+        this.logger.warn(
+          `[SpaceManager] git could not remove worktree ${path} for space ${spaceId}; deleted the untracked directory instead`,
+        );
+      }
+      return;
+    }
+    this.logger.warn(
+      `[SpaceManager] Failed to remove worktree ${path} for space ${spaceId}: ${result.error ?? "unknown error"}`,
+    );
+  }
+
+  /**
+   * The local branch this space merges into — the one Complete, the diff,
+   * and PR creation all use. Prefers the base branch recorded at creation;
+   * older rows are backfilled (once, persisted) from the project's/global
+   * default space branch, then the repository's default branch.
+   */
+  async resolveTargetBranch(row: SpaceRow, repoRoot: string): Promise<string> {
+    if (row.base_branch) return row.base_branch;
+    const project = this.db.getProjectByDirectory(row.project_directory);
+    const configured =
+      project?.default_space_branch || this.db.getGlobalSettings().default_space_branch || null;
+    const resolved =
+      (await resolveLocalTargetBranch(repoRoot, configured).catch(() => null)) ||
+      (await getDefaultBranch(repoRoot));
+    if (resolved) {
+      if (row.is_default === 0 && row.status === "active") {
+        this.db.setSpaceBaseBranch(row.id, resolved);
+      }
+      return resolved;
+    }
+    return (await getCurrentBranch(repoRoot).catch(() => null)) || "main";
   }
 
   private getExistingWorktreePath(worktreePath: string | null): string | null {
@@ -171,13 +358,20 @@ export class SpaceManager extends EventEmitter {
     return null;
   }
 
+  /**
+   * Infer a recovered space's lifecycle from metadata alone. Returns
+   * `needsGitCheck` when only git can tell whether the branch was merged;
+   * that check runs asynchronously afterwards (`refineRecoveredSpaces`).
+   */
   private inferRecoveredSpaceStatus(row: {
     project_directory: string;
     git_branch: string | null;
     worktree_path: string | null;
     git_info_branch: string | null;
     last_activity_at: number;
-  }): Pick<SpaceRow, "status" | "worktree_path" | "merged_at" | "target_branch"> {
+  }): Pick<SpaceRow, "status" | "worktree_path" | "merged_at" | "target_branch"> & {
+    needsGitCheck?: boolean;
+  } {
     const worktreePath = this.getExistingWorktreePath(row.worktree_path);
     if (worktreePath) {
       return {
@@ -198,44 +392,48 @@ export class SpaceManager extends EventEmitter {
     }
 
     const repoRoot = getRepoRoot(row.project_directory);
-    if (!repoRoot || !row.git_branch) {
-      return {
-        status: "active",
-        worktree_path: null,
-        merged_at: null,
-        target_branch: null,
-      };
-    }
+    return {
+      status: "active",
+      worktree_path: null,
+      merged_at: null,
+      target_branch: null,
+      needsGitCheck: Boolean(repoRoot && row.git_branch),
+    };
+  }
 
-    const targetBranch = getDefaultBranch(repoRoot) || getCurrentBranch(repoRoot);
-    if (!targetBranch || targetBranch === row.git_branch) {
-      return {
-        status: "active",
-        worktree_path: null,
-        merged_at: null,
-        target_branch: null,
-      };
-    }
-
-    try {
-      execFileSync("git", ["merge-base", "--is-ancestor", row.git_branch, targetBranch], {
-        cwd: repoRoot,
-        stdio: "pipe",
-        timeout: 5000,
-      });
-      return {
-        status: "completed",
-        worktree_path: null,
-        merged_at: row.last_activity_at,
-        target_branch: targetBranch,
-      };
-    } catch {
-      return {
-        status: "active",
-        worktree_path: null,
-        merged_at: null,
-        target_branch: null,
-      };
+  /**
+   * Async follow-up for recovered legacy spaces whose merge state needs git:
+   * mark a still-active, worktree-less space completed when its branch is
+   * already contained in the repository's default (or current) branch.
+   */
+  private async refineRecoveredSpaces(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      try {
+        const row = this.db.getSpace(id);
+        if (!row || row.status !== "active" || row.worktree_path || !row.git_branch) continue;
+        const repoRoot = getRepoRoot(row.project_directory);
+        if (!repoRoot) continue;
+        const targetBranch =
+          (await getDefaultBranch(repoRoot)) ||
+          (await getCurrentBranch(repoRoot).catch(() => null));
+        if (!targetBranch || targetBranch === row.git_branch) continue;
+        if (!(await isAncestor(repoRoot, row.git_branch, targetBranch))) continue;
+        const latest = this.db.getSpace(id);
+        if (!latest || latest.status !== "active" || latest.worktree_path) continue;
+        this.db.upsertSpace({
+          ...latest,
+          status: "completed",
+          merged_at: latest.last_activity_at,
+          target_branch: targetBranch,
+        });
+        this.emit("space:updated", this.toInfo(this.db.getSpace(id)!));
+      } catch (err) {
+        this.logger.debug(
+          `[SpaceManager] Could not infer merge state for recovered space ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
   }
 
@@ -276,10 +474,10 @@ export class SpaceManager extends EventEmitter {
    * Create a new space with its own git worktree.
    * Requires the project to be a git repository.
    */
-  createSpace(
+  async createSpace(
     projectDirectory: string,
     opts?: { name?: string; baseBranch?: string; description?: string },
-  ): SpaceInfo {
+  ): Promise<SpaceInfo> {
     if (!isGitRepo(projectDirectory)) {
       throw new Error("Cannot create space: project is not a git repository");
     }
@@ -300,14 +498,20 @@ export class SpaceManager extends EventEmitter {
     const worktreeBase = getWorktreeBase();
     const worktreePath = join(worktreeBase, `space-${shortId}`);
 
+    let targetBranch: string | null = null;
     try {
+      const defaultBranch = await getDefaultBranch(repoRoot);
       const baseBranch =
-        opts?.baseBranch || getDefaultBranch(repoRoot) || getCurrentBranch(repoRoot) || "HEAD";
-      execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, baseBranch], {
-        cwd: repoRoot,
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 30000,
-      });
+        opts?.baseBranch ||
+        defaultBranch ||
+        (await getCurrentBranch(repoRoot).catch(() => null)) ||
+        "HEAD";
+      await addWorktree(repoRoot, worktreePath, branchName, baseBranch);
+      // Record the local branch this space merges back into (`origin/main`
+      // → `main`, `HEAD` → the current branch). Complete, the diff, and PR
+      // base all use it.
+      targetBranch =
+        (await resolveLocalTargetBranch(repoRoot, baseBranch).catch(() => null)) || defaultBranch;
     } catch (err) {
       throw new Error(
         `Failed to create worktree: ${err instanceof Error ? err.message : String(err)}`,
@@ -332,6 +536,7 @@ export class SpaceManager extends EventEmitter {
       target_branch: null,
       remote_status: null,
       pr_url: null,
+      base_branch: targetBranch,
     };
 
     try {
@@ -343,15 +548,14 @@ export class SpaceManager extends EventEmitter {
 
       this.db.upsertSpace(row);
     } catch (err) {
-      try {
-        removeWorktree(repoRoot, worktreePath, branchName);
-      } catch (cleanupErr) {
-        this.logger.warn(
-          `[SpaceManager] Failed to clean up worktree after createSpace error: ${
-            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
-          }`,
-        );
-      }
+      const cleanup = await removeWorktree(repoRoot, worktreePath, branchName).catch(
+        (cleanupErr: unknown): WorktreeRemovalResult => ({
+          removed: false,
+          method: "failed",
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        }),
+      );
+      this.logWorktreeRemoval(id, worktreePath, cleanup);
       throw err;
     }
     this.logger.info(
@@ -367,7 +571,7 @@ export class SpaceManager extends EventEmitter {
    * are eligible for conversion (skips primary checkout, bare, detached, and
    * branchless entries).
    */
-  listConvertibleWorktrees(projectDirectory: string): WorktreeEntry[] {
+  async listConvertibleWorktrees(projectDirectory: string): Promise<WorktreeEntry[]> {
     if (!isGitRepo(projectDirectory)) return [];
     const repoRoot = getRepoRoot(projectDirectory);
     if (!repoRoot) return [];
@@ -383,7 +587,7 @@ export class SpaceManager extends EventEmitter {
       }
     }
 
-    return listWorktrees(repoRoot).filter((w) => {
+    return (await listWorktrees(repoRoot)).filter((w) => {
       if (w.isPrimary || w.isBare || w.isDetached || !w.branch) return false;
       if (trackedPaths.has(w.path)) return false;
       try {
@@ -400,11 +604,11 @@ export class SpaceManager extends EventEmitter {
    * full-lifecycle Space. The worktree's current branch + path are reused;
    * no `git worktree add` is run.
    */
-  convertWorktreeToSpace(
+  async convertWorktreeToSpace(
     projectDirectory: string,
     worktreePath: string,
     opts?: { name?: string; description?: string },
-  ): SpaceInfo {
+  ): Promise<SpaceInfo> {
     if (!isGitRepo(projectDirectory)) {
       throw new Error("Cannot convert worktree: project is not a git repository");
     }
@@ -419,7 +623,7 @@ export class SpaceManager extends EventEmitter {
     } catch {
       // keep raw
     }
-    const worktrees = listWorktrees(repoRoot);
+    const worktrees = await listWorktrees(repoRoot);
     const candidate = worktrees.find((w) => {
       if (w.path === worktreePath || w.path === canonicalRequest) return true;
       try {
@@ -678,11 +882,14 @@ export class SpaceManager extends EventEmitter {
       collect(row, "managed");
     }
 
+    const needsGitCheck: string[] = [];
     for (const { row, sessionIds, managedInstanceIds } of recoveredSpaces.values()) {
       const matching =
         this.db.getSpace(row.id) ?? this.findMatchingSpaceRow(existingSpaces.values(), row);
       const linkedSpaceId = matching?.id ?? row.id;
-      const recoveredMeta = this.inferRecoveredSpaceStatus(row);
+      const { needsGitCheck: recoveredNeedsGit, ...recoveredMeta } =
+        this.inferRecoveredSpaceStatus(row);
+      if (!matching && recoveredNeedsGit) needsGitCheck.push(row.id);
       const upsertRow: SpaceRow = matching
         ? {
             ...matching,
@@ -722,6 +929,9 @@ export class SpaceManager extends EventEmitter {
 
     if (recovered > 0) {
       this.logger.info(`[SpaceManager] Recovered ${recovered} space row(s) from session metadata`);
+    }
+    if (needsGitCheck.length > 0) {
+      void this.refineRecoveredSpaces(needsGitCheck);
     }
 
     return recovered;
@@ -808,12 +1018,19 @@ export class SpaceManager extends EventEmitter {
   }
 
   /**
-   * Complete a space: auto-commit, merge branch into default, archive, cleanup worktree.
+   * Complete a space: stop its chats, auto-commit, merge the space branch
+   * into its target branch (see `resolveTargetBranch`), archive the brief,
+   * and remove the worktree (the local branch is kept for recoverability).
+   *
+   * The merge never depends on what the main checkout has checked out: if the
+   * target is checked out there it is fast-forwarded (tracked changes block,
+   * untracked files don't); otherwise only the branch ref moves. Conflicts and
+   * other refusals throw `SpaceCompletionError` and leave everything as it was.
    */
-  completeSpace(
+  async completeSpace(
     id: string,
     opts?: { mergeMethod?: MergeMethod; squashMessage?: string },
-  ): { targetBranch: string; mergeCommit?: string; mergeMethod: MergeMethod } {
+  ): Promise<CompleteSpaceResult> {
     const row = this.db.getSpace(id);
     if (!row) throw new Error(`Space ${id} not found`);
     if (row.is_default) throw new Error("Cannot complete the default space");
@@ -823,89 +1040,127 @@ export class SpaceManager extends EventEmitter {
     if (!existsSync(row.worktree_path) || !isGitRepo(row.worktree_path)) {
       throw new Error("Space has no worktree to complete");
     }
-
-    const repoRoot = getRepoRoot(row.project_directory);
-    if (!repoRoot) throw new Error("Cannot determine git repository root");
-
-    // Pre-check: refuse to merge if the main worktree has uncommitted changes
-    if (isWorktreeDirty(repoRoot)) {
-      throw new Error(
-        "Your main workspace has uncommitted changes. Commit or stash them before completing this space.",
-      );
-    }
-
-    // Auto-commit if dirty
-    if (existsSync(row.worktree_path) && isWorktreeDirty(row.worktree_path)) {
-      const commitResult = commitAll(row.worktree_path, row.name || "Space work");
-      if (!commitResult.success) {
-        throw new Error(`Auto-commit failed: ${commitResult.error}`);
-      }
-    }
-
     const mergeMethod: MergeMethod = opts?.mergeMethod || "squash";
     if (mergeMethod !== "squash" && mergeMethod !== "merge-commit") {
       throw new Error(`Unsupported merge method: ${mergeMethod}`);
     }
 
-    // Record the actual branch that will receive the merge — this is the
-    // branch currently checked out in the main worktree, not the heuristic
-    // "default branch". The merge helpers operate on the checked-out branch,
-    // so this must match what we persist and display.
-    const currentBranch = getCurrentBranch(repoRoot);
-    const targetBranch = currentBranch || getDefaultBranch(repoRoot) || "main";
+    const repoRoot = getRepoRoot(row.project_directory);
+    if (!repoRoot) throw new Error("Cannot determine git repository root");
 
-    // Execute the merge using the selected strategy
-    let mergeResult: { success: true } | { success: false; error: string };
+    // Hold the repository lock for the whole check → commit → merge → cleanup
+    // sequence so no other Relay git mutation interleaves (nested helpers
+    // re-enter the same lock).
+    const spaceRow = { ...row, git_branch: row.git_branch, worktree_path: row.worktree_path };
+    return withRepoLock(repoRoot, () =>
+      this.completeSpaceLocked(id, spaceRow, repoRoot, mergeMethod, opts?.squashMessage),
+    );
+  }
 
-    switch (mergeMethod) {
-      case "squash": {
-        const message = opts?.squashMessage || `Space: ${row.name}`;
-        mergeResult = squashMergeBranch(repoRoot, row.git_branch, message);
-        break;
-      }
-      case "merge-commit":
-        mergeResult = mergeWorktreeBranch(repoRoot, row.git_branch);
-        break;
+  private async completeSpaceLocked(
+    id: string,
+    row: SpaceRow & { git_branch: string; worktree_path: string },
+    repoRoot: string,
+    mergeMethod: "squash" | "merge-commit",
+    squashMessage?: string,
+  ): Promise<CompleteSpaceResult> {
+    const targetBranch = await this.resolveTargetBranch(row, repoRoot);
+    if (targetBranch === row.git_branch) {
+      throw new SpaceCompletionError({
+        code: "target_missing",
+        message: `This space's branch (${targetBranch}) is also its merge target. Nothing to complete.`,
+        targetBranch,
+      });
     }
 
-    if (!mergeResult.success) {
-      if (mergeResult.error === "CONFLICT") {
-        const methodHint =
-          mergeMethod === "squash"
-            ? `Squash merge has conflicts — the space and main workspace have overlapping changes.\n\nTo resolve, run:\n  cd ${row.worktree_path}\n  git rebase ${targetBranch}\n\nFix any conflicts, then try completing the space again.`
-            : `Merge conflicts — the space and main workspace have overlapping changes.\n\nTo resolve, run:\n  cd ${row.worktree_path}\n  git rebase ${targetBranch}\n\nFix any conflicts, then try completing the space again.`;
-        throw new Error(methodHint);
+    // Cheap refusals first, so an obviously blocked Complete doesn't stop chats.
+    const mainBranch = await getCurrentBranch(repoRoot).catch(() => null);
+    if (mainBranch === targetBranch) {
+      const status = await getStatusSummary(repoRoot);
+      if (status.staged + status.unstaged + status.conflicted > 0) {
+        throw new SpaceCompletionError({
+          code: "target_dirty",
+          message: `Your main workspace has uncommitted changes to tracked files on ${targetBranch}. Commit or stash them before completing this space. (Untracked files don't block completion.)`,
+          targetBranch,
+        });
       }
-      throw new Error(`Merge failed: ${mergeResult.error}`);
     }
 
-    // Capture the merge commit hash
-    let mergeCommit: string | undefined;
+    // Stop (never delete) the space's chats before touching the worktree.
+    this.stopChatsInSpace(id);
+
+    if (existsSync(row.worktree_path) && (await isWorktreeDirty(row.worktree_path))) {
+      const commitResult = await commitAll(row.worktree_path, row.name || "Space work");
+      if (!commitResult.success) {
+        throw new Error(`Auto-commit failed: ${commitResult.error}`);
+      }
+    }
+
+    let merge: Awaited<ReturnType<typeof mergeBranchIntoTarget>>;
     try {
-      mergeCommit = execSync("git rev-parse HEAD", { cwd: repoRoot, encoding: "utf8" }).trim();
-    } catch {
-      // non-critical
+      merge = await mergeBranchIntoTarget(repoRoot, {
+        sourceBranch: row.git_branch,
+        targetBranch,
+        method: mergeMethod,
+        message: mergeMethod === "squash" ? squashMessage || `Space: ${row.name}` : undefined,
+      });
+    } catch (err) {
+      if (err instanceof MergeTargetError) {
+        throw new SpaceCompletionError({
+          code: err.code,
+          message: err.message,
+          targetBranch,
+          worktreePath: row.worktree_path,
+        });
+      }
+      throw err;
     }
 
+    if (merge.status === "conflict") {
+      const list = merge.conflicts.length
+        ? `${merge.conflicts.map((f) => `  ${f}`).join("\n")}\n\n`
+        : "";
+      throw new SpaceCompletionError({
+        code: "conflict",
+        message:
+          `Merge conflicts between this space and ${targetBranch}` +
+          (merge.conflicts.length ? ` in ${merge.conflicts.length} file(s):\n${list}` : ".\n\n") +
+          `Nothing was merged. Bring ${targetBranch} into the space and resolve the conflicts there ` +
+          `(or ask a chat in this space to do it):\n  cd ${row.worktree_path}\n  git merge ${targetBranch}\n\n` +
+          "Then complete the space again.",
+        targetBranch,
+        conflicts: merge.conflicts,
+        worktreePath: row.worktree_path,
+      });
+    }
+
+    const mergeCommit = merge.mergeCommit;
     this.logger.info(
-      `[SpaceManager] Merged space "${row.name}" (${row.git_branch}) into ${targetBranch} via ${mergeMethod}`,
+      `[SpaceManager] Merged space "${row.name}" (${row.git_branch}) into ${targetBranch} via ${mergeMethod}` +
+        (merge.status === "up_to_date" ? " (already up to date)" : "") +
+        (merge.status === "merged" && !merge.updatedCheckout ? " (ref only; not checked out)" : ""),
     );
 
-    // Archive the shared space context before removing the worktree
     if (existsSync(row.worktree_path)) {
       this.archiveSpaceContext(id, row.worktree_path);
     }
+    const worktreeRemoval = await removeWorktree(repoRoot, row.worktree_path, row.git_branch, {
+      keepBranch: true,
+    });
+    this.logWorktreeRemoval(id, row.worktree_path, worktreeRemoval);
 
-    // Cleanup worktree (keep local branch for recoverability)
-    if (existsSync(row.worktree_path)) {
-      removeWorktree(repoRoot, row.worktree_path, row.git_branch, { keepBranch: true });
-    }
-
-    // Store merge metadata
     this.db.updateSpaceMergeMetadata(id, mergeCommit, mergeMethod, Date.now(), targetBranch);
     this.emit("space:completed", id, row.project_directory, targetBranch, mergeMethod, mergeCommit);
+    this.invalidateRepoStatus(repoRoot, merge.updatedCheckout, row.project_directory);
 
-    return { targetBranch, mergeCommit, mergeMethod };
+    return {
+      targetBranch,
+      mergeCommit,
+      mergeMethod,
+      updatedCheckout: merge.updatedCheckout,
+      alreadyMerged: merge.status === "up_to_date",
+      worktreeRemoval,
+    };
   }
 
   /**
@@ -913,21 +1168,24 @@ export class SpaceManager extends EventEmitter {
    * For cases where the merge was done manually outside of Relay.
    * Cleans up worktree and archives context, then updates status to "completed".
    */
-  markSpaceMerged(id: string): { targetBranch: string } {
+  async markSpaceMerged(id: string): Promise<{ targetBranch: string }> {
     const row = this.db.getSpace(id);
     if (!row) throw new Error(`Space ${id} not found`);
     if (row.is_default) throw new Error("Cannot mark the default space as merged");
     if (row.status === "completed") throw new Error("Space is already marked as merged");
 
     const repoRoot = row.project_directory ? getRepoRoot(row.project_directory) : null;
-    const targetBranch =
-      (repoRoot ? getCurrentBranch(repoRoot) : null) ||
-      (repoRoot ? getDefaultBranch(repoRoot) : null) ||
-      "main";
+    const targetBranch = repoRoot ? await this.resolveTargetBranch(row, repoRoot) : "main";
+
+    this.stopChatsInSpace(id);
 
     // Auto-commit dirty worktree before cleanup so work isn't lost
-    if (row.worktree_path && existsSync(row.worktree_path) && isWorktreeDirty(row.worktree_path)) {
-      const commitResult = commitAll(row.worktree_path, row.name || "Space work");
+    if (
+      row.worktree_path &&
+      existsSync(row.worktree_path) &&
+      (await isWorktreeDirty(row.worktree_path))
+    ) {
+      const commitResult = await commitAll(row.worktree_path, row.name || "Space work");
       if (!commitResult.success) {
         throw new Error(`Auto-commit failed: ${commitResult.error}`);
       }
@@ -940,7 +1198,10 @@ export class SpaceManager extends EventEmitter {
 
     // Cleanup worktree if it exists (keep local branch for recoverability)
     if (row.git_branch && row.worktree_path && repoRoot && existsSync(row.worktree_path)) {
-      removeWorktree(repoRoot, row.worktree_path, row.git_branch, { keepBranch: true });
+      const removal = await removeWorktree(repoRoot, row.worktree_path, row.git_branch, {
+        keepBranch: true,
+      });
+      this.logWorktreeRemoval(id, row.worktree_path, removal);
     }
 
     this.db.updateSpaceMergeMetadata(id, undefined, "external", Date.now(), targetBranch);
@@ -948,17 +1209,20 @@ export class SpaceManager extends EventEmitter {
       `[SpaceManager] Marked space "${row.name}" (${id}) as externally merged into ${targetBranch}`,
     );
     this.emit("space:completed", id, row.project_directory, targetBranch, "external", undefined);
+    this.invalidateRepoStatus(repoRoot, row.project_directory);
 
     return { targetBranch };
   }
 
   /**
-   * Delete/archive a space without merging. Cleans up the worktree.
+   * Archive a space without merging. Stops its chats and removes the worktree.
    */
-  deleteSpace(id: string): void {
+  async deleteSpace(id: string): Promise<void> {
     const row = this.db.getSpace(id);
     if (!row) throw new Error(`Space ${id} not found`);
     if (row.is_default) throw new Error("Cannot delete the default space");
+
+    this.stopChatsInSpace(id);
 
     // Archive the shared space context before removing the worktree
     if (row.worktree_path && existsSync(row.worktree_path)) {
@@ -969,7 +1233,8 @@ export class SpaceManager extends EventEmitter {
     if (row.git_branch && row.worktree_path) {
       const repoRoot = getRepoRoot(row.project_directory);
       if (repoRoot && existsSync(row.worktree_path)) {
-        removeWorktree(repoRoot, row.worktree_path, row.git_branch);
+        const removal = await removeWorktree(repoRoot, row.worktree_path, row.git_branch);
+        this.logWorktreeRemoval(id, row.worktree_path, removal);
       }
     }
 
@@ -979,11 +1244,16 @@ export class SpaceManager extends EventEmitter {
   }
 
   /**
-   * Get the unified diff for a space's branch vs the repo default branch.
+   * Unified diff of a space's worktree (committed + uncommitted + untracked)
+   * against its target branch. Null only when the space doesn't exist; ""
+   * when it has no worktree any more. Git failures throw `GitCommandError`.
    */
-  getSpaceDiff(id: string): string | null {
+  async getSpaceDiff(id: string): Promise<string | null> {
     const row = this.db.getSpace(id);
-    if (!row || !row.git_branch) return null;
+    if (!row) return null;
+    if (!row.git_branch) {
+      throw new Error("The default space has no branch diff");
+    }
 
     const worktreePath = this.getExistingWorktreePath(row.worktree_path);
     if (!worktreePath) {
@@ -991,112 +1261,286 @@ export class SpaceManager extends EventEmitter {
     }
 
     const repoRoot = getRepoRoot(row.project_directory);
-    if (!repoRoot) return null;
+    if (!repoRoot) {
+      throw new GitCommandError({
+        kind: "not_a_repo",
+        operation: "git diff",
+        cwd: row.project_directory,
+        message: "git diff failed: project is not a git repository",
+      });
+    }
 
-    const defaultBranch = getDefaultBranch(repoRoot) || getCurrentBranch(repoRoot) || "main";
-
+    const targetBranch = await this.resolveTargetBranch(row, repoRoot);
     // Diff from inside the worktree so we capture both committed and
-    // uncommitted changes vs the base branch.
-    return getWorktreeDiff(worktreePath, defaultBranch);
+    // uncommitted changes vs the target branch.
+    return (await getWorktreeDiff(worktreePath, targetBranch, { throwOnError: true })) ?? "";
   }
 
   /**
-   * Push a space's branch to the remote. Optionally create a PR via gh CLI.
+   * Push a space's branch to the remote. Optionally open a PR via gh: an
+   * already-open PR for the branch is reused (`prAction: "opened_existing"`)
+   * rather than duplicated. The PR base is the space's target branch.
    */
-  async pushSpace(
-    id: string,
-    opts?: { createPR?: boolean },
-  ): Promise<{
-    pushed: boolean;
-    prUrl?: string;
-    error?: string;
-    ghNotFound?: boolean;
-    ghNotAuthenticated?: boolean;
-  }> {
+  async pushSpace(id: string, opts?: { createPR?: boolean }): Promise<PushSpaceResult> {
     const row = this.db.getSpace(id);
     if (!row) throw new Error(`Space ${id} not found`);
     if (row.is_default) throw new Error("Cannot push the default space");
     if (!row.git_branch || !row.worktree_path) {
       throw new Error("Space has no worktree to push");
     }
+    const branch = row.git_branch;
+    const worktreePath = row.worktree_path;
 
     // Auto-commit if dirty
-    if (existsSync(row.worktree_path) && isWorktreeDirty(row.worktree_path)) {
-      const commitResult = commitAll(row.worktree_path, row.name || "Space work");
+    if (existsSync(worktreePath) && (await isWorktreeDirty(worktreePath))) {
+      const commitResult = await commitAll(worktreePath, row.name || "Space work");
       if (!commitResult.success) {
         throw new Error(`Auto-commit failed: ${commitResult.error}`);
       }
     }
 
     // Push with upstream tracking
-    const pushResult = await gitPush(row.worktree_path, row.git_branch, true);
+    const pushResult = await gitPush(worktreePath, branch, true);
     if (!pushResult.success) {
-      return { pushed: false, error: pushResult.error || "Push failed" };
+      return {
+        pushed: false,
+        error: pushResult.error || "Push failed",
+        errorKind: pushResult.errorKind,
+      };
     }
     if (pushResult.pushed === false && !opts?.createPR) {
       return { pushed: false, error: pushResult.message || "Nothing to push" };
     }
 
-    this.logger.info(`[SpaceManager] Pushed space "${row.name}" branch ${row.git_branch}`);
+    this.logger.info(`[SpaceManager] Pushed space "${row.name}" branch ${branch}`);
+    this.invalidateRepoStatus(worktreePath);
 
-    // Persist remote status
-    this.db.updateSpaceRemoteStatus(id, "pushed");
-    this.emit("space:updated", this.toInfo(this.db.getSpace(id)!));
+    // Keep a known PR state; otherwise record the push.
+    if (!row.remote_status?.startsWith("pr-")) {
+      this.db.updateSpaceRemoteStatus(id, "pushed");
+      this.emit("space:updated", this.toInfo(this.db.getSpace(id)!));
+    }
+    this.prStatusReader.invalidate(id);
 
-    // Optionally create PR via gh CLI
-    if (opts?.createPR) {
-      // Check if gh is available
+    if (!opts?.createPR) {
+      this.refreshPrStatusInBackground(id);
+      return { pushed: true };
+    }
+
+    const gh = await checkGhAvailability(worktreePath);
+    if (!gh.ok) {
+      return gh.reason === "not_installed"
+        ? {
+            pushed: true,
+            error: "gh CLI not found — branch pushed but PR not created",
+            ghNotFound: true,
+          }
+        : { pushed: true, error: "gh CLI is not authenticated", ghNotAuthenticated: true };
+    }
+
+    const recordPr = (prUrl: string, prAction: "created" | "opened_existing"): PushSpaceResult => {
+      this.db.updateSpaceRemoteStatus(id, "pr-open", prUrl);
+      this.emit("space:updated", this.toInfo(this.db.getSpace(id)!));
+      this.refreshPrStatusInBackground(id);
+      return { pushed: true, prUrl, prAction };
+    };
+
+    try {
+      const existing = await findOpenPullRequest(worktreePath, branch);
+      if (existing) return recordPr(existing.url, "opened_existing");
+
+      const repoRoot = getRepoRoot(row.project_directory);
+      const base = repoRoot ? await this.resolveTargetBranch(row, repoRoot) : "main";
+      const title = row.name || `Space ${row.id.slice(0, 8)}`;
+      const body = await this.buildPrBody(worktreePath, base, branch, row.name);
+      let prUrl: string | null;
       try {
-        execFileSync("which", ["gh"], { stdio: "pipe", timeout: 3000 });
-      } catch {
-        return {
-          pushed: true,
-          error: "gh CLI not found — branch pushed but PR not created",
-          ghNotFound: true,
-        };
-      }
-
-      try {
-        const repoRoot = getRepoRoot(row.project_directory);
-        const defaultBranch = (repoRoot ? getDefaultBranch(repoRoot) : null) || "main";
-        const title = row.name || `Space ${row.id.slice(0, 8)}`;
-
-        const prOutput = execFileSync(
-          "gh",
-          [
-            "pr",
-            "create",
-            "--head",
-            row.git_branch,
-            "--base",
-            defaultBranch,
-            "--title",
-            title,
-            "--fill",
-          ],
-          {
-            cwd: row.worktree_path,
-            encoding: "utf8",
-            timeout: 30000,
-            stdio: ["pipe", "pipe", "pipe"],
-          },
-        ).trim();
-
-        // gh pr create outputs the PR URL on success
-        const prUrl = prOutput.match(/https?:\/\/\S+/)?.[0];
-        this.db.updateSpaceRemoteStatus(id, "pr-open", prUrl);
-        this.emit("space:updated", this.toInfo(this.db.getSpace(id)!));
-        return { pushed: true, prUrl };
+        prUrl = await createPullRequest(worktreePath, { head: branch, base, title, body });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("gh auth login") || msg.includes("GH_TOKEN")) {
-          return { pushed: true, error: "gh CLI is not authenticated", ghNotAuthenticated: true };
-        }
-        return { pushed: true, error: `PR creation failed: ${msg}` };
+        // Lost a race with another creator — reuse theirs.
+        const raced = await findOpenPullRequest(worktreePath, branch).catch(() => null);
+        if (raced) return recordPr(raced.url, "opened_existing");
+        throw err;
+      }
+      if (!prUrl) {
+        const created = await findOpenPullRequest(worktreePath, branch).catch(() => null);
+        prUrl = created?.url ?? null;
+      }
+      if (!prUrl) return { pushed: true, error: "PR created, but gh did not report its URL" };
+      return recordPr(prUrl, "created");
+    } catch (err) {
+      if (isGitCommandError(err) && err.kind === "auth") {
+        return { pushed: true, error: "gh CLI is not authenticated", ghNotAuthenticated: true };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        pushed: true,
+        error: `PR creation failed: ${msg}`,
+        errorKind: isGitCommandError(err) ? err.kind : undefined,
+      };
+    }
+  }
+
+  /** PR body: the space's commits relative to the base branch. */
+  private async buildPrBody(
+    cwd: string,
+    base: string,
+    branch: string,
+    spaceName: string,
+  ): Promise<string> {
+    let commits: string[] = [];
+    try {
+      const { stdout } = await runGit(
+        ["log", "--no-merges", "--format=%s", "-n", "50", `${base}..${branch}`],
+        { cwd, readOnly: true, timeoutMs: GIT_TIMEOUTS.normal, operation: "git log" },
+      );
+      commits = stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      // base may not exist locally; the body is best-effort
+    }
+    const lines = [`Changes from the Relay space "${spaceName}".`];
+    if (commits.length > 0) {
+      lines.push("", "## Commits", "", ...commits.map((c) => `- ${c}`));
+    }
+    return `${lines.join("\n")}\n`;
+  }
+
+  private refreshPrStatusInBackground(id: string): void {
+    void this.getSpacePrStatus(id, { force: true }).catch((err) => {
+      this.logger.debug(`[SpaceManager] PR status refresh failed for ${id}: ${String(err)}`);
+    });
+  }
+
+  /**
+   * Current PR status for a space. Reads `gh pr view` for the persisted PR
+   * URL, or for the pushed branch when no URL is known (detects PRs opened
+   * outside Relay). Cached 60s; failures back off exponentially and return
+   * the last persisted snapshot with `stale: true`. A merged PR is reported,
+   * never auto-completed. Null when the space doesn't exist.
+   */
+  async getSpacePrStatus(
+    id: string,
+    opts?: { force?: boolean },
+  ): Promise<SpacePrStatusResponse | null> {
+    const row = this.db.getSpace(id);
+    if (!row) return null;
+    const persisted = parsePrStatus(row.pr_status_json);
+    const ref = row.pr_url || (row.remote_status && row.git_branch ? row.git_branch : null);
+    if (row.is_default || !ref) return { pr: persisted };
+
+    const cwd =
+      this.getExistingWorktreePath(row.worktree_path) ??
+      getRepoRoot(row.project_directory) ??
+      row.project_directory;
+    if (!existsSync(cwd)) return { pr: persisted, stale: persisted != null };
+
+    const result = await this.prStatusReader.get(id, cwd, ref, opts);
+    if (!result.ok) {
+      return { pr: persisted, stale: true, error: result.error, errorKind: result.errorKind };
+    }
+    const pr = result.pr;
+    if (!pr) return { pr: persisted, stale: persisted != null };
+    if (!result.cached) this.persistPrStatus(row, persisted, pr);
+    return { pr };
+  }
+
+  private persistPrStatus(row: SpaceRow, previous: SpacePrStatus | null, pr: SpacePrStatus): void {
+    const strip = (s: SpacePrStatus | null) => (s ? JSON.stringify({ ...s, fetchedAt: 0 }) : "");
+    const remoteStatus = remoteStatusForPr(pr);
+    const changed =
+      strip(previous) !== strip(pr) || row.remote_status !== remoteStatus || row.pr_url !== pr.url;
+    this.db.setSpacePrStatus(row.id, JSON.stringify(pr), remoteStatus, pr.url);
+    if (changed) {
+      if (pr.state === "merged" && previous?.state !== "merged") {
+        this.logger.info(
+          `[SpaceManager] PR for space "${row.name}" (${row.id}) was merged; the space stays active until completed or marked merged`,
+        );
+      }
+      const updated = this.db.getSpace(row.id);
+      if (updated) this.emit("space:updated", this.toInfo(updated));
+    }
+  }
+
+  /**
+   * Maintenance sweep of `<worktreeBase>/space-*` directories. Removes only
+   * directories whose `.git` file points at a gitdir that no longer exists
+   * (the repository or its worktree admin dir is gone), unless an active
+   * space still references them. Valid worktrees that no space row references
+   * are logged, never removed. Never looks outside the worktree base.
+   */
+  async sweepOrphanedWorktrees(): Promise<OrphanWorktreeSweepResult> {
+    const result: OrphanWorktreeSweepResult = { removed: [], unreferenced: [], keptReferenced: [] };
+    const base = resolve(getWorktreeBase());
+    let entries: Array<{ name: string; isDirectory(): boolean }>;
+    try {
+      entries = readdirSync(base, { withFileTypes: true });
+    } catch {
+      return result;
+    }
+
+    const referenced = new Map<string, SpaceRow>();
+    for (const row of this.db.getAllSpaces()) {
+      if (!row.worktree_path) continue;
+      referenced.set(resolve(row.worktree_path), row);
+      try {
+        referenced.set(realpathSync(row.worktree_path), row);
+      } catch {
+        // missing on disk
       }
     }
 
-    return { pushed: true };
+    let processed = 0;
+    for (const entry of entries) {
+      // Dirent.isDirectory() is false for symlinks, so links out of the base are skipped.
+      if (!entry.isDirectory() || !entry.name.startsWith("space-")) continue;
+      const dir = join(base, entry.name);
+      let canonical = dir;
+      try {
+        canonical = realpathSync(dir);
+      } catch {
+        continue;
+      }
+      const owner = referenced.get(dir) ?? referenced.get(canonical);
+      const pointer = inspectWorktreeGitPointer(dir);
+      if (pointer.state === "dangling") {
+        if (owner && owner.status === "active") {
+          result.keptReferenced.push(dir);
+          continue;
+        }
+        try {
+          await rm(dir, { recursive: true, force: true });
+          result.removed.push(dir);
+        } catch (err) {
+          this.logger.warn(
+            `[SpaceManager] Could not remove orphaned worktree ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else if (pointer.state === "valid" && !owner) {
+        result.unreferenced.push(dir);
+      }
+      // Yield regularly so a large backlog never stalls the event loop.
+      if (++processed % 25 === 0) await new Promise((r) => setImmediate(r));
+    }
+
+    if (result.removed.length > 0) {
+      this.logger.info(
+        `[SpaceManager] Removed ${result.removed.length} orphaned space worktree dir(s) with a dangling gitdir under ${base}`,
+      );
+    }
+    if (result.keptReferenced.length > 0) {
+      this.logger.warn(
+        `[SpaceManager] ${result.keptReferenced.length} active space worktree(s) have a dangling gitdir and were kept: ${result.keptReferenced.join(", ")}`,
+      );
+    }
+    if (result.unreferenced.length > 0) {
+      this.logger.info(
+        `[SpaceManager] ${result.unreferenced.length} valid worktree(s) under ${base} are not tracked as spaces (left in place): ${result.unreferenced.slice(0, 10).join(", ")}${result.unreferenced.length > 10 ? ", ..." : ""}`,
+      );
+    }
+    return result;
   }
 
   /**
@@ -1173,14 +1617,10 @@ export class SpaceManager extends EventEmitter {
   private excludeRelayDir(worktreePath: string): void {
     try {
       // In a worktree, .git is a file pointing to the main repo's .git/worktrees/<name>
-      // Use git rev-parse to find the actual git dir
-      const gitDir = execSync("git rev-parse --git-dir", {
-        cwd: worktreePath,
-        encoding: "utf8",
-        timeout: 5000,
-      }).trim();
+      const gitDir = resolveGitDirs(worktreePath)?.gitDir;
+      if (!gitDir) throw new Error(`Not a git worktree: ${worktreePath}`);
 
-      const infoDir = join(worktreePath, gitDir, "info");
+      const infoDir = join(gitDir, "info");
       mkdirSync(infoDir, { recursive: true });
 
       const excludePath = join(infoDir, "exclude");

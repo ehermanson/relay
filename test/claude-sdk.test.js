@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -1633,7 +1635,9 @@ describe("ClaudeSdkSession", () => {
       });
       await tick();
 
-      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      const texts = outputs
+        .filter(([o]) => o.text && !o.isWaiting)
+        .map(([o]) => [o.agentId, o.text]);
       assert.deepEqual(texts, [
         [CHILD_A, "streamed"],
         [undefined, "root fallback"],
@@ -1680,8 +1684,18 @@ describe("ClaudeSdkSession", () => {
           model: "claude-sonnet-4-6",
           content: [
             { type: "thinking", thinking: "Let me look." },
-            { type: "tool_use", id: "toolu_child_grep", name: "Grep", input: { pattern: "Sidebar" } },
-            { type: "tool_use", id: "toolu_child_todo", name: "TodoWrite", input: { todos: [{ content: "x", status: "pending" }] } },
+            {
+              type: "tool_use",
+              id: "toolu_child_grep",
+              name: "Grep",
+              input: { pattern: "Sidebar" },
+            },
+            {
+              type: "tool_use",
+              id: "toolu_child_todo",
+              name: "TodoWrite",
+              input: { todos: [{ content: "x", status: "pending" }] },
+            },
           ],
         },
       });
@@ -1696,7 +1710,9 @@ describe("ClaudeSdkSession", () => {
       });
       await tick();
 
-      const spawn = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "pending");
+      const spawn = updates().find(
+        (u) => u.agent.agentId === CHILD_A && u.agent.status === "pending",
+      );
       assert.ok(spawn, "spawn update emitted");
       assert.equal(spawn.agent.originToolUseId, CHILD_A);
       assert.equal(spawn.agent.relation, "child");
@@ -1742,8 +1758,18 @@ describe("ClaudeSdkSession", () => {
         message: {
           model: "claude-opus-4-8",
           content: [
-            { type: "tool_use", id: CHILD_A, name: "Agent", input: { prompt: "a", run_in_background: true } },
-            { type: "tool_use", id: CHILD_B, name: "Task", input: { prompt: "b", description: "Sync one" } },
+            {
+              type: "tool_use",
+              id: CHILD_A,
+              name: "Agent",
+              input: { prompt: "a", run_in_background: true },
+            },
+            {
+              type: "tool_use",
+              id: CHILD_B,
+              name: "Task",
+              input: { prompt: "b", description: "Sync one" },
+            },
           ],
         },
       });
@@ -1761,7 +1787,11 @@ describe("ClaudeSdkSession", () => {
         message: {
           role: "user",
           content: [
-            { type: "tool_result", tool_use_id: CHILD_A, content: [{ type: "text", text: "Async agent launched successfully." }] },
+            {
+              type: "tool_result",
+              tool_use_id: CHILD_A,
+              content: [{ type: "text", text: "Async agent launched successfully." }],
+            },
           ],
         },
       });
@@ -1782,19 +1812,27 @@ describe("ClaudeSdkSession", () => {
         message: {
           role: "user",
           content: [
-            { type: "tool_result", tool_use_id: CHILD_B, content: [{ type: "text", text: "Findings: all good." }] },
+            {
+              type: "tool_result",
+              tool_use_id: CHILD_B,
+              content: [{ type: "text", text: "Findings: all good." }],
+            },
           ],
         },
       });
       await tick();
 
-      const launched = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "running");
+      const launched = updates().find(
+        (u) => u.agent.agentId === CHILD_A && u.agent.status === "running",
+      );
       assert.ok(launched, "async launch → running");
       assert.equal(launched.agent.providerAgentId, "a056f6543c6a3e362");
       assert.equal(launched.agent.model, "claude-opus-4-8");
       assert.equal(launched.agent.description, "Background one");
 
-      const done = updates().find((u) => u.agent.agentId === CHILD_B && u.agent.status === "completed");
+      const done = updates().find(
+        (u) => u.agent.agentId === CHILD_B && u.agent.status === "completed",
+      );
       assert.ok(done, "sync completion → completed");
       assert.equal(done.agent.providerAgentId, "ae9f3794b10b24b3c");
       assert.equal(done.agent.result, "Findings: all good.");
@@ -1802,7 +1840,9 @@ describe("ClaudeSdkSession", () => {
       assert.ok(typeof done.agent.endedAt === "number");
       // The tool_use_result is not duplicated onto the update; only provenance.
       assert.deepEqual(done.raw, { tool: "Task", toolUseId: CHILD_B });
-      const spawnB = updates().find((u) => u.agent.agentId === CHILD_B && u.agent.status === "pending");
+      const spawnB = updates().find(
+        (u) => u.agent.agentId === CHILD_B && u.agent.status === "pending",
+      );
       assert.deepEqual(spawnB.raw, { tool: "Task", toolUseId: CHILD_B });
 
       // The orchestrator still sees both tool_results.
@@ -1851,12 +1891,14 @@ describe("ClaudeSdkSession", () => {
         task_id: "task-1",
         status: "failed",
         output_file: "/nonexistent/task-1.output",
-        summary: "Agent \"Index the repo\" failed",
+        summary: 'Agent "Index the repo" failed',
         usage: { total_tokens: 900, tool_uses: 9, duration_ms: 9000 },
       });
       await tick();
 
-      const forA = updates().filter((u) => u.agent.agentId === CHILD_A).map((u) => u.agent);
+      const forA = updates()
+        .filter((u) => u.agent.agentId === CHILD_A)
+        .map((u) => u.agent);
       assert.equal(forA.length, 4, "all four events resolve to the same Relay key");
       assert.equal(forA[0].status, "running");
       assert.equal(forA[0].providerAgentId, "task-1");
@@ -1870,10 +1912,16 @@ describe("ClaudeSdkSession", () => {
       assert.equal(forA[3].status, "failed");
       assert.equal(forA[3].resultIsError, true);
       assert.equal(forA[3].result, 'Agent "Index the repo" failed');
-      assert.equal(forA[3].historyAvailable, undefined, "availability is the history route's 404, not a flag");
+      assert.equal(
+        forA[3].historyAvailable,
+        undefined,
+        "availability is the history route's 404, not a flag",
+      );
       // raw is a provenance stub, never the provider payload.
       assert.deepEqual(
-        updates().filter((u) => u.agent.agentId === CHILD_A).map((u) => u.raw),
+        updates()
+          .filter((u) => u.agent.agentId === CHILD_A)
+          .map((u) => u.raw),
         [
           { subtype: "task_started" },
           { subtype: "task_progress" },
@@ -1942,7 +1990,11 @@ describe("ClaudeSdkSession", () => {
       });
       await tick();
 
-      assert.equal(updateEvents.length, 0, "no agent_update for a Bash task or an unresolvable task");
+      assert.equal(
+        updateEvents.length,
+        0,
+        "no agent_update for a Bash task or an unresolvable task",
+      );
       session.close();
     });
 
@@ -2008,7 +2060,9 @@ describe("ClaudeSdkSession", () => {
       childFrame("child third");
       await tick();
 
-      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      const texts = outputs
+        .filter(([o]) => o.text && !o.isWaiting)
+        .map(([o]) => [o.agentId, o.text]);
       assert.deepEqual(texts, [
         [CHILD_A, "child first"],
         [CHILD_A, "child second"],
@@ -2032,7 +2086,9 @@ describe("ClaudeSdkSession", () => {
       streamEvent(harness, { type: "message_stop" }, CHILD_A);
       await tick();
 
-      const texts = outputs.filter(([o]) => o.text && !o.isWaiting).map(([o]) => [o.agentId, o.text]);
+      const texts = outputs
+        .filter(([o]) => o.text && !o.isWaiting)
+        .map(([o]) => [o.agentId, o.text]);
       assert.deepEqual(texts, [[CHILD_A, "half done"]]);
       session.close();
     });
@@ -2049,7 +2105,10 @@ describe("ClaudeSdkSession", () => {
           session_id: "abc-123",
           parent_tool_use_id: null,
           origin: { kind: "peer", name: "worker", body: "Report from before." },
-          message: { role: "user", content: "<agent-message from=\"worker\">Report from before.</agent-message>" },
+          message: {
+            role: "user",
+            content: '<agent-message from="worker">Report from before.</agent-message>',
+          },
         });
       // Replayed during resume: already in history, must not re-emit.
       peerFrame();
@@ -2146,7 +2205,9 @@ describe("ClaudeSdkSession", () => {
         agentId: CHILD_A,
       });
 
-      const completed = updates().find((u) => u.agent.agentId === CHILD_A && u.agent.status === "completed");
+      const completed = updates().find(
+        (u) => u.agent.agentId === CHILD_A && u.agent.status === "completed",
+      );
       assert.ok(completed, "task notification mapped to the agent");
       assert.equal(completed.agent.result, "Region found.");
       assert.equal(completed.agent.historyAvailable, undefined);
@@ -2180,11 +2241,15 @@ describe("ClaudeSdkSession", () => {
       await tick();
 
       const controller = new AbortController();
-      void canUseTool("Bash", { command: "rm -rf build" }, {
-        signal: controller.signal,
-        toolUseID: "toolu_perm",
-        agentID: "agent-native-id",
-      });
+      void canUseTool(
+        "Bash",
+        { command: "rm -rf build" },
+        {
+          signal: controller.signal,
+          toolUseID: "toolu_perm",
+          agentID: "agent-native-id",
+        },
+      );
       await tick();
 
       assert.equal(requests().length, 1);

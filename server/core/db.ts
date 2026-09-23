@@ -61,6 +61,10 @@ export interface SpaceRow {
   target_branch: string | null;
   remote_status: string | null;
   pr_url: string | null;
+  /** Local branch the space merges into (diff base, PR base, Complete target). */
+  base_branch?: string | null;
+  /** Last known PR status snapshot (JSON `SpacePrStatus`), refreshed on demand. */
+  pr_status_json?: string | null;
 }
 
 export interface GlobalSettingsRow {
@@ -245,6 +249,7 @@ function normalizeSpaceRow(row: SpaceRow): SpaceRow {
   normalized.target_branch ??= null;
   normalized.remote_status ??= null;
   normalized.pr_url ??= null;
+  normalized.base_branch ??= null;
   return normalized;
 }
 
@@ -525,6 +530,9 @@ export class SessionDB {
   private stmtUpdateManagedSpaceId!: StatementSync;
   private stmtUpdateSpaceMergeMetadata!: StatementSync;
   private stmtUpdateSpaceRemoteStatus!: StatementSync;
+  private stmtGetAllSpaces!: StatementSync;
+  private stmtUpdateSpaceBaseBranch!: StatementSync;
+  private stmtUpdateSpacePrStatus!: StatementSync;
   private stmtGetSpacesByProjectAll!: StatementSync;
   private stmtSearchProject!: StatementSync;
   private stmtSearchGlobal!: StatementSync;
@@ -929,7 +937,9 @@ ${buildSearchIndexSchemaSql()},
         merged_at INTEGER,
         target_branch TEXT,
         remote_status TEXT,
-        pr_url TEXT
+        pr_url TEXT,
+        base_branch TEXT,
+        pr_status_json TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_spaces_project_directory ON spaces(project_directory);
@@ -1058,11 +1068,22 @@ ${buildSearchIndexSchemaSql()},
     ensureFor("managed_sessions");
   }
 
-  /** Add the independently persisted per-space pin flag. */
+  /**
+   * Add the independently persisted per-space columns (pin flag, recorded base
+   * branch, last known PR status). Additive and idempotent, so existing
+   * databases keep their data without a schema-version rebuild.
+   */
   private ensureSpacePinColumn(): void {
     const columns = this.db.prepare("PRAGMA table_info(spaces)").all() as Array<{ name?: string }>;
-    if (!columns.some((column) => column.name === "pinned")) {
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("pinned")) {
       this.db.exec("ALTER TABLE spaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!names.has("base_branch")) {
+      this.db.exec("ALTER TABLE spaces ADD COLUMN base_branch TEXT");
+    }
+    if (!names.has("pr_status_json")) {
+      this.db.exec("ALTER TABLE spaces ADD COLUMN pr_status_json TEXT");
     }
   }
 
@@ -1493,9 +1514,9 @@ ${buildSearchIndexSchemaSql()},
     // Space statements
     this.stmtUpsertSpace = this.db.prepare(`
       INSERT INTO spaces (id, project_directory, name, git_branch, worktree_path, is_default, status, created_at, last_activity_at, pinned,
-        merge_commit, merge_method, merged_at, target_branch, remote_status, pr_url)
+        merge_commit, merge_method, merged_at, target_branch, remote_status, pr_url, base_branch)
       VALUES (@id, @project_directory, @name, @git_branch, @worktree_path, @is_default, @status, @created_at, @last_activity_at, @pinned,
-        @merge_commit, @merge_method, @merged_at, @target_branch, @remote_status, @pr_url)
+        @merge_commit, @merge_method, @merged_at, @target_branch, @remote_status, @pr_url, @base_branch)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         git_branch = excluded.git_branch,
@@ -1507,7 +1528,8 @@ ${buildSearchIndexSchemaSql()},
         merged_at = COALESCE(excluded.merged_at, merged_at),
         target_branch = COALESCE(excluded.target_branch, target_branch),
         remote_status = COALESCE(excluded.remote_status, remote_status),
-        pr_url = COALESCE(excluded.pr_url, pr_url)
+        pr_url = COALESCE(excluded.pr_url, pr_url),
+        base_branch = COALESCE(excluded.base_branch, base_branch)
     `);
     this.stmtGetSpace = this.db.prepare("SELECT * FROM spaces WHERE id = ?");
     this.stmtGetSpaceByWorktreePath = this.db.prepare(
@@ -1548,6 +1570,13 @@ ${buildSearchIndexSchemaSql()},
     );
     this.stmtGetSpacesByProjectAll = this.db.prepare(
       "SELECT * FROM spaces WHERE project_directory = ? AND is_default = 0 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, last_activity_at DESC",
+    );
+    this.stmtGetAllSpaces = this.db.prepare("SELECT * FROM spaces");
+    this.stmtUpdateSpaceBaseBranch = this.db.prepare(
+      "UPDATE spaces SET base_branch = ? WHERE id = ?",
+    );
+    this.stmtUpdateSpacePrStatus = this.db.prepare(
+      "UPDATE spaces SET pr_status_json = ?, remote_status = COALESCE(?, remote_status), pr_url = COALESCE(?, pr_url) WHERE id = ?",
     );
 
     // Spin-offs (legacy storage remains in the `handoffs` table)
@@ -2190,6 +2219,28 @@ ${buildSearchIndexSchemaSql()},
 
   updateSpaceRemoteStatus(id: string, remoteStatus: string, prUrl?: string | null): void {
     this.stmtUpdateSpaceRemoteStatus.run(remoteStatus, prUrl ?? null, id);
+  }
+
+  /** Every space row (all projects, all statuses) — for maintenance sweeps. */
+  getAllSpaces(): SpaceRow[] {
+    return asRows(this.stmtGetAllSpaces.all() as Record<string, unknown>[]);
+  }
+
+  setSpaceBaseBranch(id: string, baseBranch: string): void {
+    this.stmtUpdateSpaceBaseBranch.run(baseBranch, id);
+  }
+
+  /**
+   * Persist the last known PR status snapshot. `remoteStatus`/`prUrl` are
+   * only written when provided (null keeps the current value).
+   */
+  setSpacePrStatus(
+    id: string,
+    prStatusJson: string | null,
+    remoteStatus?: string | null,
+    prUrl?: string | null,
+  ): void {
+    this.stmtUpdateSpacePrStatus.run(prStatusJson, remoteStatus ?? null, prUrl ?? null, id);
   }
 
   getSpacesByProjectAll(projectDirectory: string): SpaceRow[] {

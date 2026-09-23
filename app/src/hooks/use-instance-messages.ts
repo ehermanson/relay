@@ -601,6 +601,8 @@ type Action =
       agentId?: string;
     }
   | { type: "agent_update"; agent: AgentInfo; eventSequence?: number }
+  /** Debounced diff-stat refresh — updates file stats only, never processing state. */
+  | { type: "file_stats"; files: FileChange[]; eventSequence?: number }
   | { type: "clear_queued" }
   | { type: "remove_queued"; queuedId: string; eventSequence?: number }
   | { type: "exit"; code: number; signal?: string; stderr?: string; eventSequence?: number }
@@ -909,6 +911,9 @@ function coreReducer(state: State, action: Action): State {
       }
     }
 
+    case "file_stats":
+      return { ...state, currentFiles: mergeFileLists(state.currentFiles, action.files) };
+
     case "agent_update": {
       const id = action.agent.agentId;
       const previous = state.agents[id];
@@ -1138,6 +1143,7 @@ function getActionSequence(action: Action): number | undefined {
     case "remove_queued":
     case "exit":
     case "agent_update":
+    case "file_stats":
       return action.eventSequence;
     case "activity":
       return action.message.eventSequence;
@@ -1326,6 +1332,15 @@ export function useInstanceMessages() {
             dispatchAndRecord(instanceId, {
               type: "agent_update",
               agent: message.agent,
+              eventSequence: message.eventSequence,
+            });
+          }
+          break;
+        case "file_stats":
+          if (message.instanceId === instanceId) {
+            dispatch({
+              type: "file_stats",
+              files: message.files,
               eventSequence: message.eventSequence,
             });
           }

@@ -81,13 +81,13 @@ export function registerWorkspaceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void
     }
   });
 
-  app.get("/api/workspace-entries", (c) => {
+  app.get("/api/workspace-entries", async (c) => {
     const instanceId = c.req.query("instanceId") || "";
     const query = c.req.query("q") || "";
     if (!instanceId) {
       return c.json({ error: "instanceId is required" }, 400);
     }
-    const entries = instanceManager.getWorkspaceEntries(instanceId, query);
+    const entries = await instanceManager.getWorkspaceEntries(instanceId, query);
     if (!entries) {
       return c.json({ error: "Instance not found" }, 404);
     }

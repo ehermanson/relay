@@ -12,6 +12,7 @@ import type {
   ProjectArtifacts,
   SpinOffInfo,
   SpaceInfo,
+  SpacePrStatusResponse,
   UpdateInstallResult,
   UpdateSnapshot,
 } from "@shared/types";
@@ -932,10 +933,43 @@ export async function setSpacePinned(spaceId: string, pinned: boolean): Promise<
   return res.json();
 }
 
+/**
+ * Complete refused (nothing merged). `errorKind === "conflict"` carries the
+ * conflicting paths; the message already includes resolution guidance.
+ */
+export class SpaceCompleteError extends Error {
+  readonly errorKind?: string;
+  readonly conflicts: string[];
+  readonly targetBranch?: string;
+  readonly worktreePath?: string | null;
+  constructor(data: {
+    error?: string;
+    errorKind?: string;
+    conflicts?: string[];
+    targetBranch?: string;
+    worktreePath?: string | null;
+  }) {
+    super(data.error || "Failed to complete space");
+    this.name = "SpaceCompleteError";
+    this.errorKind = data.errorKind;
+    this.conflicts = Array.isArray(data.conflicts) ? data.conflicts : [];
+    this.targetBranch = data.targetBranch;
+    this.worktreePath = data.worktreePath;
+  }
+}
+
 export async function completeSpace(
   spaceId: string,
   opts?: { mergeMethod?: string; squashMessage?: string },
-): Promise<{ success: boolean; targetBranch: string; mergeCommit?: string; mergeMethod?: string }> {
+): Promise<{
+  success: boolean;
+  targetBranch: string;
+  mergeCommit?: string;
+  mergeMethod?: string;
+  /** Checkout whose files were updated, or null when only the branch ref moved. */
+  updatedCheckout?: string | null;
+  alreadyMerged?: boolean;
+}> {
   const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -943,7 +977,7 @@ export async function completeSpace(
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: "Failed to complete space" }));
-    throw new Error(data.error || "Failed to complete space");
+    throw new SpaceCompleteError(data);
   }
   return res.json();
 }
@@ -987,6 +1021,19 @@ export async function fetchSpaceDiff(spaceId: string): Promise<string> {
   return data.diff;
 }
 
+export async function fetchSpacePrStatus(
+  spaceId: string,
+  opts?: { refresh?: boolean },
+): Promise<SpacePrStatusResponse> {
+  const query = opts?.refresh ? "?refresh=1" : "";
+  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/pr${query}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || "Failed to fetch PR status");
+  }
+  return res.json();
+}
+
 export async function fetchSpaceContext(spaceId: string): Promise<string | null> {
   const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/context`);
   if (!res.ok) return null;
@@ -1006,6 +1053,8 @@ interface BranchesResponse {
   remote: string[];
   current: string | null;
   aheadBehind: { ahead: number; behind: number };
+  /** False when the branch has no upstream (aheadBehind is then 0/0). */
+  hasUpstream?: boolean;
   dirty?: boolean;
   worktrees?: WorktreeBranchInfo[];
 }
@@ -1013,6 +1062,7 @@ interface BranchesResponse {
 interface GitOpResult {
   success: boolean;
   error?: string;
+  errorKind?: string;
   pushed?: boolean;
   message?: string;
 }
@@ -1021,6 +1071,8 @@ interface GitWorktreeStatus {
   dirty: boolean;
   changeCount: number;
   aheadBehind: { ahead: number; behind: number };
+  /** False when the branch has no upstream (aheadBehind is then 0/0). */
+  hasUpstream?: boolean;
   /**
    * True when the worktree is dirty OR (in a space) commits exist on the
    * space branch that aren't in the base branch. Broader than `dirty` —
@@ -1031,7 +1083,10 @@ interface GitWorktreeStatus {
 
 export async function fetchBranches(projectId: string): Promise<BranchesResponse> {
   const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/branches`);
-  if (!res.ok) throw new Error("Failed to fetch branches");
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || "Failed to fetch branches");
+  }
   return res.json();
 }
 
@@ -1098,7 +1153,10 @@ export async function commitSpace(
 interface PushSpaceResult {
   pushed: boolean;
   prUrl?: string;
+  /** `opened_existing` when an open PR for the branch already existed. */
+  prAction?: "created" | "opened_existing";
   error?: string;
+  errorKind?: string;
   ghNotFound?: boolean;
   ghNotAuthenticated?: boolean;
 }

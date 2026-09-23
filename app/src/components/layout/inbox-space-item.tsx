@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Menu } from "@/components/ui/menu";
 import { ProjectAvatar } from "@/components/ui/project-avatar";
 import { TerminalRunningIndicator } from "@/components/ui/terminal-running-indicator";
+import { SpacePrStateChip } from "@/components/spaces/space-pr-badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { getAttentionLabel, type InboxSpaceEntry } from "@/lib/inbox";
@@ -297,6 +298,7 @@ function SpaceRowDetails({
             Archived
           </Badge>
         )}
+        <SpacePrStateChip space={space} />
         <TerminalRunningIndicator scope={{ type: "space", spaceId: space.id }} active={isActive} />
       </div>
       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[0.6875rem] leading-tight text-muted/70">

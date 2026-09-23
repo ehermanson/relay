@@ -22,6 +22,7 @@ import {
   GitMerge,
   GitPullRequest,
   Loader2,
+  AlertTriangle,
   RefreshCw,
   Upload,
 } from "lucide-react";
@@ -41,6 +42,11 @@ interface GitBadgeAction {
   disabled?: boolean;
 }
 
+/** Projects with a branch checkout in flight (guards double selection). */
+const checkoutsInFlight = new Set<string>();
+
+export type GitBadgePendingAction = "commit" | "fetch" | "pull" | "push";
+
 interface GitBadgeProps {
   branch: string;
 
@@ -55,6 +61,10 @@ interface GitBadgeProps {
   behind?: number;
   /** Whether status data is still loading */
   statusLoading?: boolean;
+  /** Status could not be read — shown instead of counts (never as "up to date") */
+  statusError?: string | null;
+  /** A git action is running — all actions are disabled until it settles */
+  pendingAction?: GitBadgePendingAction | null;
 
   // ── Actions (each optional — only rendered if provided) ──
 
@@ -115,12 +125,17 @@ function BranchSubmenu({
         onConvertWorktree(worktree.path);
         return;
       }
+      // The menu unmounts on click, so the in-flight guard is module-level.
+      if (checkoutsInFlight.has(projectId)) return;
+      checkoutsInFlight.add(projectId);
       try {
         await checkoutBranch(projectId, branch);
         toast.success(`Switched to ${branch}`);
         onBranchChanged();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to switch branch");
+      } finally {
+        checkoutsInFlight.delete(projectId);
       }
     },
     [projectId, current, onBranchChanged, worktreesByBranch, navigate, onConvertWorktree],
@@ -187,6 +202,8 @@ export function GitBadge({
   ahead = 0,
   behind = 0,
   statusLoading,
+  statusError,
+  pendingAction,
   onCommit,
   onFetch,
   onPull,
@@ -204,7 +221,9 @@ export function GitBadge({
     ? projects.find((p) => p.slug === projectId || p.id === projectId)
     : undefined;
 
-  const hasStatus = dirty !== undefined || ahead > 0 || behind > 0 || statusLoading;
+  const hasStatus =
+    dirty !== undefined || ahead > 0 || behind > 0 || statusLoading || !!statusError;
+  const busy = !!pendingAction;
 
   const handleBranchChanged = useCallback(() => {
     if (projectId) {
@@ -227,9 +246,10 @@ export function GitBadge({
     <Menu.Root>
       {/* ── Trigger badge ────────────────────────────────────── */}
       <Menu.Trigger className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted transition-all duration-150 hover:bg-surface-hover hover:text-text">
-        <GitBranch size={13} />
+        {busy ? <Loader2 size={13} className="animate-spin" /> : <GitBranch size={13} />}
         <span className="max-w-[140px] truncate">{branch}</span>
 
+        {statusError && <AlertTriangle size={10} className="text-amber-400" />}
         {dirty && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />}
 
         {ahead > 0 && (
@@ -256,6 +276,11 @@ export function GitBadge({
                 <div className="flex items-center gap-2 text-[0.75rem] text-muted">
                   <Loader2 size={11} className="animate-spin" />
                   Checking...
+                </div>
+              ) : statusError ? (
+                <div className="flex max-w-64 items-start gap-2 text-[0.75rem] text-muted">
+                  <AlertTriangle size={11} className="mt-0.5 shrink-0 text-amber-400" />
+                  <span className="break-words">Git status unavailable: {statusError}</span>
                 </div>
               ) : (
                 <div className="flex flex-col gap-0.5 text-[0.75rem] text-muted">
@@ -323,31 +348,38 @@ export function GitBadge({
           </>
         )}
         {onCommit && (
-          <Menu.Item onClick={() => void onCommit()}>
+          <Menu.Item onClick={() => void onCommit()} disabled={busy}>
             <GitCommitHorizontal size={13} className="text-muted" />
             Commit changes
           </Menu.Item>
         )}
         {onFetch && (
-          <Menu.Item onClick={() => void onFetch()}>
-            <RefreshCw size={13} className="text-muted" />
-            Fetch
+          <Menu.Item onClick={() => void onFetch()} disabled={busy}>
+            <RefreshCw
+              size={13}
+              className={pendingAction === "fetch" ? "animate-spin text-muted" : "text-muted"}
+            />
+            {pendingAction === "fetch" ? "Fetching…" : "Fetch"}
           </Menu.Item>
         )}
         {onPull && (
-          <Menu.Item onClick={() => void onPull()} disabled={behind === 0}>
+          <Menu.Item onClick={() => void onPull()} disabled={busy || behind === 0}>
             <ArrowDownToLine size={13} className="text-muted" />
-            {ahead > 0 && behind > 0 ? "Pull (rebase)" : "Pull"}
+            {pendingAction === "pull"
+              ? "Pulling…"
+              : ahead > 0 && behind > 0
+                ? "Pull (rebase)"
+                : "Pull"}
           </Menu.Item>
         )}
         {onPush && (
-          <Menu.Item onClick={() => void onPush()}>
+          <Menu.Item onClick={() => void onPush()} disabled={busy}>
             <Upload size={13} className="text-muted" />
-            Push branch
+            {pendingAction === "push" ? "Pushing…" : "Push branch"}
           </Menu.Item>
         )}
         {onPushAndCreatePR && (
-          <Menu.Item onClick={() => void onPushAndCreatePR()}>
+          <Menu.Item onClick={() => void onPushAndCreatePR()} disabled={busy}>
             <GitPullRequest size={13} className="text-muted" />
             Push & create PR
           </Menu.Item>

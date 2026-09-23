@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -224,12 +226,12 @@ describe("InstanceManager", () => {
     return instanceManager;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     managers = [];
     manager = trackManager(new InstanceManager(makeConfig()));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const instanceManager of managers.reverse()) {
       try {
         instanceManager.stopAll();
@@ -240,7 +242,7 @@ describe("InstanceManager", () => {
   });
 
   describe("createInstance", () => {
-    it("creates an instance with defaults", () => {
+    it("creates an instance with defaults", async () => {
       const info = manager.createInstance();
       assert.ok(info.id);
       assert.equal(info.name, "New Session");
@@ -248,7 +250,7 @@ describe("InstanceManager", () => {
       assert.equal(info.external, undefined);
     });
 
-    it("accepts custom name and working directory", () => {
+    it("accepts custom name and working directory", async () => {
       const info = manager.createInstance({
         name: "My Project",
         workingDirectory: "/tmp/test",
@@ -257,21 +259,21 @@ describe("InstanceManager", () => {
       assert.equal(info.workingDirectory, "/tmp/test");
     });
 
-    it("uses the default session title when no name is provided", () => {
+    it("uses the default session title when no name is provided", async () => {
       const a = manager.createInstance();
       const b = manager.createInstance();
       assert.equal(a.name, "New Session");
       assert.equal(b.name, "New Session");
     });
 
-    it("enforces maxProcesses limit", () => {
+    it("enforces maxProcesses limit", async () => {
       manager.createInstance();
       manager.createInstance();
       manager.createInstance();
       assert.throws(() => manager.createInstance(), /Maximum processes/);
     });
 
-    it("stopInstance frees a process slot for a resumable session", () => {
+    it("stopInstance frees a process slot for a resumable session", async () => {
       const a = manager.createInstance();
       manager.createInstance();
       manager.createInstance();
@@ -287,7 +289,7 @@ describe("InstanceManager", () => {
       assert.doesNotThrow(() => manager.createInstance());
     });
 
-    it("honors the global max_processes setting live, overriding config", () => {
+    it("honors the global max_processes setting live, overriding config", async () => {
       // Config default is 3; tighten to 1 via the global setting.
       manager.sessionDb.updateGlobalSettings({ max_processes: 1 });
       manager.createInstance();
@@ -337,7 +339,7 @@ describe("InstanceManager", () => {
       assert.ok(internal.info.doneAt);
     });
 
-    it("bulk mark-done stops idle live processes", () => {
+    it("bulk mark-done stops idle live processes", async () => {
       const a = manager.createInstance();
       const b = manager.createInstance();
       manager.createInstance();
@@ -355,7 +357,7 @@ describe("InstanceManager", () => {
       assert.doesNotThrow(() => manager.createInstance());
     });
 
-    it("stopInstance refuses a session with no resumable id", () => {
+    it("stopInstance refuses a session with no resumable id", async () => {
       const a = manager.createInstance();
       // Fresh instance has no captured session id yet.
       assert.equal(manager.stopInstance(a.id), false);
@@ -364,7 +366,7 @@ describe("InstanceManager", () => {
       assert.notEqual(internal.info.status, "stopped");
     });
 
-    it("does not persist an empty managed instance before it has resumable state", () => {
+    it("does not persist an empty managed instance before it has resumable state", async () => {
       const info = manager.createInstance({ name: "Unsaved Draft" });
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
 
@@ -375,10 +377,12 @@ describe("InstanceManager", () => {
       }
     });
 
-    it("refuses to create a chat in an isolated space whose worktree is missing", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Broken space",
-      });
+    it("refuses to create a chat in an isolated space whose worktree is missing", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Broken space",
+        });
       assert.ok(space.worktreePath);
 
       rmSync(space.worktreePath, { recursive: true, force: true });
@@ -389,10 +393,12 @@ describe("InstanceManager", () => {
       );
     });
 
-    it("marks an isolated space as broken when its worktree disappears", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Broken marker",
-      });
+    it("marks an isolated space as broken when its worktree disappears", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Broken marker",
+        });
       assert.ok(space.worktreePath);
 
       rmSync(space.worktreePath, { recursive: true, force: true });
@@ -403,11 +409,13 @@ describe("InstanceManager", () => {
       assert.equal(refreshed.worktreePath, null);
     });
 
-    it("reconciles missing in-memory ownership for current-space chats before persistence", () => {
+    it("reconciles missing in-memory ownership for current-space chats before persistence", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Reconcile owned",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Reconcile owned",
+        });
       const info = manager.createInstance({ spaceId: space.id });
       const instance = manager.instances.get(info.id);
 
@@ -425,10 +433,12 @@ describe("InstanceManager", () => {
       assert.equal(instance.info.originalDirectory, manager.baseConfig.workingDirectory);
     });
 
-    it("keeps space bootstrap guidance when creating a resumed space session", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Resume Space",
-      });
+    it("keeps space bootstrap guidance when creating a resumed space session", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Resume Space",
+        });
       const fakeProc = new FakeProviderSession("codex");
       manager.createProviderSession = (_config, options) => {
         fakeProc.bootstrapContext = options?.bootstrapContext;
@@ -457,10 +467,12 @@ describe("InstanceManager", () => {
       );
     });
 
-    it("persists bootstrap context even when the provider does not echo it back", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Bootstrap Contract",
-      });
+    it("persists bootstrap context even when the provider does not echo it back", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Bootstrap Contract",
+        });
       const fakeProc = new FakeProviderSession("codex");
       manager.createProviderSession = () => fakeProc;
 
@@ -478,7 +490,7 @@ describe("InstanceManager", () => {
       );
     });
 
-    it("cleans up a just-created worktree when createSpace fails after git worktree add", () => {
+    it("cleans up a just-created worktree when createSpace fails after git worktree add", async () => {
       const previousBase = process.env.RELAY_WORKTREE_BASE;
       const worktreeBase = mkdtempSync(join(tmpdir(), "relay-space-fail-"));
       const markerFile = join(manager.baseConfig.workingDirectory, "pwned");
@@ -491,11 +503,10 @@ describe("InstanceManager", () => {
           throw new Error("exclude failed");
         };
 
-        assert.throws(
-          () =>
-            spaceManager.createSpace(manager.baseConfig.workingDirectory, {
-              name: "Broken Space",
-            }),
+        await assert.rejects(
+          spaceManager.createSpace(manager.baseConfig.workingDirectory, {
+            name: "Broken Space",
+          }),
           /exclude failed/,
         );
 
@@ -522,7 +533,7 @@ describe("InstanceManager", () => {
     it("builds first-turn and follow-up task guidance from the managed session's actual Space cwd", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       initTasks(project.directory);
-      const space = manager.getSpaceManager().createSpace(project.directory, {
+      const space = await manager.getSpaceManager().createSpace(project.directory, {
         name: "Task cwd",
       });
       assert.ok(space.worktreePath);
@@ -566,7 +577,7 @@ describe("InstanceManager", () => {
     it("invalidates Main and Space scopes after direct atomic task-file edits", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       initTasks(project.directory);
-      const space = manager.getSpaceManager().createSpace(project.directory, {
+      const space = await manager.getSpaceManager().createSpace(project.directory, {
         name: "Watched tasks",
       });
       assert.ok(space.worktreePath);
@@ -627,7 +638,7 @@ describe("InstanceManager", () => {
   });
 
   describe("listInstances / getInstance", () => {
-    it("lists all instances", () => {
+    it("lists all instances", async () => {
       manager.createInstance({ name: "A" });
       manager.createInstance({ name: "B" });
       const list = manager.listInstances();
@@ -636,19 +647,21 @@ describe("InstanceManager", () => {
       assert.equal(list[1].name, "B");
     });
 
-    it("gets instance by id", () => {
+    it("gets instance by id", async () => {
       const info = manager.createInstance({ name: "X" });
       const found = manager.getInstance(info.id);
       assert.equal(found.name, "X");
     });
 
-    it("returns undefined for unknown id", () => {
+    it("returns undefined for unknown id", async () => {
       assert.equal(manager.getInstance("nonexistent"), undefined);
     });
 
-    it("skips restoring external shadow rows when a managed session already owns the transcript", () => {
+    it("skips restoring external shadow rows when a managed session already owns the transcript", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
-      const space = manager.getSpaceManager().createSpace(projectDir, { name: "Shadow skip" });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(projectDir, { name: "Shadow skip" });
       const transcriptPath = join(projectDir, "shadow-skip.jsonl");
       writeFileSync(transcriptPath, "{}\n");
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
@@ -690,7 +703,7 @@ describe("InstanceManager", () => {
       assert.equal(restored.getInstance("shadow-external-restore"), undefined);
     });
 
-    it("hides live external shadows in listInstances when a managed owner exists only in persisted state", () => {
+    it("hides live external shadows in listInstances when a managed owner exists only in persisted state", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
       const project = manager.projectManager.addProject(projectDir);
       const transcriptPath = join(projectDir, "list-shadow.jsonl");
@@ -731,10 +744,12 @@ describe("InstanceManager", () => {
       );
     });
 
-    it("removes a live external shadow once a managed session captures the same transcript", () => {
+    it("removes a live external shadow once a managed session captures the same transcript", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
       const project = manager.projectManager.addProject(projectDir);
-      const space = manager.getSpaceManager().createSpace(projectDir, { name: "Shadow prune" });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(projectDir, { name: "Shadow prune" });
       const transcriptPath = join(projectDir, "shadow-prune.jsonl");
       writeFileSync(transcriptPath, "{}\n");
 
@@ -793,7 +808,7 @@ describe("InstanceManager", () => {
       }
     });
 
-    it("falls back to persisted git metadata for originalGitBranch on restored managed sessions", () => {
+    it("falls back to persisted git metadata for originalGitBranch on restored managed sessions", async () => {
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
 
       try {
@@ -818,7 +833,7 @@ describe("InstanceManager", () => {
       assert.equal(info.originalGitBranch, "relay-space/deadbeef");
     });
 
-    it("archives stale managed duplicates that point at the same provider session", () => {
+    it("archives stale managed duplicates that point at the same provider session", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
       const transcriptPath = join(projectDir, "duplicate-managed.jsonl");
       writeFileSync(transcriptPath, "{}\n");
@@ -872,7 +887,7 @@ describe("InstanceManager", () => {
       }
     });
 
-    it("restores external sessions as historical until rediscovered live", () => {
+    it("restores external sessions as historical until rediscovered live", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
       const transcriptPath = join(projectDir, "external-session.jsonl");
       writeFileSync(
@@ -1157,7 +1172,7 @@ describe("InstanceManager", () => {
         debug() {},
       };
       const noisyManager = trackManager(new InstanceManager(makeConfig({ logger })));
-      const space = noisyManager
+      const space = await noisyManager
         .getSpaceManager()
         .createSpace(noisyManager.baseConfig.workingDirectory, {
           name: "Missing worktree",
@@ -1182,7 +1197,7 @@ describe("InstanceManager", () => {
   });
 
   describe("provider registry", () => {
-    it("surfaces available providers with capabilities", () => {
+    it("surfaces available providers with capabilities", async () => {
       const providers = manager.getAvailableProviders();
       assert.ok(providers.some((provider) => provider.provider === "claude"));
       for (const provider of providers) {
@@ -1191,7 +1206,7 @@ describe("InstanceManager", () => {
       }
     });
 
-    it("returns provider capabilities from the shared registry", () => {
+    it("returns provider capabilities from the shared registry", async () => {
       const _claude = manager.getProviderCapabilities("claude");
       const codex = manager.getProviderCapabilities("codex");
       assert.equal(codex.supportsTitleUpdates, true);
@@ -1224,17 +1239,17 @@ describe("InstanceManager", () => {
   });
 
   describe("removeInstance", () => {
-    it("removes an instance", () => {
+    it("removes an instance", async () => {
       const info = manager.createInstance();
       assert.equal(manager.removeInstance(info.id), true);
       assert.equal(manager.listInstances().length, 0);
     });
 
-    it("returns false for unknown id", () => {
+    it("returns false for unknown id", async () => {
       assert.equal(manager.removeInstance("nonexistent"), false);
     });
 
-    it("frees a slot for new instances", () => {
+    it("frees a slot for new instances", async () => {
       const a = manager.createInstance();
       manager.createInstance();
       manager.createInstance();
@@ -1244,10 +1259,12 @@ describe("InstanceManager", () => {
       assert.ok(d.id);
     });
 
-    it("does not remove a shared space worktree when deleting one chat", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Shared space",
-      });
+    it("does not remove a shared space worktree when deleting one chat", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Shared space",
+        });
       assert.ok(space.worktreePath);
       assert.equal(existsSync(space.worktreePath), true);
 
@@ -1259,10 +1276,12 @@ describe("InstanceManager", () => {
       assert.equal(existsSync(refreshedSpace.worktreePath), true);
     });
 
-    it("preserves a shared space worktree even if the instance is missing in-memory spaceId", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Recovered shared space",
-      });
+    it("preserves a shared space worktree even if the instance is missing in-memory spaceId", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Recovered shared space",
+        });
       assert.ok(space.worktreePath);
       assert.equal(existsSync(space.worktreePath), true);
 
@@ -1279,7 +1298,7 @@ describe("InstanceManager", () => {
       assert.equal(existsSync(refreshedSpace.worktreePath), true);
     });
 
-    it("archives attached reviews when removing a source chat without purge", () => {
+    it("archives attached reviews when removing a source chat without purge", async () => {
       const source = manager.createInstance({ name: "Source Chat" });
       const review = manager.createInstance({
         name: "Review: source",
@@ -1338,11 +1357,13 @@ describe("InstanceManager", () => {
       assert.equal(manager.sessionDb.getManagedByInstanceId(review.id)?.archived, 1);
     });
 
-    it("purges a removed space chat from Relay and disk", () => {
+    it("purges a removed space chat from Relay and disk", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Purge space",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Purge space",
+        });
       assert.ok(space.worktreePath);
 
       const info = manager.createInstance({ spaceId: space.id, name: "Purge me" });
@@ -1422,11 +1443,13 @@ describe("InstanceManager", () => {
   });
 
   describe("listProjectChats", () => {
-    it("dedupes managed transcript shadows after backfilling explicit space ids", () => {
+    it("dedupes managed transcript shadows after backfilling explicit space ids", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Space",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Space",
+        });
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
 
       try {
@@ -1537,13 +1560,13 @@ describe("InstanceManager", () => {
   });
 
   describe("getHistory", () => {
-    it("returns empty history for new instance", () => {
+    it("returns empty history for new instance", async () => {
       const info = manager.createInstance();
       const history = manager.getHistory(info.id);
       assert.deepEqual(history, []);
     });
 
-    it("returns transcript history for stopped managed chats without booting them", () => {
+    it("returns transcript history for stopped managed chats without booting them", async () => {
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
       try {
         db.upsertManaged(
@@ -1580,7 +1603,7 @@ describe("InstanceManager", () => {
       assert.equal(instance.info.lastActivityAt, originalLastActivity);
     });
 
-    it("refreshes hydrated chat history from transcript on passive reads", () => {
+    it("refreshes hydrated chat history from transcript on passive reads", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -1616,16 +1639,18 @@ describe("InstanceManager", () => {
       assert.equal(instance.info.lastMessage?.text, "Run `npm run build`. It passes.");
     });
 
-    it("throws for unknown instance", () => {
+    it("throws for unknown instance", async () => {
       assert.throws(() => manager.getHistory("nope"), /not found/);
     });
   });
 
   describe("broken spaces", () => {
-    it("allows passive history reads for chats in broken isolated spaces", () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Broken history guard",
-      });
+    it("allows passive history reads for chats in broken isolated spaces", async () => {
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Broken history guard",
+        });
       assert.ok(space.worktreePath);
 
       const info = manager.createInstance({ spaceId: space.id });
@@ -1642,9 +1667,11 @@ describe("InstanceManager", () => {
     });
 
     it("blocks sending messages to chats in broken isolated spaces", async () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Broken send guard",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Broken send guard",
+        });
       assert.ok(space.worktreePath);
 
       const info = manager.createInstance({ spaceId: space.id });
@@ -1886,9 +1913,11 @@ describe("InstanceManager", () => {
     });
 
     it("injects space brief contents into bootstrap context and keeps normal turns unwrapped", async () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Shared Bootstrap Context",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Shared Bootstrap Context",
+        });
       assert.ok(space.worktreePath);
       writeFileSync(
         join(space.worktreePath, ".relay", "space-context.md"),
@@ -1930,9 +1959,11 @@ describe("InstanceManager", () => {
     });
 
     it("does not inject seed-template-only space briefs (no real content)", async () => {
-      const space = manager.getSpaceManager().createSpace(manager.baseConfig.workingDirectory, {
-        name: "Pristine Brief",
-      });
+      const space = await manager
+        .getSpaceManager()
+        .createSpace(manager.baseConfig.workingDirectory, {
+          name: "Pristine Brief",
+        });
       assert.ok(space.worktreePath);
       // Leave the seeded template untouched — only headers + HTML-comment
       // placeholders, no authored content.
@@ -2179,7 +2210,7 @@ describe("InstanceManager", () => {
       return history;
     }
 
-    it("clears pendingPermission when an answered question is replayed", () => {
+    it("clears pendingPermission when an answered question is replayed", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2203,7 +2234,7 @@ describe("InstanceManager", () => {
       );
     });
 
-    it("keeps pendingPermission when the question is unanswered (no tool_result)", () => {
+    it("keeps pendingPermission when the question is unanswered (no tool_result)", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2219,7 +2250,7 @@ describe("InstanceManager", () => {
   });
 
   describe("stopAll", () => {
-    it("clears all instances", () => {
+    it("clears all instances", async () => {
       manager.createInstance();
       manager.createInstance();
       manager.stopAll();
@@ -2239,7 +2270,7 @@ describe("InstanceManager", () => {
   });
 
   describe("watcher dedup", () => {
-    it("skips watcher entries already handled by the managed process", () => {
+    it("skips watcher entries already handled by the managed process", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2290,7 +2321,7 @@ describe("InstanceManager", () => {
       });
     });
 
-    it("applies watcher entries newer than the managed-process watermark", () => {
+    it("applies watcher entries newer than the managed-process watermark", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2339,7 +2370,7 @@ describe("InstanceManager", () => {
       assert.equal(instance.info.stats.outputTokens, 20);
     });
 
-    it("skips instance:user emit from watcher for managed instances", () => {
+    it("skips instance:user emit from watcher for managed instances", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2379,7 +2410,7 @@ describe("InstanceManager", () => {
       assert.equal(emitted.length, 0);
     });
 
-    it("emits instance:user from watcher for external instances", () => {
+    it("emits instance:user from watcher for external instances", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2420,7 +2451,7 @@ describe("InstanceManager", () => {
       assert.equal(emitted[0].msg.text, "hello from terminal");
     });
 
-    it("maps watcher AskUserQuestion entries into pending composer state", () => {
+    it("maps watcher AskUserQuestion entries into pending composer state", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2534,7 +2565,7 @@ describe("InstanceManager", () => {
       };
     }
 
-    it("carries codex agent-path state across separate watched entries", () => {
+    it("carries codex agent-path state across separate watched entries", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
@@ -2562,7 +2593,7 @@ describe("InstanceManager", () => {
       assert.equal(completed.result, "Saved research notes.");
     });
 
-    it("seeds agent-path mappings from the pre-EOF transcript when attaching mid-flight", () => {
+    it("seeds agent-path mappings from the pre-EOF transcript when attaching mid-flight", async () => {
       // The spawn happened before Relay attached: its SubAgentActivity lives in
       // the transcript on disk, and the watcher starts at EOF. Without seeding,
       // the later FINAL_ANSWER (a fresh watched entry) can't resolve its author.
@@ -2736,7 +2767,7 @@ describe("InstanceManager", () => {
   });
 
   describe("modelOptions", () => {
-    it("restores modelOptions from model_options_json on managed session restore", () => {
+    it("restores modelOptions from model_options_json on managed session restore", async () => {
       const config = makeConfig();
       const db = new SessionDB(config.dbPath, noopLogger);
       const modelOptions = { reasoningEffort: "high", fastMode: true };
@@ -2834,7 +2865,7 @@ describe("InstanceManager", () => {
       assert.equal(captured[0].fastMode, true);
     });
 
-    it("persists modelOptions to model_options_json in DB on create with options", () => {
+    it("persists modelOptions to model_options_json in DB on create with options", async () => {
       const config = makeConfig();
       const mgr = trackManager(new InstanceManager(config));
       const info = mgr.createInstance({
@@ -2880,7 +2911,7 @@ describe("InstanceManager", () => {
       assert.notEqual(detail?.reviewInstanceId, newerReview.id);
     });
 
-    it("restores the persisted active attached review from managed runtime payload", () => {
+    it("restores the persisted active attached review from managed runtime payload", async () => {
       const config = makeConfig();
       const db = new SessionDB(config.dbPath, noopLogger);
       try {
@@ -2948,7 +2979,7 @@ describe("InstanceManager", () => {
       assert.equal(listEntry?.reviewInstanceId, "review-older");
     });
 
-    it("does not infer review metadata from legacy review titles during restore", () => {
+    it("does not infer review metadata from legacy review titles during restore", async () => {
       const config = makeConfig();
       const db = new SessionDB(config.dbPath, noopLogger);
       try {

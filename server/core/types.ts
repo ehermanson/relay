@@ -51,6 +51,48 @@ export interface SpaceInfo {
   targetBranch?: string | null;
   remoteStatus?: string | null;
   prUrl?: string | null;
+  /**
+   * Local branch this space merges into. Diff base, PR base, and Complete
+   * all use it. Recorded at creation; lazily backfilled for older spaces.
+   */
+  baseBranch?: string | null;
+  /** Last known PR status (persisted; refreshed via `GET /api/spaces/:id/pr`). */
+  prStatus?: SpacePrStatus | null;
+}
+
+export type SpacePrState = "open" | "draft" | "merged" | "closed";
+
+/** Deduplicated CI check counts for a PR (one entry per workflow + check name). */
+export interface SpacePrChecksSummary {
+  total: number;
+  passing: number;
+  failing: number;
+  pending: number;
+  /** Skipped/neutral/cancelled checks — neither passing nor failing. */
+  skipped: number;
+  state: "passing" | "failing" | "pending" | "none";
+}
+
+export interface SpacePrStatus {
+  number: number;
+  url: string;
+  title: string;
+  state: SpacePrState;
+  isDraft: boolean;
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  reviewDecision: "approved" | "changes_requested" | "review_required" | null;
+  checks: SpacePrChecksSummary;
+  /** When this snapshot was read from the provider (ms). */
+  fetchedAt: number;
+}
+
+/** `GET /api/spaces/:id/pr` response. */
+export interface SpacePrStatusResponse {
+  pr: SpacePrStatus | null;
+  /** True when `pr` is a cached/persisted snapshot because the refresh failed or is backing off. */
+  stale?: boolean;
+  error?: string;
+  errorKind?: string;
 }
 
 // =============================================================================
@@ -935,7 +977,9 @@ export type ClientMessage =
   | TerminalClosePayload
   | TerminalSubscribePayload
   | TerminalUnsubscribePayload
-  | TerminalListPayload;
+  | TerminalListPayload
+  | RepoStatusSubscribePayload
+  | RepoStatusUnsubscribePayload;
 
 // =============================================================================
 // Server -> Client Messages
@@ -1403,6 +1447,82 @@ export interface SpinOffSentMessage {
   spinOff: SpinOffInfo;
 }
 
+// ─── Repo status (push-based git status; see server/core/repo-status-service.ts) ───
+
+/** What a repo-status subscription is about; the server resolves it to a worktree dir. */
+export type RepoStatusTarget =
+  | { kind: "instance"; instanceId: string }
+  | { kind: "space"; spaceId: string }
+  | { kind: "project"; projectId: string };
+
+/** Porcelain-v2 status summary (mirrors `GitStatusSummary` in core/git.ts). */
+export interface RepoStatusSummary {
+  branch: string | null;
+  head: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  changeCount: number;
+  dirty: boolean;
+}
+
+/** Uncommitted change totals vs HEAD (untracked files count toward `files` only). */
+export interface RepoDiffStat {
+  files: number;
+  additions: number;
+  deletions: number;
+  truncated?: boolean;
+}
+
+export interface RepoStatusSnapshot {
+  /** Canonical (realpath) worktree directory. */
+  directory: string;
+  /** Changes whenever HEAD, branch/upstream tracking, index, or working-tree diff changes. */
+  fingerprint: string;
+  status: RepoStatusSummary | null;
+  diffStat: RepoDiffStat | null;
+  /** Status could not be computed (e.g. not a repository). */
+  error: string | null;
+  refreshedAt: number;
+  /** Last successful background fetch (informational; failures never surface as errors). */
+  lastFetchedAt: number | null;
+  lastFetchError: string | null;
+}
+
+export interface RepoStatusSubscribePayload {
+  type: "repo_status_subscribe";
+  target: RepoStatusTarget;
+}
+
+export interface RepoStatusUnsubscribePayload {
+  type: "repo_status_unsubscribe";
+  target: RepoStatusTarget;
+}
+
+/** Snapshot on subscribe, then on every fingerprint change. `status: null` + `error` when the target can't be resolved. */
+export interface RepoStatusMessage {
+  type: "repo_status";
+  target: RepoStatusTarget;
+  status: RepoStatusSnapshot | null;
+  error?: string;
+}
+
+/**
+ * Debounced diff-stat refresh for a chat's changed files (per-file
+ * additions/deletions). Merged into the current file list; never implies the
+ * chat is processing.
+ */
+export interface FileStatsMessage {
+  type: "file_stats";
+  instanceId?: string;
+  eventSequence?: number;
+  files: FileChange[];
+}
+
 export interface HeartbeatMessage {
   type: "heartbeat";
 }
@@ -1441,7 +1561,9 @@ export type ServerMessage =
   | TerminalScopesMessage
   | SpinOffCreatedMessage
   | SpinOffSentMessage
-  | HeartbeatMessage;
+  | HeartbeatMessage
+  | RepoStatusMessage
+  | FileStatsMessage;
 
 // =============================================================================
 // Session Types

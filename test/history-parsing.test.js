@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Tests restore-specific history hydration behavior.
  * Direct JSONL conversion coverage lives in history-conversion.test.js.

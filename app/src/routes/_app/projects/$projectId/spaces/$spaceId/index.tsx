@@ -8,6 +8,7 @@ import { useProjectContext } from "@/context/project-context";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useTerminalMessages } from "@/hooks/use-terminal-messages";
 import { useTerminalShortcut } from "@/hooks/use-terminal-shortcut";
+import { useRepoStatus } from "@/hooks/use-repo-status";
 import { useVerticalResize } from "@/hooks/use-vertical-resize";
 import { useSidecarPanels } from "@/stores/sidecar-store";
 import { useTerminalStore } from "@/stores/terminal-store";
@@ -30,6 +31,7 @@ import {
   fetchSpaceDiff,
   pushSpace,
   markSpinOffSent,
+  SpaceCompleteError,
 } from "@/lib/api";
 import { getProjectName } from "@/lib/project-route";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
@@ -61,7 +63,9 @@ export function SpaceView() {
   const projectName = getProjectName(artifacts.directory);
   const spaceQueryKey = ["space", spaceId] as const;
 
-  const [spaceDiff, setSpaceDiff] = useState<string | null>(null);
+  // One git action at a time (ref blocks same-tick double clicks).
+  const [pendingGitAction, setPendingGitAction] = useState<"commit" | "push" | null>(null);
+  const pendingGitActionRef = useRef<"commit" | "push" | null>(null);
   const [showDiffDrawer, setShowDiffDrawer] = useState(false);
   const [diffScrollToFile, setDiffScrollToFile] = useState<string | undefined>();
   const [closeTabId, setCloseTabId] = useState<string | null>(null);
@@ -191,28 +195,29 @@ export function SpaceView() {
   ]);
 
   const spaceInstances = buildSpaceInstances(spaceId, chatSummaries, instances);
-  const hasActiveChats = spaceInstances.some(
-    (instance) => instance.status === "idle" || instance.status === "processing",
-  );
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      fetchSpaceDiff(spaceId)
-        .then((diff) => {
-          if (!cancelled) setSpaceDiff(diff);
-        })
-        .catch(() => {
-          if (!cancelled) setSpaceDiff("");
-        });
-    };
-    load();
-    const interval = hasActiveChats ? setInterval(load, 5_000) : undefined;
-    return () => {
-      cancelled = true;
-      if (interval) clearInterval(interval);
-    };
-  }, [spaceId, hasActiveChats]);
+  // The space diff is refetched only when the worktree's repo_status
+  // fingerprint changes (agent turn end, Relay git ops, background fetch) or
+  // the drawer opens — never on an interval. A failure is an error state, not
+  // "no changes".
+  const spaceDiffQueryKey = ["spaceDiff", spaceId] as const;
+  const spaceDiffQuery = useQuery({
+    queryKey: spaceDiffQueryKey,
+    queryFn: () => fetchSpaceDiff(spaceId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+  useRepoStatus({ kind: "space", spaceId }, { invalidate: [spaceDiffQueryKey] });
+  const spaceDiff = spaceDiffQuery.data ?? null;
+  const spaceDiffError =
+    spaceDiffQuery.isError && spaceDiffQuery.data === undefined
+      ? spaceDiffQuery.error instanceof Error
+        ? spaceDiffQuery.error.message
+        : "Failed to load the space diff"
+      : null;
+  const refetchSpaceDiff = spaceDiffQuery.refetch;
+  const retrySpaceDiff = useCallback(() => void refetchSpaceDiff(), [refetchSpaceDiff]);
 
   // If we just created a new chat and know its ID, use that as activeTab immediately
   // (the route loader may not have the new chat in REST data yet, so chatId from URL may be stale)
@@ -277,7 +282,7 @@ export function SpaceView() {
   const isMobile = useMediaQuery("(max-width: 768px)");
   const hasStats =
     !!aggregatedStats && (aggregatedStats.inputTokens > 0 || aggregatedStats.outputTokens > 0);
-  const hasFilesContent = fileChanges.length > 0;
+  const hasFilesContent = fileChanges.length > 0 || !!spaceDiffError;
   const {
     activeTab: sidecarTab,
     isOpen: isSidecarOpen,
@@ -297,7 +302,7 @@ export function SpaceView() {
     hasPlanContent: false,
     hasStats,
     hasBriefContent: !space?.isDefault,
-    contentLoading: chatSummariesLoading || spaceDiff === null,
+    contentLoading: chatSummariesLoading || spaceDiffQuery.isPending,
   });
 
   // Once chatSummaries includes the pending new chat, sync the URL so the route
@@ -498,6 +503,8 @@ export function SpaceView() {
       setMergeDialog({
         phase: "error",
         message: err instanceof Error ? err.message : "Merge failed",
+        conflicts: err instanceof SpaceCompleteError ? err.conflicts : undefined,
+        targetBranch: err instanceof SpaceCompleteError ? err.targetBranch : undefined,
       });
     }
   };
@@ -511,6 +518,9 @@ export function SpaceView() {
   };
 
   const handleCommit = async (message: string) => {
+    if (pendingGitActionRef.current) return;
+    pendingGitActionRef.current = "commit";
+    setPendingGitAction("commit");
     try {
       const result = await commitSpace(spaceId, { message });
       if (!result.success) {
@@ -518,15 +528,19 @@ export function SpaceView() {
         return;
       }
       toast.success("Changes committed");
-      fetchSpaceDiff(spaceId)
-        .then((diff) => setSpaceDiff(diff))
-        .catch(() => setSpaceDiff(""));
+      void queryClient.invalidateQueries({ queryKey: spaceDiffQueryKey });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to commit");
+    } finally {
+      pendingGitActionRef.current = null;
+      setPendingGitAction(null);
     }
   };
 
   const handlePush = async (createPR?: boolean) => {
+    if (pendingGitActionRef.current) return;
+    pendingGitActionRef.current = "push";
+    setPendingGitAction("push");
     try {
       const result = await pushSpace(spaceId, { createPR });
       if (!result.pushed) {
@@ -540,7 +554,7 @@ export function SpaceView() {
       if (result.prUrl) {
         toast.success(
           <span>
-            PR created:{" "}
+            {result.prAction === "opened_existing" ? "PR already open:" : "PR created:"}{" "}
             <a href={result.prUrl} target="_blank" rel="noopener noreferrer" className="underline">
               {result.prUrl}
             </a>
@@ -565,6 +579,9 @@ export function SpaceView() {
       toast.success("Branch pushed to remote");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to push");
+    } finally {
+      pendingGitActionRef.current = null;
+      setPendingGitAction(null);
     }
   };
 
@@ -641,6 +658,7 @@ export function SpaceView() {
       terminalHeight,
       pathCopied,
       spaceDiff,
+      spaceDiffError,
       showDiffDrawer,
       diffScrollToFile,
       mergeDialog,
@@ -649,6 +667,7 @@ export function SpaceView() {
       deletePending,
       showDebug,
       commitDialogOpen,
+      pendingGitAction,
       ghCliDialogOpen,
       ghCliReason,
       editingSpaceName,
@@ -678,7 +697,10 @@ export function SpaceView() {
       openDiff: (scrollTo?: string) => {
         setDiffScrollToFile(scrollTo);
         setShowDiffDrawer(true);
+        // Opening the drawer is an explicit request for fresh content.
+        void queryClient.invalidateQueries({ queryKey: spaceDiffQueryKey });
       },
+      retrySpaceDiff,
       handleGoToMainWorkspace,
       handleCopyPath,
       handleTerminalResizeStart,

@@ -1,6 +1,6 @@
 /**
  * Tests for the "Merge to main" feature:
- * - git.ts: isWorktreeDirty(), mergeWorktreeBranch()
+ * - git.ts: await isWorktreeDirty(), await mergeWorktreeBranch()
  * - instance-manager.ts: mergeInstance()
  * - http.ts: POST /api/instances/:id/merge
  * - websocket.ts: merge_instance message
@@ -62,11 +62,11 @@ function makeRepoDir() {
 describe("git merge utilities", () => {
   let repoDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Clean up worktrees before removing the repo
     try {
       execSync("git worktree prune", { cwd: repoDir, stdio: "pipe" });
@@ -75,35 +75,36 @@ describe("git merge utilities", () => {
   });
 
   describe("isWorktreeDirty", () => {
-    it("returns false for a clean worktree", () => {
-      assert.equal(isWorktreeDirty(repoDir), false);
+    it("returns false for a clean worktree", async () => {
+      assert.equal(await isWorktreeDirty(repoDir), false);
     });
 
-    it("returns true when there are uncommitted changes", () => {
+    it("returns true when there are uncommitted changes", async () => {
       writeFileSync(join(repoDir, "dirty.txt"), "uncommitted\n");
-      assert.equal(isWorktreeDirty(repoDir), true);
+      assert.equal(await isWorktreeDirty(repoDir), true);
     });
 
-    it("returns true when there are staged but uncommitted changes", () => {
+    it("returns true when there are staged but uncommitted changes", async () => {
       writeFileSync(join(repoDir, "staged.txt"), "staged\n");
       execSync("git add staged.txt", { cwd: repoDir, stdio: "pipe" });
-      assert.equal(isWorktreeDirty(repoDir), true);
+      assert.equal(await isWorktreeDirty(repoDir), true);
     });
 
-    it("returns true for a nonexistent directory", () => {
-      assert.equal(isWorktreeDirty("/nonexistent/path"), true);
+    it("rejects for a nonexistent directory", async () => {
+      // Unknown is not "dirty" or "clean" — callers get an error to surface.
+      await assert.rejects(isWorktreeDirty("/nonexistent/path"), { kind: "not_a_repo" });
     });
   });
 
   describe("mergeWorktreeBranch", () => {
-    it("successfully merges a branch", () => {
+    it("successfully merges a branch", async () => {
       // Create a branch with a commit
       execSync("git checkout -b feature-branch", { cwd: repoDir, stdio: "pipe" });
       writeFileSync(join(repoDir, "feature.txt"), "new feature\n");
       execSync("git add . && git commit -m 'add feature'", { cwd: repoDir, stdio: "pipe" });
       execSync("git checkout main", { cwd: repoDir, stdio: "pipe" });
 
-      const result = mergeWorktreeBranch(repoDir, "feature-branch");
+      const result = await mergeWorktreeBranch(repoDir, "feature-branch");
       assert.deepEqual(result, { success: true });
 
       // Verify the file exists on main now
@@ -111,7 +112,7 @@ describe("git merge utilities", () => {
       assert.ok(output.includes("feature"));
     });
 
-    it("returns error on merge conflict and aborts", () => {
+    it("returns error on merge conflict and aborts", async () => {
       // Create conflicting changes
       execSync("git checkout -b conflict-branch", { cwd: repoDir, stdio: "pipe" });
       writeFileSync(join(repoDir, "README.md"), "conflict branch content\n");
@@ -120,20 +121,20 @@ describe("git merge utilities", () => {
       writeFileSync(join(repoDir, "README.md"), "main branch content\n");
       execSync("git add . && git commit -m 'main change'", { cwd: repoDir, stdio: "pipe" });
 
-      const result = mergeWorktreeBranch(repoDir, "conflict-branch");
+      const result = await mergeWorktreeBranch(repoDir, "conflict-branch");
       assert.equal(result.success, false);
       assert.ok(result.error.length > 0);
 
       // Verify repo is clean (merge was aborted)
-      assert.equal(isWorktreeDirty(repoDir), false);
+      assert.equal(await isWorktreeDirty(repoDir), false);
     });
 
-    it("returns error for nonexistent branch", () => {
-      const result = mergeWorktreeBranch(repoDir, "nonexistent-branch");
+    it("returns error for nonexistent branch", async () => {
+      const result = await mergeWorktreeBranch(repoDir, "nonexistent-branch");
       assert.equal(result.success, false);
     });
 
-    it("bypasses pre-commit hooks on merge commits", () => {
+    it("bypasses pre-commit hooks on merge commits", async () => {
       execSync("git checkout -b feature-branch", { cwd: repoDir, stdio: "pipe" });
       writeFileSync(join(repoDir, "feature.txt"), "new feature\n");
       execSync("git add . && git commit -m 'add feature'", { cwd: repoDir, stdio: "pipe" });
@@ -146,13 +147,13 @@ describe("git merge utilities", () => {
         },
       );
 
-      const result = mergeWorktreeBranch(repoDir, "feature-branch");
+      const result = await mergeWorktreeBranch(repoDir, "feature-branch");
       assert.deepEqual(result, { success: true });
     });
   });
 
   describe("squashMergeBranch", () => {
-    it("bypasses pre-commit hooks on squash commits", () => {
+    it("bypasses pre-commit hooks on squash commits", async () => {
       execSync("git checkout -b feature-branch", { cwd: repoDir, stdio: "pipe" });
       writeFileSync(join(repoDir, "feature.txt"), "new feature\n");
       execSync("git add . && git commit -m 'add feature'", { cwd: repoDir, stdio: "pipe" });
@@ -165,14 +166,14 @@ describe("git merge utilities", () => {
         },
       );
 
-      const result = squashMergeBranch(repoDir, "feature-branch", "feature squash");
+      const result = await squashMergeBranch(repoDir, "feature-branch", "feature squash");
       assert.deepEqual(result, { success: true });
     });
   });
 
   describe("end-to-end worktree merge flow", () => {
-    it("creates worktree, commits changes, merges back", () => {
-      const wt = createWorktree(repoDir, "test-wt");
+    it("creates worktree, commits changes, merges back", async () => {
+      const wt = await createWorktree(repoDir, "test-wt");
       assert.ok(wt);
 
       // Make a change in the worktree
@@ -183,17 +184,17 @@ describe("git merge utilities", () => {
       });
 
       // Worktree should be clean after commit
-      assert.equal(isWorktreeDirty(wt.worktreePath), false);
+      assert.equal(await isWorktreeDirty(wt.worktreePath), false);
 
       // Merge the worktree branch into main
-      const result = mergeWorktreeBranch(repoDir, wt.branchName);
+      const result = await mergeWorktreeBranch(repoDir, wt.branchName);
       assert.deepEqual(result, { success: true });
 
       // Clean up
-      removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+      await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
 
       // Verify the change is on main
-      const branch = getCurrentBranch(repoDir);
+      const branch = await getCurrentBranch(repoDir);
       assert.equal(branch, "main");
       const log = execSync("git log --oneline", { cwd: repoDir, stdio: "pipe" }).toString();
       assert.ok(log.includes("worktree commit"));
@@ -209,7 +210,7 @@ describe("InstanceManager.mergeInstance", () => {
   let manager;
   let tempDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "relay-merge-im-"));
     const config = resolveConfig({
       password: "test",
@@ -224,19 +225,19 @@ describe("InstanceManager.mergeInstance", () => {
     manager = new InstanceManager(config);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     manager.stopAll();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("throws for unknown instance", () => {
-    assert.throws(() => manager.mergeInstance("nonexistent"), /not found/);
+  it("throws for unknown instance", async () => {
+    await assert.rejects(manager.mergeInstance("nonexistent"), /not found/);
   });
 
-  it("throws for instance without worktree metadata", () => {
+  it("throws for instance without worktree metadata", async () => {
     // Use tempDir (not a git repo) so no worktree is created
     const info = manager.createInstance({ name: "No Worktree", workingDirectory: tempDir });
-    assert.throws(() => manager.mergeInstance(info.id), /does not have a worktree/);
+    await assert.rejects(manager.mergeInstance(info.id), /does not have a worktree/);
   });
 });
 

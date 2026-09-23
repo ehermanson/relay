@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, execSync } from "node:child_process";
@@ -8,7 +10,7 @@ import { SessionDB } from "../dist/server/core/db.js";
 import { noopLogger } from "../dist/server/core/logger.js";
 import { ProjectManager } from "../dist/server/core/project-manager.js";
 
-function withStrictGitIdentityEnv(run) {
+async function withStrictGitIdentityEnv(run) {
   const saved = {
     HOME: process.env.HOME,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
@@ -39,7 +41,7 @@ function withStrictGitIdentityEnv(run) {
   delete process.env.EMAIL;
 
   try {
-    run();
+    await run();
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) {
@@ -61,15 +63,15 @@ describe("ProjectManager.initProject", () => {
     }
   });
 
-  it("creates a project even when git identity must be provided explicitly", () => {
+  it("creates a project even when git identity must be provided explicitly", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "relay-project-init-"));
     cleanup.push(tempDir);
 
     const db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
     const manager = new ProjectManager(db, noopLogger);
 
-    withStrictGitIdentityEnv(() => {
-      const project = manager.initProject(tempDir, "new-project");
+    await withStrictGitIdentityEnv(async () => {
+      const project = await manager.initProject(tempDir, "new-project");
       const projectDir = join(tempDir, "new-project");
 
       assert.equal(realpathSync(project.directory), realpathSync(projectDir));

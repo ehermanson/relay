@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";

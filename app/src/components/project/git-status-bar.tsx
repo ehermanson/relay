@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import {
   Cloud,
   Loader2,
   FolderGit2,
+  AlertTriangle,
 } from "lucide-react";
 import {
   fetchBranches,
@@ -32,6 +33,7 @@ import {
 import { Tooltip } from "../ui/tooltip";
 import { ErrorBoundary } from "../ui/error-boundary";
 import { useProjectsQuery } from "../../hooks/use-projects-query";
+import { useRepoStatus } from "../../hooks/use-repo-status";
 import { CreateSpaceDialog, useCreateSpaceDialog } from "../spaces/create-space-dialog";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -54,6 +56,8 @@ function BranchSelector({
   onConvertWorktree: (worktreePath: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const switchingRef = useRef(false);
   const navigate = useNavigate();
 
   const { data } = useQuery({
@@ -89,6 +93,10 @@ function BranchSelector({
         setOpen(false);
         return;
       }
+      // One checkout at a time — a second click while one runs is ignored.
+      if (switchingRef.current) return;
+      switchingRef.current = true;
+      setSwitching(true);
       try {
         await checkoutBranch(projectId, branch);
         toast.success(`Switched to ${branch}`);
@@ -96,6 +104,9 @@ function BranchSelector({
         setOpen(false);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to switch branch");
+      } finally {
+        switchingRef.current = false;
+        setSwitching(false);
       }
     },
     [projectId, current, onBranchChanged, worktreesByBranch, navigate, onConvertWorktree],
@@ -109,7 +120,7 @@ function BranchSelector({
     const isWorktree = !!worktree;
     const isUnconvertedWorktree = isWorktree && !worktree.spaceId;
     return (
-      <CommandItem key={b} onSelect={() => void handleSelect(b)}>
+      <CommandItem key={b} disabled={switching} onSelect={() => void handleSelect(b)}>
         {isWorktree ? (
           <FolderGit2 size={13} className="shrink-0 text-muted" />
         ) : (
@@ -127,7 +138,7 @@ function BranchSelector({
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-text">
-        <GitBranch size={13} />
+        {switching ? <Loader2 size={13} className="animate-spin" /> : <GitBranch size={13} />}
         <span className="max-w-[180px] truncate">{current || "HEAD"}</span>
       </Popover.Trigger>
       <Popover.Content side="bottom" align="start" sideOffset={4} className="w-72 p-0">
@@ -188,9 +199,26 @@ function GitAction({
 
 export function GitStatusBar({ projectId }: GitStatusBarProps) {
   const queryClient = useQueryClient();
-  const [fetchLoading, setFetchLoading] = useState(false);
-  const [pullLoading, setPullLoading] = useState(false);
-  const [pushLoading, setPushLoading] = useState(false);
+  // Only one remote operation at a time: the ref blocks re-entry within the
+  // same tick (double clicks), the state drives the disabled/pending UI.
+  const [pendingOp, setPendingOp] = useState<"fetch" | "pull" | "push" | null>(null);
+  const pendingOpRef = useRef<"fetch" | "pull" | "push" | null>(null);
+  const runExclusive = useCallback(
+    async (op: "fetch" | "pull" | "push", fn: () => Promise<void>) => {
+      if (pendingOpRef.current) return;
+      pendingOpRef.current = op;
+      setPendingOp(op);
+      try {
+        await fn();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `Git ${op} failed`);
+      } finally {
+        pendingOpRef.current = null;
+        setPendingOp(null);
+      }
+    },
+    [],
+  );
   const spaceDialog = useCreateSpaceDialog();
   const { data: projects = [] } = useProjectsQuery();
   const project = projects.find((p) => p.slug === projectId || p.id === projectId);
@@ -206,90 +234,81 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
     [project, spaceDialog],
   );
 
-  const { data, refetch } = useQuery({
+  // Branch/ahead/behind/dirty refetch when the server's repo_status
+  // fingerprint changes (Relay git ops, agent turn end, background fetch);
+  // focus refetch stays as a fallback. No interval polling.
+  useRepoStatus({ kind: "project", projectId }, { invalidate: [["branches", projectId]] });
+  const { data, error } = useQuery({
     queryKey: ["branches", projectId],
     queryFn: () => fetchBranches(projectId),
     refetchOnWindowFocus: true,
     staleTime: 15000,
   });
 
-  // Refetch on visibility change (tab focus)
-  const refetchRef = useRef(refetch);
-  refetchRef.current = refetch;
-  useEffect(() => {
-    const handler = () => {
-      if (document.visibilityState === "visible") {
-        refetchRef.current();
-      }
-    };
-    document.addEventListener("visibilitychange", handler);
-    return () => document.removeEventListener("visibilitychange", handler);
-  }, []);
-
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["branches", projectId] });
   }, [queryClient, projectId]);
 
-  const handleFetch = useCallback(async () => {
-    setFetchLoading(true);
-    try {
-      const result = await gitFetch(projectId);
-      if (result.success) {
-        toast.success("Fetched from remote");
-        invalidate();
-      } else {
-        toast.error(result.error || "Fetch failed");
-      }
-    } finally {
-      setFetchLoading(false);
-    }
-  }, [projectId, invalidate]);
+  const handleFetch = useCallback(
+    () =>
+      runExclusive("fetch", async () => {
+        const result = await gitFetch(projectId);
+        if (result.success) {
+          toast.success("Fetched from remote");
+          invalidate();
+        } else {
+          toast.error(result.error || "Fetch failed");
+        }
+      }),
+    [projectId, invalidate, runExclusive],
+  );
 
   const current = data?.current ?? null;
   const ahead = data?.aheadBehind?.ahead ?? 0;
   const behind = data?.aheadBehind?.behind ?? 0;
+  // Older servers omit hasUpstream; treat that as "has upstream" (old behavior).
+  const hasUpstream = data?.hasUpstream ?? true;
   const dirty = data?.dirty ?? false;
   // Diverged (local ahead *and* behind) can't fast-forward — rebase local
   // commits onto the remote instead.
   const diverged = ahead > 0 && behind > 0;
 
-  const handlePull = useCallback(async () => {
-    setPullLoading(true);
-    try {
-      const result = await gitPull(projectId, { rebase: diverged });
-      if (result.success) {
-        toast.success(diverged ? "Rebased onto remote" : "Pulled from remote");
-        invalidate();
-      } else {
-        toast.error(result.error || "Pull failed");
-      }
-    } finally {
-      setPullLoading(false);
-    }
-  }, [projectId, invalidate, diverged]);
-
-  const handlePush = useCallback(async () => {
-    setPushLoading(true);
-    try {
-      const result = await gitPush(projectId, {
-        branch: current ?? undefined,
-        setUpstream: true,
-      });
-      if (result.success) {
-        if (result.pushed === false) {
-          toast.warning(result.message || "Nothing to push");
+  const handlePull = useCallback(
+    () =>
+      runExclusive("pull", async () => {
+        const result = await gitPull(projectId, { rebase: diverged });
+        if (result.success) {
+          toast.success(diverged ? "Rebased onto remote" : "Pulled from remote");
           invalidate();
-          return;
+        } else {
+          toast.error(result.error || "Pull failed");
         }
-        toast.success("Pushed to remote");
-        invalidate();
-      } else {
-        toast.error(result.error || "Push failed");
-      }
-    } finally {
-      setPushLoading(false);
-    }
-  }, [projectId, invalidate, current]);
+      }),
+    [projectId, invalidate, diverged, runExclusive],
+  );
+
+  const handlePush = useCallback(
+    () =>
+      runExclusive("push", async () => {
+        const result = await gitPush(projectId, {
+          branch: current ?? undefined,
+          setUpstream: true,
+        });
+        if (result.success) {
+          if (result.pushed === false) {
+            toast.warning(result.message || "Nothing to push");
+            invalidate();
+            return;
+          }
+          toast.success("Pushed to remote");
+          invalidate();
+        } else {
+          toast.error(result.error || "Push failed");
+        }
+      }),
+    [projectId, invalidate, current, runExclusive],
+  );
+  const busy = pendingOp !== null;
 
   return (
     <div className="flex items-center gap-1">
@@ -301,6 +320,16 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
           onConvertWorktree={handleConvertWorktree}
         />
       </ErrorBoundary>
+
+      {error && (
+        <Tooltip
+          content={`Git status unavailable: ${error instanceof Error ? error.message : "unknown error"}`}
+        >
+          <span className="flex items-center text-amber-400">
+            <AlertTriangle size={12} />
+          </span>
+        </Tooltip>
+      )}
 
       {dirty && (
         <Tooltip content="Uncommitted changes">
@@ -329,20 +358,32 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
         </div>
       )}
 
-      <GitAction icon={RefreshCw} tooltip="Fetch" loading={fetchLoading} onClick={handleFetch} />
+      <GitAction
+        icon={RefreshCw}
+        tooltip="Fetch"
+        loading={pendingOp === "fetch"}
+        disabled={busy}
+        onClick={() => void handleFetch()}
+      />
       <GitAction
         icon={ArrowDownToLine}
         tooltip={diverged ? "Pull (rebase — diverged from remote)" : "Pull"}
-        loading={pullLoading}
-        disabled={behind === 0}
-        onClick={handlePull}
+        loading={pendingOp === "pull"}
+        disabled={busy || behind === 0}
+        onClick={() => void handlePull()}
       />
       <GitAction
         icon={ArrowUpFromLine}
-        tooltip={behind > 0 ? "Pull before pushing — behind remote" : "Push"}
-        loading={pushLoading}
-        disabled={ahead === 0 || behind > 0}
-        onClick={handlePush}
+        tooltip={
+          !hasUpstream
+            ? "Push and set upstream"
+            : behind > 0
+              ? "Pull before pushing — behind remote"
+              : "Push"
+        }
+        loading={pendingOp === "push"}
+        disabled={busy || !current || (hasUpstream && (ahead === 0 || behind > 0))}
+        onClick={() => void handlePush()}
       />
 
       <CreateSpaceDialog

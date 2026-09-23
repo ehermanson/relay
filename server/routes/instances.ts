@@ -12,6 +12,7 @@ import {
 import { MaxProcessesError } from "#core/instance-manager.js";
 import type { ProviderKind, ProviderModelOptions, ProviderRuntimeMode } from "#core/types.js";
 import { readJsonBody } from "#server/hono-utils.js";
+import { gitErrorResponse, gitResultStatus } from "#server/git-http.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
 
 export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
@@ -130,12 +131,13 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     return c.json({ error: "Instance not found" }, 404);
   });
 
-  app.post("/api/instances/:id/merge", (c) => {
+  app.post("/api/instances/:id/merge", async (c) => {
     try {
-      const { targetBranch } = instanceManager.mergeInstance(c.req.param("id"));
+      const { targetBranch } = await instanceManager.mergeInstance(c.req.param("id"));
       return c.json({ success: true, targetBranch });
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Failed to merge" }, 400);
+      const { body, status } = gitErrorResponse(err, "Failed to merge");
+      return c.json(body, status);
     }
   });
 
@@ -176,8 +178,8 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     return c.json({ history });
   });
 
-  app.get("/api/instances/:id/diff", (c) => {
-    const diff = instanceManager.getInstanceDiff(c.req.param("id"), c.req.query("path"));
+  app.get("/api/instances/:id/diff", async (c) => {
+    const diff = await instanceManager.getInstanceDiff(c.req.param("id"), c.req.query("path"));
     if (diff === null) {
       return c.json({ error: "Instance not found or not a git repo" }, 404);
     }
@@ -192,23 +194,24 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     try {
       const body = await readJsonBody<{ message?: string }>(c);
       const dir = instance.workingDirectory;
-      if (!isWorktreeDirty(dir)) {
+      if (!(await isWorktreeDirty(dir))) {
         return c.json({ success: false, error: "Nothing to commit — working tree is clean" }, 400);
       }
-      const result = commitAll(dir, body.message || "Commit via Relay");
-      return c.json(result, result.success ? 200 : 400);
+      const result = await commitAll(dir, body.message || "Commit via Relay");
+      return c.json(result, gitResultStatus(result));
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Failed to commit" }, 400);
+      const { body, status } = gitErrorResponse(err, "Failed to commit");
+      return c.json(body, status);
     }
   });
 
-  app.get("/api/instances/:id/git/status", (c) => {
+  app.get("/api/instances/:id/git/status", async (c) => {
     const instance = instanceManager.getInstance(c.req.param("id"));
     if (!instance) {
       return c.json({ error: "Instance not found" }, 404);
     }
     try {
-      const status = getWorktreeStatus(instance.workingDirectory);
+      const status = await getWorktreeStatus(instance.workingDirectory);
 
       // `reviewableDiff` is broader than `dirty`: for a space chat, committed
       // work on the space branch (not yet in the base branch) also counts as
@@ -220,19 +223,19 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         if (spaceId) {
           const space = instanceManager.getSpaceManager().getSpace(spaceId);
           const baseRef =
-            space?.targetBranch || getDefaultBranch(instance.workingDirectory) || null;
+            space?.targetBranch || (await getDefaultBranch(instance.workingDirectory)) || null;
           if (baseRef && baseRef !== space?.gitBranch) {
-            reviewableDiff = getCommitsAhead(instance.workingDirectory, baseRef) > 0;
+            // An unknown base ref means "can't tell" — not reviewable.
+            reviewableDiff =
+              (await getCommitsAhead(instance.workingDirectory, baseRef).catch(() => 0)) > 0;
           }
         }
       }
 
       return c.json({ ...status, reviewableDiff });
     } catch (err) {
-      return c.json(
-        { error: err instanceof Error ? err.message : "Failed to read git status" },
-        400,
-      );
+      const { body, status } = gitErrorResponse(err, "Failed to read git status");
+      return c.json(body, status);
     }
   });
 
@@ -247,7 +250,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         setUpstream?: boolean;
         commitMessage?: string;
       }>(c);
-      const dirty = isWorktreeDirty(instance.workingDirectory);
+      const dirty = await isWorktreeDirty(instance.workingDirectory);
       const commitMessage = body.commitMessage?.trim();
       if (dirty && !commitMessage) {
         return c.json(
@@ -256,9 +259,9 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         );
       }
       if (dirty && commitMessage) {
-        const commitResult = commitAll(instance.workingDirectory, commitMessage);
+        const commitResult = await commitAll(instance.workingDirectory, commitMessage);
         if (!commitResult.success) {
-          return c.json(commitResult, 400);
+          return c.json(commitResult, gitResultStatus(commitResult));
         }
       }
       const result = await gitPush(
@@ -266,9 +269,10 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         body.branch || instance.gitInfo?.branch || instance.gitBranch,
         body.setUpstream,
       );
-      return c.json(result, result.success ? 200 : 400);
+      return c.json(result, gitResultStatus(result));
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Failed to push" }, 400);
+      const { body, status } = gitErrorResponse(err, "Failed to push");
+      return c.json(body, status);
     }
   });
 
@@ -278,7 +282,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Instance not found" }, 404);
     }
     const result = await gitFetch(instance.workingDirectory);
-    return c.json(result, result.success ? 200 : 400);
+    return c.json(result, gitResultStatus(result));
   });
 
   app.post("/api/instances/:id/git/pull", async (c) => {
@@ -290,6 +294,6 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       () => ({}) as { rebase?: boolean },
     );
     const result = await gitPull(instance.workingDirectory, { rebase: body.rebase === true });
-    return c.json(result, result.success ? 200 : 400);
+    return c.json(result, gitResultStatus(result));
   });
 }

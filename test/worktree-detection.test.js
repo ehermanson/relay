@@ -97,7 +97,7 @@ function createSpaceWorktree(repoDir, shortId = "aabbccdd") {
 // =============================================================================
 
 describe("isRelayWorktreePath", () => {
-  it("matches standard relay worktree paths", () => {
+  it("matches standard relay worktree paths", async () => {
     const home = homedir();
     assert.equal(isRelayWorktreePath(`${home}/.relay/worktrees/8c625689`), true);
     assert.equal(isRelayWorktreePath(`${home}/.relay/worktrees/abcdef01`), true);
@@ -105,13 +105,13 @@ describe("isRelayWorktreePath", () => {
     assert.equal(isRelayWorktreePath(`${home}/.relay/worktrees/abcdef01/`), true);
   });
 
-  it("rejects non-worktree paths", () => {
+  it("rejects non-worktree paths", async () => {
     assert.equal(isRelayWorktreePath("/Users/foo/projects/my-app"), false);
     assert.equal(isRelayWorktreePath("/tmp/test"), false);
     assert.equal(isRelayWorktreePath("/home/user/.relay/uploads/file.png"), false);
   });
 
-  it("rejects paths outside the relay worktree root", () => {
+  it("rejects paths outside the relay worktree root", async () => {
     const home = homedir();
     assert.equal(isRelayWorktreePath(`${home}/.relay/worktrees/space-abcdef01/nested`), false);
     assert.equal(isRelayWorktreePath(`${home}/.relay/worktrees`), false);
@@ -123,15 +123,15 @@ describe("resolveWorktreeOrigin", () => {
   let worktree;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Clean up any worktrees we created
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -141,8 +141,8 @@ describe("resolveWorktreeOrigin", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("resolves worktree origin to the main repo directory", () => {
-    worktree = createWorktree(repoDir, "aabbccdd");
+  it("resolves worktree origin to the main repo directory", async () => {
+    worktree = await createWorktree(repoDir, "aabbccdd");
     assert.ok(worktree, "worktree should be created");
     cleanupWorktrees.push(worktree);
 
@@ -152,7 +152,7 @@ describe("resolveWorktreeOrigin", () => {
     assert.equal(realpathSync(origin), realpathSync(repoDir));
   });
 
-  it("resolves space worktree origins to the main repo directory", () => {
+  it("resolves space worktree origins to the main repo directory", async () => {
     worktree = createSpaceWorktree(repoDir, "a1b2c3d4");
     assert.ok(worktree, "space worktree should be created");
     cleanupWorktrees.push(worktree);
@@ -162,12 +162,12 @@ describe("resolveWorktreeOrigin", () => {
     assert.equal(realpathSync(origin), realpathSync(repoDir));
   });
 
-  it("returns null for non-relay-worktree paths", () => {
+  it("returns null for non-relay-worktree paths", async () => {
     assert.equal(resolveWorktreeOrigin(repoDir), null);
     assert.equal(resolveWorktreeOrigin("/tmp/test"), null);
   });
 
-  it("returns null for nonexistent worktree directory", () => {
+  it("returns null for nonexistent worktree directory", async () => {
     const home = homedir();
     assert.equal(resolveWorktreeOrigin(`${home}/.relay/worktrees/deadbeef`), null);
   });
@@ -181,14 +181,14 @@ describe("isGitWorktree / resolveAnyWorktreeOrigin", () => {
   let repoDir;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -198,13 +198,13 @@ describe("isGitWorktree / resolveAnyWorktreeOrigin", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("detects relay worktrees as git worktrees", () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+  it("detects relay worktrees as git worktrees", async () => {
+    const wt = await createWorktree(repoDir, "aabbccdd");
     cleanupWorktrees.push(wt);
     assert.equal(isGitWorktree(wt.worktreePath), true);
   });
 
-  it("detects non-relay worktrees as git worktrees", () => {
+  it("detects non-relay worktrees as git worktrees", async () => {
     // Create a plain git worktree outside the relay worktree base
     const wtPath = join(mkdtempSync(join(tmpdir(), "relay-nonrelay-wt-")), "wt");
     const branchName = "test-external-wt";
@@ -219,15 +219,15 @@ describe("isGitWorktree / resolveAnyWorktreeOrigin", () => {
     assert.equal(realpathSync(origin), realpathSync(repoDir));
   });
 
-  it("returns false for a primary repo (not a worktree)", () => {
+  it("returns false for a primary repo (not a worktree)", async () => {
     assert.equal(isGitWorktree(repoDir), false);
   });
 
-  it("returns false for a non-git directory", () => {
+  it("returns false for a non-git directory", async () => {
     assert.equal(isGitWorktree(tmpdir()), false);
   });
 
-  it("resolveAnyWorktreeOrigin returns null for non-worktree", () => {
+  it("resolveAnyWorktreeOrigin returns null for non-worktree", async () => {
     assert.equal(resolveAnyWorktreeOrigin(repoDir), null);
   });
 });
@@ -240,14 +240,14 @@ describe("getGitInfo worktree detection", () => {
   let repoDir;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -257,8 +257,8 @@ describe("getGitInfo worktree detection", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("reports isWorktree=true for a git worktree directory", () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+  it("reports isWorktree=true for a git worktree directory", async () => {
+    const wt = await createWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -286,7 +286,7 @@ describe("getGitInfo worktree detection", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("reports isWorktree=false for a normal git repo", () => {
+  it("reports isWorktree=false for a normal git repo", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "relay-gitinfo-"));
     const config = resolveConfig({
       password: "test",
@@ -326,15 +326,15 @@ describe("scanAllSessions worktree recovery", () => {
   let tempDir;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
     tempDir = mkdtempSync(join(tmpdir(), "relay-scan-wt-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -345,8 +345,8 @@ describe("scanAllSessions worktree recovery", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("resolves worktree cwd to original directory during JSONL scan", () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+  it("resolves worktree cwd to original directory during JSONL scan", async () => {
+    const wt = await createWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -401,8 +401,8 @@ describe("scanAllSessions worktree recovery", () => {
     manager.stopAll();
   });
 
-  it("does not create a project for worktree sessions when parent is not registered", () => {
-    const wt = createWorktree(repoDir, "orphaned1");
+  it("does not create a project for worktree sessions when parent is not registered", async () => {
+    const wt = await createWorktree(repoDir, "orphaned1");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -443,7 +443,7 @@ describe("scanAllSessions worktree recovery", () => {
     manager.stopAll();
   });
 
-  it("rebuilds relay space sessions from space-prefixed worktree transcript dirs", () => {
+  it("rebuilds relay space sessions from space-prefixed worktree transcript dirs", async () => {
     const shortId = randomHex(8);
     const wt = createSpaceWorktree(repoDir, shortId);
     assert.ok(wt, "space worktree should be created");
@@ -497,13 +497,13 @@ describe("scanAllSessions worktree recovery", () => {
     manager.stopAll();
   });
 
-  it("archives gracefully when worktree no longer exists on disk", () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+  it("archives gracefully when worktree no longer exists on disk", async () => {
+    const wt = await createWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     const worktreePath = wt.worktreePath;
 
     // Remove the worktree so resolveWorktreeOrigin can't use git
-    removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+    await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
     assert.ok(!existsSync(worktreePath), "worktree should be removed");
 
     // Simulate a JSONL file whose cwd field is the now-deleted worktree path
@@ -554,15 +554,15 @@ describe("scanAllSessions archive protection", () => {
   let tempDir;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
     tempDir = mkdtempSync(join(tmpdir(), "relay-archive-wt-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -573,8 +573,8 @@ describe("scanAllSessions archive protection", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("does not archive worktree instances when original_directory exists", () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+  it("does not archive worktree instances when original_directory exists", async () => {
+    const wt = await createWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -616,7 +616,7 @@ describe("scanAllSessions archive protection", () => {
 
     // Now remove the worktree (simulating cleanup) — the working_directory
     // should now point to the original repo dir (which still exists)
-    removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+    await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
     cleanupWorktrees.length = 0; // Already cleaned up
 
     // Second scan should NOT archive the instance because original_directory exists
@@ -628,7 +628,7 @@ describe("scanAllSessions archive protection", () => {
     manager2.stopAll();
   });
 
-  it("relinks restored instances when session metadata rebuilds their missing spaces", () => {
+  it("relinks restored instances when session metadata rebuilds their missing spaces", async () => {
     const wt = createSpaceWorktree(repoDir, "9f8e7d6c");
     assert.ok(wt, "space worktree should be created");
     cleanupWorktrees.push(wt);
@@ -701,7 +701,7 @@ describe("scanAllSessions archive protection", () => {
     manager1.stopAll();
   });
 
-  it("rebuilds merged relay spaces as completed when only session metadata survives", () => {
+  it("rebuilds merged relay spaces as completed when only session metadata survives", async () => {
     const wt = createSpaceWorktree(repoDir, "9abc1234");
     assert.ok(wt, "space worktree should be created");
     cleanupWorktrees.push(wt);
@@ -729,7 +729,7 @@ describe("scanAllSessions archive protection", () => {
       "-m",
       "merge space",
     ]);
-    removeWorktree(repoDir, wt.worktreePath, wt.branchName, { keepBranch: true });
+    await removeWorktree(repoDir, wt.worktreePath, wt.branchName, { keepBranch: true });
     cleanupWorktrees.length = 0;
 
     const warnings = [];
@@ -841,7 +841,7 @@ describe("scanAllSessions archive protection", () => {
     manager.stopAll();
   });
 
-  it("reassigns relay worktree-owned space rows back to the registered repo during recovery", () => {
+  it("reassigns relay worktree-owned space rows back to the registered repo during recovery", async () => {
     const wt = createSpaceWorktree(repoDir, "b6583aaa");
     assert.ok(wt, "space worktree should be created");
     cleanupWorktrees.push(wt);
@@ -947,15 +947,15 @@ describe("live discovery worktree recovery", () => {
   let tempDir;
   const cleanupWorktrees = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
     tempDir = mkdtempSync(join(tmpdir(), "relay-live-wt-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const wt of cleanupWorktrees) {
       try {
-        removeWorktree(repoDir, wt.worktreePath, wt.branchName);
+        await removeWorktree(repoDir, wt.worktreePath, wt.branchName);
       } catch {}
     }
     cleanupWorktrees.length = 0;
@@ -967,7 +967,7 @@ describe("live discovery worktree recovery", () => {
   });
 
   it("discovers running Claude sessions from relay worktrees under the registered repo", async () => {
-    const wt = createWorktree(repoDir, "aabbccdd");
+    const wt = await createWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 

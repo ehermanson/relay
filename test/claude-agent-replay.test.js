@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Transcript replay of delegated agent work (Claude JSONL):
  *  - Agent tool_use + toolUseResult → agent_update (spawn / async launch / sync completion)

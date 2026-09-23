@@ -10,7 +10,7 @@ import {
   realpathSync,
   existsSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import {
@@ -52,31 +52,31 @@ describe("isGitRepo", () => {
   let repoDir;
   let plainDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
     plainDir = mkdtempSync(join(tmpdir(), "relay-git-test-plain-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(repoDir, { recursive: true, force: true });
     rmSync(plainDir, { recursive: true, force: true });
   });
 
-  it("returns true for a git repository", () => {
+  it("returns true for a git repository", async () => {
     assert.equal(isGitRepo(repoDir), true);
   });
 
-  it("returns true for a subdirectory within a git repo", () => {
+  it("returns true for a subdirectory within a git repo", async () => {
     const sub = join(repoDir, "subdir");
     mkdirSync(sub);
     assert.equal(isGitRepo(sub), true);
   });
 
-  it("returns false for a non-git directory", () => {
+  it("returns false for a non-git directory", async () => {
     assert.equal(isGitRepo(plainDir), false);
   });
 
-  it("returns false for a nonexistent directory", () => {
+  it("returns false for a nonexistent directory", async () => {
     assert.equal(isGitRepo("/tmp/nonexistent-relay-test-dir-xyz"), false);
   });
 });
@@ -84,15 +84,15 @@ describe("isGitRepo", () => {
 describe("getRepoRoot", () => {
   let repoDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("returns the repo root from the root directory", () => {
+  it("returns the repo root from the root directory", async () => {
     const expected = execSync("git rev-parse --show-toplevel", {
       cwd: repoDir,
       encoding: "utf-8",
@@ -102,7 +102,7 @@ describe("getRepoRoot", () => {
     assert.equal(realpathSync(actual), realpathSync(expected));
   });
 
-  it("returns the repo root from a subdirectory", () => {
+  it("returns the repo root from a subdirectory", async () => {
     const sub = join(repoDir, "nested");
     mkdirSync(sub);
     const root = getRepoRoot(sub);
@@ -110,7 +110,7 @@ describe("getRepoRoot", () => {
     assert.equal(getRepoRoot(repoDir), root);
   });
 
-  it("returns null for a non-git directory", () => {
+  it("returns null for a non-git directory", async () => {
     const plain = mkdtempSync(join(tmpdir(), "relay-git-test-"));
     try {
       assert.equal(getRepoRoot(plain), null);
@@ -123,84 +123,85 @@ describe("getRepoRoot", () => {
 describe("getCurrentBranch", () => {
   let repoDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("returns the default branch name", () => {
-    const branch = getCurrentBranch(repoDir);
+  it("returns the default branch name", async () => {
+    const branch = await getCurrentBranch(repoDir);
     assert.ok(branch);
     // Could be 'main' or 'master' depending on git config
     assert.ok(typeof branch === "string" && branch.length > 0);
   });
 
-  it("returns the correct branch after checkout", () => {
+  it("returns the correct branch after checkout", async () => {
     execSync("git checkout -b test-branch", { cwd: repoDir, stdio: "pipe" });
-    assert.equal(getCurrentBranch(repoDir), "test-branch");
+    assert.equal(await getCurrentBranch(repoDir), "test-branch");
   });
 
-  it("returns null for a non-git directory", () => {
+  it("rejects for a non-git directory", async () => {
     const plain = mkdtempSync(join(tmpdir(), "relay-git-test-"));
     try {
-      assert.equal(getCurrentBranch(plain), null);
+      // Failure is distinguishable from "no branch" (detached HEAD → null).
+      await assert.rejects(getCurrentBranch(plain), { kind: "not_a_repo" });
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
   });
 
-  it("returns null for detached HEAD instead of the literal HEAD ref", () => {
+  it("returns null for detached HEAD instead of the literal HEAD ref", async () => {
     execSync("git checkout --detach", { cwd: repoDir, stdio: "pipe" });
-    assert.equal(getCurrentBranch(repoDir), null);
+    assert.equal(await getCurrentBranch(repoDir), null);
   });
 });
 
 describe("getRemoteUrl", () => {
   let repoDir;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("normalizes SSH URLs to HTTPS", () => {
+  it("normalizes SSH URLs to HTTPS", async () => {
     execSync("git remote add origin git@github.com:owner/repo.git", {
       cwd: repoDir,
       stdio: "pipe",
     });
-    assert.equal(getRemoteUrl(repoDir), "https://github.com/owner/repo");
+    assert.equal(await getRemoteUrl(repoDir), "https://github.com/owner/repo");
   });
 
-  it("strips .git suffix from HTTPS URLs", () => {
+  it("strips .git suffix from HTTPS URLs", async () => {
     execSync("git remote add origin https://github.com/owner/repo.git", {
       cwd: repoDir,
       stdio: "pipe",
     });
-    assert.equal(getRemoteUrl(repoDir), "https://github.com/owner/repo");
+    assert.equal(await getRemoteUrl(repoDir), "https://github.com/owner/repo");
   });
 
-  it("returns HTTPS URL as-is when no .git suffix", () => {
+  it("returns HTTPS URL as-is when no .git suffix", async () => {
     execSync("git remote add origin https://github.com/owner/repo", {
       cwd: repoDir,
       stdio: "pipe",
     });
-    assert.equal(getRemoteUrl(repoDir), "https://github.com/owner/repo");
+    assert.equal(await getRemoteUrl(repoDir), "https://github.com/owner/repo");
   });
 
-  it("returns null when no remote configured", () => {
-    assert.equal(getRemoteUrl(repoDir), null);
+  it("returns null when no remote configured", async () => {
+    assert.equal(await getRemoteUrl(repoDir), null);
   });
 
-  it("returns null for a non-git directory", () => {
+  it("rejects for a non-git directory", async () => {
     const plain = mkdtempSync(join(tmpdir(), "relay-git-test-"));
     try {
-      assert.equal(getRemoteUrl(plain), null);
+      await assert.rejects(getRemoteUrl(plain), { kind: "not_a_repo" });
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
@@ -208,12 +209,12 @@ describe("getRemoteUrl", () => {
 });
 
 describe("isRelayWorktreePath", () => {
-  it("matches valid relay worktree paths", () => {
+  it("matches valid relay worktree paths", async () => {
     assert.equal(isRelayWorktreePath("/home/user/.relay/worktrees/abcd1234"), true);
     assert.equal(isRelayWorktreePath("/Users/me/.relay/worktrees/deadbeef/"), true);
   });
 
-  it("rejects non-relay paths", () => {
+  it("rejects non-relay paths", async () => {
     assert.equal(isRelayWorktreePath("/home/user/projects/myapp"), false);
     assert.equal(isRelayWorktreePath("/home/user/.relay/uploads/abcd1234"), false);
     assert.equal(isRelayWorktreePath("/home/user/.relay/worktrees/"), false);
@@ -224,15 +225,15 @@ describe("worktree lifecycle", () => {
   let repoDir;
   let worktreeResult;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     repoDir = makeRepoDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Clean up worktree if it was created
     if (worktreeResult) {
       try {
-        removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
+        await removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
       } catch {
         // ignore
       }
@@ -240,31 +241,31 @@ describe("worktree lifecycle", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("createWorktree creates a worktree and branch", () => {
-    worktreeResult = createWorktree(repoDir, "test1234");
+  it("createWorktree creates a worktree and branch", async () => {
+    worktreeResult = await createWorktree(repoDir, "test1234");
     assert.ok(worktreeResult);
     assert.ok(worktreeResult.worktreePath.includes("test1234"));
     assert.equal(worktreeResult.branchName, "relay/test1234");
 
     // Verify the worktree is a valid git repo
     assert.equal(isGitRepo(worktreeResult.worktreePath), true);
-    assert.equal(getCurrentBranch(worktreeResult.worktreePath), "relay/test1234");
+    assert.equal(await getCurrentBranch(worktreeResult.worktreePath), "relay/test1234");
   });
 
-  it("isWorktreeDirty detects clean vs dirty state", () => {
-    worktreeResult = createWorktree(repoDir, "dirty1234");
+  it("isWorktreeDirty detects clean vs dirty state", async () => {
+    worktreeResult = await createWorktree(repoDir, "dirty1234");
     assert.ok(worktreeResult);
 
     // Clean initially
-    assert.equal(isWorktreeDirty(worktreeResult.worktreePath), false);
+    assert.equal(await isWorktreeDirty(worktreeResult.worktreePath), false);
 
     // Make it dirty
     writeFileSync(join(worktreeResult.worktreePath, "new-file.txt"), "dirty");
-    assert.equal(isWorktreeDirty(worktreeResult.worktreePath), true);
+    assert.equal(await isWorktreeDirty(worktreeResult.worktreePath), true);
   });
 
-  it("treats tracked relay task metadata as normal worktree changes", () => {
-    worktreeResult = createWorktree(repoDir, "relaymd1");
+  it("treats tracked relay task metadata as normal worktree changes", async () => {
+    worktreeResult = await createWorktree(repoDir, "relaymd1");
     assert.ok(worktreeResult);
 
     mkdirSync(join(worktreeResult.worktreePath, ".relay"), { recursive: true });
@@ -273,18 +274,18 @@ describe("worktree lifecycle", () => {
       '{"version":1,"tasks":[{"id":"1","title":"Test","status":"open"}]}\n',
     );
 
-    const status = getWorktreeStatus(worktreeResult.worktreePath);
-    assert.equal(isWorktreeDirty(worktreeResult.worktreePath), true);
+    const status = await getWorktreeStatus(worktreeResult.worktreePath);
+    assert.equal(await isWorktreeDirty(worktreeResult.worktreePath), true);
     assert.equal(status.dirty, true);
     assert.equal(status.changeCount, 1);
   });
 
-  it("hasWorktreeChanges detects committed changes", () => {
-    worktreeResult = createWorktree(repoDir, "changes1");
+  it("hasWorktreeChanges detects committed changes", async () => {
+    worktreeResult = await createWorktree(repoDir, "changes1");
     assert.ok(worktreeResult);
 
     // No changes yet
-    assert.equal(hasWorktreeChanges(worktreeResult.worktreePath, repoDir), false);
+    assert.equal(await hasWorktreeChanges(worktreeResult.worktreePath, repoDir), false);
 
     // Add a commit in the worktree
     writeFileSync(join(worktreeResult.worktreePath, "new.txt"), "content");
@@ -293,10 +294,10 @@ describe("worktree lifecycle", () => {
       stdio: "pipe",
     });
 
-    assert.equal(hasWorktreeChanges(worktreeResult.worktreePath, repoDir), true);
+    assert.equal(await hasWorktreeChanges(worktreeResult.worktreePath, repoDir), true);
   });
 
-  it("does not execute shell syntax embedded in worktree paths", () => {
+  it("does not execute shell syntax embedded in worktree paths", async () => {
     const previousBase = process.env.RELAY_WORKTREE_BASE;
     const markerFile = join(repoDir, "pwned");
     const maliciousBase = join(dirname(repoDir), "wt-$(touch pwned)");
@@ -305,7 +306,7 @@ describe("worktree lifecycle", () => {
     try {
       process.env.RELAY_WORKTREE_BASE = maliciousBase;
 
-      worktreeResult = createWorktree(repoDir, "safe1234");
+      worktreeResult = await createWorktree(repoDir, "safe1234");
       assert.ok(worktreeResult);
       assert.equal(existsSync(markerFile), false);
 
@@ -315,10 +316,10 @@ describe("worktree lifecycle", () => {
         stdio: "pipe",
       });
 
-      assert.equal(hasWorktreeChanges(worktreeResult.worktreePath, repoDir), true);
+      assert.equal(await hasWorktreeChanges(worktreeResult.worktreePath, repoDir), true);
       assert.equal(existsSync(markerFile), false);
 
-      removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
+      await removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
       assert.equal(existsSync(markerFile), false);
       worktreeResult = null;
     } finally {
@@ -330,29 +331,35 @@ describe("worktree lifecycle", () => {
     }
   });
 
-  it("commitAll stages and commits all changes", () => {
-    worktreeResult = createWorktree(repoDir, "commit12");
+  it("commitAll stages and commits all changes", async () => {
+    worktreeResult = await createWorktree(repoDir, "commit12");
     assert.ok(worktreeResult);
 
     writeFileSync(join(worktreeResult.worktreePath, "file.txt"), "modified");
     writeFileSync(join(worktreeResult.worktreePath, "new.txt"), "added");
 
-    const result = commitAll(worktreeResult.worktreePath, "test commit");
+    const result = await commitAll(worktreeResult.worktreePath, "test commit");
     assert.deepEqual(result, { success: true });
 
     // Should be clean after commit
-    assert.equal(isWorktreeDirty(worktreeResult.worktreePath), false);
+    assert.equal(await isWorktreeDirty(worktreeResult.worktreePath), false);
   });
 
-  it("commitAll bypasses pre-commit hooks", () => {
-    worktreeResult = createWorktree(repoDir, "hookpass");
+  it("commitAll bypasses pre-commit hooks", async () => {
+    worktreeResult = await createWorktree(repoDir, "hookpass");
     assert.ok(worktreeResult);
 
-    const hookPath = execSync("git rev-parse --git-path hooks/pre-commit", {
-      cwd: worktreeResult.worktreePath,
-      encoding: "utf8",
-      stdio: "pipe",
-    }).trim();
+    // --git-path may be relative to the worktree; never resolve it against
+    // process.cwd(), which is the real repo when tests run from a git hook.
+    const hookPath = resolve(
+      worktreeResult.worktreePath,
+      execSync("git rev-parse --git-path hooks/pre-commit", {
+        cwd: worktreeResult.worktreePath,
+        encoding: "utf8",
+        stdio: "pipe",
+      }).trim(),
+    );
+    assert.ok(!hookPath.startsWith(process.cwd()), `hook path escaped the temp repo: ${hookPath}`);
     writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
     execSync(`chmod +x "${hookPath}"`, {
       cwd: worktreeResult.worktreePath,
@@ -360,24 +367,24 @@ describe("worktree lifecycle", () => {
     });
     writeFileSync(join(worktreeResult.worktreePath, "hooked.txt"), "content");
 
-    const result = commitAll(worktreeResult.worktreePath, "hook commit");
+    const result = await commitAll(worktreeResult.worktreePath, "hook commit");
     assert.deepEqual(result, { success: true });
-    assert.equal(isWorktreeDirty(worktreeResult.worktreePath), false);
+    assert.equal(await isWorktreeDirty(worktreeResult.worktreePath), false);
   });
 
-  it("commitAll returns error when nothing to commit", () => {
-    worktreeResult = createWorktree(repoDir, "empty123");
+  it("commitAll returns error when nothing to commit", async () => {
+    worktreeResult = await createWorktree(repoDir, "empty123");
     assert.ok(worktreeResult);
 
-    const result = commitAll(worktreeResult.worktreePath, "empty commit");
+    const result = await commitAll(worktreeResult.worktreePath, "empty commit");
     assert.equal(result.success, false);
   });
 
-  it("removeWorktree cleans up worktree and branch", () => {
-    worktreeResult = createWorktree(repoDir, "remove12");
+  it("removeWorktree cleans up worktree and branch", async () => {
+    worktreeResult = await createWorktree(repoDir, "remove12");
     assert.ok(worktreeResult);
 
-    removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
+    await removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);
 
     // Branch should be gone
     const branches = execSync("git branch", { cwd: repoDir, encoding: "utf-8" });
@@ -415,7 +422,7 @@ describe("gitPull", () => {
     git(dir, `commit -m ${message}`);
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "relay-git-pull-"));
     remote = join(root, "remote.git");
     mkdirSync(remote, { recursive: true });
@@ -430,7 +437,7 @@ describe("gitPull", () => {
     cloneB = cloneOf("b");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -441,7 +448,7 @@ describe("gitPull", () => {
     const result = await gitPull(cloneB);
     assert.deepEqual(result, { success: true });
     assert.match(execSync("cat file.txt", { cwd: cloneB, encoding: "utf8" }), /upstream/);
-    assert.deepEqual(getAheadBehind(cloneB), { ahead: 0, behind: 0 });
+    assert.deepEqual(await getAheadBehind(cloneB), { ahead: 0, behind: 0 });
   });
 
   it("ff-only pull fails on a diverged branch, rebase pull succeeds", async () => {
@@ -450,7 +457,7 @@ describe("gitPull", () => {
     git(cloneA, "push origin main");
 
     await gitFetch(cloneB);
-    assert.deepEqual(getAheadBehind(cloneB), { ahead: 1, behind: 1 });
+    assert.deepEqual(await getAheadBehind(cloneB), { ahead: 1, behind: 1 });
 
     const ffOnly = await gitPull(cloneB);
     assert.equal(ffOnly.success, false);
@@ -458,7 +465,7 @@ describe("gitPull", () => {
     const rebased = await gitPull(cloneB, { rebase: true });
     assert.deepEqual(rebased, { success: true });
     // Local commit replayed on top of upstream: ahead 1 (unpushed), behind 0.
-    assert.deepEqual(getAheadBehind(cloneB), { ahead: 1, behind: 0 });
+    assert.deepEqual(await getAheadBehind(cloneB), { ahead: 1, behind: 0 });
     assert.match(execSync("cat file.txt", { cwd: cloneB, encoding: "utf8" }), /upstream/);
     assert.match(execSync("cat local.txt", { cwd: cloneB, encoding: "utf8" }), /local/);
   });

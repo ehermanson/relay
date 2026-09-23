@@ -1,6 +1,6 @@
 import { readdirSync, statSync, type Dirent } from "fs";
 import { join, relative } from "path";
-import { execFileSync } from "child_process";
+import { GIT_TIMEOUTS, runGit } from "#core/git-runner.js";
 
 export interface WorkspaceEntry {
   path: string;
@@ -24,17 +24,22 @@ function normalizeEntryPath(value: string): string {
     .replace(/^\/+/, "");
 }
 
-function listGitFiles(root: string): string[] {
+async function listGitFiles(root: string): Promise<string[]> {
   try {
-    const output = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
-      cwd: root,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5000,
-      encoding: "utf8",
-    });
-    return output
-      .split("\n")
-      .map((line) => normalizeEntryPath(line.trim()))
+    const { stdout } = await runGit(
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      {
+        cwd: root,
+        readOnly: true,
+        timeoutMs: GIT_TIMEOUTS.fast,
+        operation: "git ls-files",
+        // Huge repos: keep what fits instead of failing — the index is capped anyway.
+        truncateOutput: true,
+      },
+    );
+    return stdout
+      .split("\0")
+      .map((line) => normalizeEntryPath(line))
       .filter(Boolean)
       .slice(0, MAX_INDEX_FILES);
   } catch {
@@ -90,14 +95,16 @@ function deriveDirectories(files: string[]): string[] {
   return Array.from(directories);
 }
 
-function getWorkspaceIndex(root: string): { files: string[]; directories: string[] } {
+async function getWorkspaceIndex(
+  root: string,
+): Promise<{ files: string[]; directories: string[] }> {
   const now = Date.now();
   const cached = workspaceCache.get(root);
   if (cached && cached.expiresAt > now) {
     return { files: cached.files, directories: cached.directories };
   }
 
-  const files = listGitFiles(root);
+  const files = await listGitFiles(root);
   const resolvedFiles = files.length > 0 ? files : walkFiles(root);
   const directories = deriveDirectories(resolvedFiles);
   const value = {
@@ -128,7 +135,10 @@ function scoreEntry(entry: WorkspaceEntry, query: string): number {
   return -1;
 }
 
-export function searchWorkspaceEntries(root: string, rawQuery: string): WorkspaceEntry[] {
+export async function searchWorkspaceEntries(
+  root: string,
+  rawQuery: string,
+): Promise<WorkspaceEntry[]> {
   try {
     const stat = statSync(root);
     if (!stat.isDirectory()) return [];
@@ -137,7 +147,7 @@ export function searchWorkspaceEntries(root: string, rawQuery: string): Workspac
   }
 
   const query = normalizeEntryPath(rawQuery.trim().replace(/^@+/, "").toLowerCase());
-  const { files, directories } = getWorkspaceIndex(root);
+  const { files, directories } = await getWorkspaceIndex(root);
   const entries: WorkspaceEntry[] = [
     ...directories.map((path) => ({ path, kind: "directory" as const })),
     ...files.map((path) => ({ path, kind: "file" as const })),

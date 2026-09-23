@@ -145,6 +145,8 @@ export function SpaceViewBody() {
                       onClose={actions.closeSidecar}
                       stats={shared.aggregatedStats}
                       fileChanges={shared.fileChanges}
+                      diffError={shared.spaceDiffError}
+                      onRetryDiff={actions.retrySpaceDiff}
                       onOpenDiff={actions.openDiff}
                     />
                   </div>
@@ -243,6 +245,8 @@ export function SpaceViewBody() {
             onSelectTab={actions.selectSidecarTab}
             stats={shared.aggregatedStats}
             fileChanges={shared.fileChanges}
+            diffError={shared.spaceDiffError}
+            onRetryDiff={actions.retrySpaceDiff}
             onOpenDiff={openDiffAndCloseMobile}
             isMobileOverlay
             onClose={() => actions.setSidecarMobileOpen(false)}

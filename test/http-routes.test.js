@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Tests for HTTP routes that were missing coverage:
  * - GET /logout
@@ -312,7 +314,7 @@ describe("HTTP Routes — Additional Coverage", () => {
       },
     };
 
-    beforeEach(() => {
+    beforeEach(async () => {
       getAvailableProviders = () => [{ provider: "claude", label: "Claude Code", capabilities }];
       getProviderCapabilities = () => capabilities;
     });
@@ -832,7 +834,7 @@ describe("HTTP Routes — Additional Coverage", () => {
     it("isolates Main and Space task files", async () => {
       const session = auth.createSession();
       const project = createTaskProject("scoped-task-project");
-      const space = manager.getSpaceManager().createSpace(project.directory, {
+      const space = await manager.getSpaceManager().createSpace(project.directory, {
         name: "Scoped tasks",
       });
       assert.ok(space.worktreePath);
@@ -894,7 +896,7 @@ describe("HTTP Routes — Additional Coverage", () => {
       const session = auth.createSession();
       const first = createTaskProject("first-task-project");
       const second = createTaskProject("second-task-project");
-      const foreignSpace = manager.getSpaceManager().createSpace(first.directory, {
+      const foreignSpace = await manager.getSpaceManager().createSpace(first.directory, {
         name: "Foreign tasks",
       });
       const headers = { Cookie: `session=${session.id}` };
@@ -909,7 +911,7 @@ describe("HTTP Routes — Additional Coverage", () => {
       assert.equal(crossProject.status, 404);
       assert.equal(crossProject.body.code, "scope_not_found");
 
-      manager.getSpaceManager().deleteSpace(foreignSpace.id);
+      await manager.getSpaceManager().deleteSpace(foreignSpace.id);
       const closed = await request(
         server,
         "POST",
@@ -919,7 +921,7 @@ describe("HTTP Routes — Additional Coverage", () => {
       assert.equal(closed.status, 409);
       assert.equal(closed.body.code, "scope_unavailable");
 
-      const brokenSpace = manager.getSpaceManager().createSpace(second.directory, {
+      const brokenSpace = await manager.getSpaceManager().createSpace(second.directory, {
         name: "Broken tasks",
       });
       assert.ok(brokenSpace.worktreePath);

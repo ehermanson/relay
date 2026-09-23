@@ -1,3 +1,5 @@
+// Isolate worktrees/git env even when this file is run directly with `node --test`.
+import "./test-env.js";
 /**
  * Live delegated-agent frames and chat state.
  *
@@ -92,7 +94,12 @@ describe("live delegated-agent frames", () => {
     assert.equal(instance.info.status, "idle");
 
     // Background child keeps working.
-    proc.emit("output", { type: "output", text: "child progress", isWaiting: false, agentId: "toolu_child" });
+    proc.emit("output", {
+      type: "output",
+      text: "child progress",
+      isWaiting: false,
+      agentId: "toolu_child",
+    });
     proc.emit("activity", {
       type: "activity",
       activity: "tool_use",
@@ -105,12 +112,24 @@ describe("live delegated-agent frames", () => {
 
     assert.equal(instance.info.status, "idle", "attributed frames do not set processing");
     assert.equal(instance.planFilePath, undefined, "child edits never become the plan file");
-    assert.equal(instance.info.pendingPermission, undefined, "child denial never becomes chat pending state");
+    assert.equal(
+      instance.info.pendingPermission,
+      undefined,
+      "child denial never becomes chat pending state",
+    );
     assert.notEqual(instance.info.lastMessage?.text, "child progress", "preview stays the root's");
 
     // ...but they are recorded and broadcast for the nested transcript.
-    assert.ok(instance.history.some((e) => e.message.type === "output" && e.message.agentId === "toolu_child"));
-    assert.ok(instance.history.some((e) => e.message.type === "activity" && e.message.agentId === "toolu_child"));
+    assert.ok(
+      instance.history.some(
+        (e) => e.message.type === "output" && e.message.agentId === "toolu_child",
+      ),
+    );
+    assert.ok(
+      instance.history.some(
+        (e) => e.message.type === "activity" && e.message.agentId === "toolu_child",
+      ),
+    );
     assert.ok(outputs.some((m) => m.agentId === "toolu_child"));
     assert.ok(activities.some((m) => m.agentId === "toolu_child"));
 

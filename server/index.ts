@@ -132,6 +132,17 @@ export class Relay {
     // Not awaited — server is already listening.
     this.instanceManager.scanInBackground().then(() => {
       this.instanceManager.startDiscovery();
+      // Maintenance: clear space worktree dirs whose repository is gone.
+      // After the scan so recovered space rows count as references.
+      this.instanceManager
+        .getSpaceManager()
+        .sweepOrphanedWorktrees()
+        .catch((err) => {
+          this.config.logger.warn(
+            "[Relay] Orphaned worktree sweep failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
     });
   }
 

@@ -20,7 +20,7 @@ import {
   isGitRepo,
   getRepoRoot,
   getRemoteUrl,
-  getCurrentBranch,
+  readGitHeadInfo,
   isRelayWorktreePath,
   resolveWorktreeOrigin,
   isGitWorktree,
@@ -204,11 +204,11 @@ export class ProjectManager extends EventEmitter {
             : project.name,
         directory: canonicalDirectory,
         repo_root: canonicalDirectory,
-        remote_url: getRemoteUrl(canonicalDirectory),
-        target_branch: project.target_branch ?? getCurrentBranch(canonicalDirectory),
+        target_branch: project.target_branch ?? readGitHeadInfo(canonicalDirectory)?.branch ?? null,
       };
 
       this.db.upsertProject(normalized);
+      this.scheduleGitInfoRefresh(normalized.id);
       this.db.assignSessionsToProject(normalized.id, project.directory);
       this.db.reassignSpacesToProjectDirectory(canonicalDirectory, project.directory);
       this.logger.info(
@@ -260,8 +260,9 @@ export class ProjectManager extends EventEmitter {
           slug,
           directory: canonicalDirectory,
           repo_root: canonicalDirectory,
-          remote_url: getRemoteUrl(canonicalDirectory),
-          target_branch: getCurrentBranch(canonicalDirectory),
+          // Filled in asynchronously by scheduleGitInfoRefresh (needs git).
+          remote_url: null,
+          target_branch: readGitHeadInfo(canonicalDirectory)?.branch ?? null,
           custom_instructions: null,
           default_space_branch: null,
           space_branch_source: null,
@@ -272,6 +273,7 @@ export class ProjectManager extends EventEmitter {
           suggestions_json: null,
         };
         this.db.upsertProject(project);
+        this.scheduleGitInfoRefresh(project.id);
         existingByDirectory.set(canonicalDirectory, project);
         recovered++;
         this.emit("project:created", rowToProject(project));
@@ -344,8 +346,10 @@ export class ProjectManager extends EventEmitter {
       return rowToProject(existing);
     }
 
-    const remoteUrl = getRemoteUrl(canonicalDirectory);
-    const targetBranch = opts?.targetBranch ?? getCurrentBranch(canonicalDirectory);
+    // The remote URL needs git; it's filled in asynchronously right after
+    // registration (scheduleGitInfoRefresh) so registration never blocks.
+    const remoteUrl = null;
+    const targetBranch = opts?.targetBranch ?? readGitHeadInfo(canonicalDirectory)?.branch ?? null;
 
     const now = Date.now();
     const slug = generateUniqueSlug(canonicalDirectory, this.collectExistingSlugs());
@@ -387,13 +391,14 @@ export class ProjectManager extends EventEmitter {
       `[ProjectManager] Registered project: ${project.name} (${canonicalDirectory})`,
     );
     this.emit("project:created", project);
+    this.scheduleGitInfoRefresh(project.id);
     return project;
   }
 
   /**
    * Create a new project directory, initialize a git repo, and register it.
    */
-  initProject(parentDirectory: string, name: string): Project {
+  async initProject(parentDirectory: string, name: string): Promise<Project> {
     if (!existsSync(parentDirectory)) {
       throw new Error(`Parent directory does not exist: ${parentDirectory}`);
     }
@@ -409,7 +414,7 @@ export class ProjectManager extends EventEmitter {
     }
 
     mkdirSync(targetDir, { recursive: true });
-    gitInit(targetDir);
+    await gitInit(targetDir);
 
     return this.addProject(targetDir, { name });
   }
@@ -527,8 +532,12 @@ export class ProjectManager extends EventEmitter {
     return project;
   }
 
-  /** Refresh cached git metadata for a project. */
-  refreshGitInfo(id: string): Project | undefined {
+  /**
+   * Refresh cached git metadata (repo root, remote URL) for a project.
+   * Emits `project:updated` when anything changed. A git failure keeps the
+   * previously cached remote URL.
+   */
+  async refreshGitInfo(id: string): Promise<Project | undefined> {
     const existing = this.db.getProject(id);
     if (!existing) return undefined;
 
@@ -537,17 +546,39 @@ export class ProjectManager extends EventEmitter {
 
     if (isGitRepo(existing.directory)) {
       repoRoot = getRepoRoot(existing.directory);
-      remoteUrl = getRemoteUrl(existing.directory);
+      try {
+        remoteUrl = await getRemoteUrl(existing.directory);
+      } catch (err) {
+        this.logger.debug(
+          `[ProjectManager] Could not read remote URL for ${existing.directory}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
-    const row: ProjectRow = {
-      ...existing,
-      repo_root: repoRoot,
-      remote_url: remoteUrl,
-    };
-
+    // Re-read: the row may have changed (or been removed) while git ran.
+    const latest = this.db.getProject(id);
+    if (!latest) return undefined;
+    if (latest.repo_root === repoRoot && latest.remote_url === remoteUrl) {
+      return rowToProject(latest);
+    }
+    const row: ProjectRow = { ...latest, repo_root: repoRoot, remote_url: remoteUrl };
     this.db.upsertProject(row);
-    return rowToProject(row);
+    const project = rowToProject(row);
+    this.emit("project:updated", project);
+    return project;
+  }
+
+  /** Fire-and-forget `refreshGitInfo` for paths that must stay synchronous. */
+  private scheduleGitInfoRefresh(id: string): void {
+    void this.refreshGitInfo(id).catch((err) => {
+      this.logger.debug(
+        `[ProjectManager] Git metadata refresh failed for ${id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
   }
 
   /** Update last_activity_at for a project. */

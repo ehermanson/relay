@@ -5,7 +5,6 @@
  * Separated from server creation so consumers can compose their own server.
  */
 
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import { homedir } from "node:os";
@@ -14,6 +13,7 @@ import { getRequestListener } from "@hono/node-server";
 import { Hono } from "hono";
 import type { AuthManager } from "#server/auth.js";
 import type { InstanceManager } from "#core/instance-manager.js";
+import { readGitHeadInfo } from "#core/git.js";
 import type { RelayConfig } from "#server/config.js";
 import type {
   NativeOpenRequest,
@@ -41,6 +41,7 @@ import { registerPushRoutes } from "#server/routes/push.js";
 import { registerSettingsRoutes } from "#server/routes/settings.js";
 import { registerSearchRoutes } from "#server/routes/search.js";
 import { registerWorkspaceRoutes } from "#server/routes/workspace.js";
+import { registerRepoStatusRoutes } from "#server/routes/repo-status.js";
 import { registerSpinOffRoutes } from "#server/routes/spin-offs.js";
 import { registerSystemUpdateRoutes } from "#server/routes/system-update.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
@@ -56,25 +57,14 @@ const indexHtmlPath = path.join(uiDistDir, "index.html");
 const packageJsonPath = path.join(projectRoot, "package.json");
 const packageVersion: string = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")).version;
 
-/** Detect whether the relay server itself is running from a git worktree. */
+/**
+ * Detect whether the relay server itself is running from a git worktree.
+ * Filesystem-only (reads HEAD/commondir), so module load never spawns git.
+ */
 function getSelfGitInfo(): { branch: string; isWorktree: boolean; worktreePath?: string } | null {
-  try {
-    const repoRoot = projectRoot;
-    const opts = { cwd: repoRoot, timeout: 2000, encoding: "utf8" as const };
-    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts).trim();
-    const gitDir = path.resolve(
-      repoRoot,
-      execFileSync("git", ["rev-parse", "--git-dir"], opts).trim(),
-    );
-    const gitCommonDir = path.resolve(
-      repoRoot,
-      execFileSync("git", ["rev-parse", "--git-common-dir"], opts).trim(),
-    );
-    const isWorktree = gitDir !== gitCommonDir;
-    return { branch, isWorktree, worktreePath: isWorktree ? repoRoot : undefined };
-  } catch {
-    return null;
-  }
+  const info = readGitHeadInfo(projectRoot);
+  if (!info) return null;
+  return { ...info, worktreePath: info.isWorktree ? projectRoot : undefined };
 }
 
 const selfGitInfo = getSelfGitInfo();
@@ -314,6 +304,7 @@ export function createRequestHandler(
   registerSpaceRoutes(app, deps);
   registerSpinOffRoutes(app, deps);
   registerWorkspaceRoutes(app, deps);
+  registerRepoStatusRoutes(app, deps);
   registerProviderRoutes(app, deps);
   registerNativeOpenRoutes(app, deps);
   registerUploadRoutes(app, deps);
