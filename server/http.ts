@@ -36,6 +36,8 @@ import { registerProviderRoutes } from "#server/routes/providers.js";
 import { registerSpaceRoutes } from "#server/routes/spaces.js";
 import { registerUiRoutes } from "#server/routes/ui.js";
 import { registerUploadRoutes } from "#server/routes/uploads.js";
+import { registerOutboxRoutes } from "#server/routes/outbox.js";
+import { registerPushRoutes } from "#server/routes/push.js";
 import { registerSettingsRoutes } from "#server/routes/settings.js";
 import { registerSearchRoutes } from "#server/routes/search.js";
 import { registerWorkspaceRoutes } from "#server/routes/workspace.js";
@@ -84,6 +86,7 @@ interface RequestHandlerOverrides {
   getOpenTargets?: (targetPath: string) => Promise<NativeOpenTargetsResponse>;
   openNativePath?: (request: NativeOpenRequest) => Promise<void>;
   updateManager?: UpdateManager;
+  pushNotifications?: import("#server/push-notifications.js").PushNotifications;
 }
 
 function createGitRepoLister() {
@@ -297,6 +300,7 @@ export function createRequestHandler(
       overrides.openNativePath ?? ((request: NativeOpenRequest) => projectOpener.open(request)),
     getGitRepos: createGitRepoLister(),
     updateManager,
+    pushNotifications: overrides.pushNotifications,
   };
 
   const app = new Hono<AppEnv>();
@@ -313,6 +317,8 @@ export function createRequestHandler(
   registerProviderRoutes(app, deps);
   registerNativeOpenRoutes(app, deps);
   registerUploadRoutes(app, deps);
+  registerOutboxRoutes(app, deps);
+  registerPushRoutes(app, deps);
   registerSearchRoutes(app, deps);
   registerSettingsRoutes(app, deps);
   registerSystemUpdateRoutes(app, deps);

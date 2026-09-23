@@ -23,6 +23,8 @@ import { InputToolbar, type OverflowSection } from "@/components/chat/input-area
 import { ProviderSwitchDialog } from "@/components/chat/input-area/provider-switch-dialog";
 import { buildModelLabelLookup } from "@/components/chat/input-area/shared";
 import { useAttachmentState } from "@/components/chat/input-area/use-attachment-state";
+import type { OutboxAttachment } from "@/lib/outbox-store";
+import { useOutbox } from "@/context/outbox-context";
 import { useAvailableProviders } from "@/hooks/use-available-providers";
 import { useComposerMenus } from "@/components/chat/input-area/use-composer-menus";
 import { useComposerState } from "@/components/chat/input-area/use-composer-state";
@@ -50,7 +52,8 @@ import {
 } from "@/components/chat/input-area/provider-model-picker";
 
 interface InputAreaProps {
-  onSend: (text: string, images?: string[], internal?: boolean, attachments?: string[]) => void;
+  onSend: (text: string, images?: string[], internal?: boolean, attachments?: string[]) => boolean;
+  onQueue: (text: string, attachments: OutboxAttachment[]) => Promise<void>;
   onAnswerUserInput?: (
     requestId: string,
     answers: Record<string, UserInputAnswer>,
@@ -194,6 +197,7 @@ function InlineReplyFragmentStrip({
 
 export function InputArea({
   onSend,
+  onQueue,
   onAnswerUserInput,
   onCancel,
   onSwitchProvider,
@@ -228,6 +232,10 @@ export function InputArea({
   const slashListRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [retrying, setRetrying] = useState(false);
+  const [savingSend, setSavingSend] = useState(false);
+  const savingSendRef = useRef(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const { messages: outboxMessages, retry: retryOutbox, discard: discardOutbox } = useOutbox();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const projectCtx = useContext(ProjectContext);
   const taskProjectId = projectId ?? projectCtx?.artifacts.projectId;
@@ -242,6 +250,7 @@ export function InputArea({
   const {
     attachments,
     uploading,
+    persistenceError,
     addFiles,
     removeAttachment,
     clearAttachments,
@@ -499,46 +508,71 @@ export function InputArea({
   };
 
   const handleSend = async () => {
-    if (!isConnected || uploading) return;
+    if (savingSendRef.current || uploading) return;
 
     let text = draftText.trim();
     const hasFragments = inlineReplyFragments.length > 0;
     if (!text && attachments.length === 0 && !hasFragments) return;
-
-    // Prepend inline reply fragments as markdown blockquotes
-    if (hasFragments) {
-      const fragmentText = inlineReplyFragments
-        .map((f) => formatInlineReplyFragment(f.selectedText, f.reply))
-        .join("\n\n");
-      text = text ? `${fragmentText}\n\n${text}` : fragmentText;
-    }
-
-    // Expand task references into structured XML blocks for the model
-    if (taskProjectId) {
-      const taskMap = new Map((scopedTasks ?? []).map((task) => [task.id.toLowerCase(), task]));
-      const missingIds = getTaskReferenceIds(text).filter((id) => !taskMap.has(id));
-      if (missingIds.length > 0) {
-        const resolved = await Promise.allSettled(
-          missingIds.map((taskId) => fetchTask(taskProjectId, taskId, { spaceId: taskSpaceId })),
-        );
-        for (const result of resolved) {
-          const task = result.status === "fulfilled" ? result.value : null;
-          if (task) taskMap.set(task.id.toLowerCase(), task);
-        }
-      }
-      text = expandTaskReferences(text, [...taskMap.values()]);
-    }
-
-    let uploaded: { images: string[]; attachments: string[] } | undefined;
+    savingSendRef.current = true;
+    setSavingSend(true);
+    setSendError(null);
     try {
-      uploaded = await uploadAttachedFiles();
-    } catch {
-      return;
-    }
+      // Prepend inline reply fragments as markdown blockquotes
+      if (hasFragments) {
+        const fragmentText = inlineReplyFragments
+          .map((f) => formatInlineReplyFragment(f.selectedText, f.reply))
+          .join("\n\n");
+        text = text ? `${fragmentText}\n\n${text}` : fragmentText;
+      }
 
-    onSend(text, uploaded?.images, undefined, uploaded?.attachments);
-    resetAfterSend();
-    clearAttachments();
+      // Expand task references into structured XML blocks for the model
+      if (taskProjectId) {
+        const taskMap = new Map((scopedTasks ?? []).map((task) => [task.id.toLowerCase(), task]));
+        const missingIds = getTaskReferenceIds(text).filter((id) => !taskMap.has(id));
+        if (missingIds.length > 0) {
+          const resolved = await Promise.allSettled(
+            missingIds.map((taskId) => fetchTask(taskProjectId, taskId, { spaceId: taskSpaceId })),
+          );
+          for (const result of resolved) {
+            const task = result.status === "fulfilled" ? result.value : null;
+            if (task) taskMap.set(task.id.toLowerCase(), task);
+          }
+        }
+        text = expandTaskReferences(text, [...taskMap.values()]);
+      }
+
+      if (isConnected) {
+        const uploaded = await uploadAttachedFiles();
+        const sent = onSend(text, uploaded?.images, undefined, uploaded?.attachments);
+        if (!sent)
+          await onQueue(
+            text,
+            attachments.map((entry) => ({
+              name: entry.file.name,
+              type: entry.file.type,
+              blob: entry.file,
+              kind: entry.kind,
+            })),
+          );
+      } else {
+        await onQueue(
+          text,
+          attachments.map((entry) => ({
+            name: entry.file.name,
+            type: entry.file.type,
+            blob: entry.file,
+            kind: entry.kind,
+          })),
+        );
+      }
+      resetAfterSend();
+      clearAttachments();
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : "Could not save message. Try again.");
+    } finally {
+      savingSendRef.current = false;
+      setSavingSend(false);
+    }
   };
 
   const promptAnswerForQuestion = (question: UserInputQuestion) => {
@@ -705,26 +739,30 @@ export function InputArea({
 
   const disabled = !isConnected;
   const composerDisabled =
-    disabled || (hasPendingPrompt && !allowPromptTextInput && !promptReplyMode);
+    (disabled && isInSpecialMode) ||
+    (hasPendingPrompt && !allowPromptTextInput && !promptReplyMode);
   const composerHelpText =
     capabilities?.composerHints?.helpText ?? "Use @ for files and / for commands";
 
   const hasPlanFeedback = planFeedbackText.trim().length > 0 || planComments.length > 0;
-  const composerPlaceholder = !isConnected
-    ? "Reconnecting to Relay..."
-    : hasPendingPrompt
-      ? promptReplyMode
-        ? "Write your reply to send back to the agent..."
-        : buildPromptPlaceholder(primaryPromptQuestion, allowPromptTextInput)
-      : hasPendingPlan
-        ? "Add feedback to refine the plan, or leave blank to approve"
-        : isStopped
-          ? isMobile
-            ? "Send a message to resume..."
-            : `Send a message to resume... ${composerHelpText}`
-          : isMobile
-            ? "Send a message..."
-            : `Send a message... ${composerHelpText}`;
+  const composerPlaceholder =
+    !isConnected && !isInSpecialMode
+      ? "Write a message to send when Relay reconnects..."
+      : !isConnected
+        ? "Reconnecting to Relay..."
+        : hasPendingPrompt
+          ? promptReplyMode
+            ? "Write your reply to send back to the agent..."
+            : buildPromptPlaceholder(primaryPromptQuestion, allowPromptTextInput)
+          : hasPendingPlan
+            ? "Add feedback to refine the plan, or leave blank to approve"
+            : isStopped
+              ? isMobile
+                ? "Send a message to resume..."
+                : `Send a message to resume... ${composerHelpText}`
+              : isMobile
+                ? "Send a message..."
+                : `Send a message... ${composerHelpText}`;
   const composerValue = hasPendingPrompt
     ? promptText
     : hasPendingPlan
@@ -757,6 +795,69 @@ export function InputArea({
     ) : null;
   const composerTopSlot = (
     <>
+      {outboxMessages
+        .filter((entry) => entry.instanceId === instanceId)
+        .map((entry) => (
+          <div
+            key={entry.id}
+            className="flex items-center gap-2 border-b border-border/40 px-3 py-2 text-[0.75rem] text-muted"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-text/80">
+                {entry.text.trim().slice(0, 100) ||
+                  `${entry.attachments.length} attachment${entry.attachments.length === 1 ? "" : "s"}`}
+              </div>
+              <div className="truncate">
+                {entry.status === "uncertain"
+                  ? "Delivery uncertain — check the chat before retrying"
+                  : entry.status === "failed"
+                    ? "Could not send — review and retry"
+                    : entry.status === "sending"
+                      ? "Sending or checking delivery…"
+                      : isConnected
+                        ? "Saved — waiting for the agent to finish"
+                        : "Saved — waiting for Relay"}
+                {entry.error ? ` · ${entry.error}` : ""}
+              </div>
+            </div>
+            {(entry.status === "uncertain" || entry.status === "failed") && isConnected && (
+              <button
+                type="button"
+                className="text-accent"
+                onClick={() =>
+                  void retryOutbox(entry.id).catch((error) =>
+                    setSendError(error instanceof Error ? error.message : "Could not retry"),
+                  )
+                }
+              >
+                Send again
+              </button>
+            )}
+            {entry.status !== "sending" && (
+              <button
+                type="button"
+                className="text-muted underline"
+                onClick={() =>
+                  void discardOutbox(entry.id).then((removed) => {
+                    if (!removed) setSendError("Already sending — it can no longer be discarded");
+                  })
+                }
+              >
+                Discard
+              </button>
+            )}
+          </div>
+        ))}
+      {sendError && (
+        <div role="alert" className="px-3 py-1 text-[0.75rem] text-destructive">
+          {sendError}
+        </div>
+      )}
+      {persistenceError && (
+        <div role="alert" className="px-3 py-1 text-[0.75rem] text-destructive">
+          {persistenceError}
+        </div>
+      )}
       {!isInSpecialMode && inlineReplyFragments.length > 0 && onRemoveInlineReply ? (
         <InlineReplyFragmentStrip fragments={inlineReplyFragments} onRemove={onRemoveInlineReply} />
       ) : null}
@@ -1082,7 +1183,7 @@ export function InputArea({
               toolbar={
                 <InputToolbar
                   isMobile={isMobile}
-                  disabled={disabled}
+                  disabled={disabled && isInSpecialMode}
                   showAttachButton={!isInSpecialMode}
                   controls={
                     isInSpecialMode ? [] : isReviewMode ? reviewToolbarControls : toolbarControls
@@ -1132,7 +1233,8 @@ export function InputArea({
                         : isQuestionPanelCollapsed
                           ? disabled
                           : disabled || !canSubmitPrompt
-                      : disabled ||
+                      : (hasPendingPlan && disabled) ||
+                        savingSend ||
                         uploading ||
                         (!hasPendingPlan &&
                           !draftText.trim() &&

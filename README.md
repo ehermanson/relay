@@ -50,6 +50,8 @@ If you do not use spaces, you can still use Relay just fine with regular chats.
 - Use built-in git actions like branch switch, fetch, pull, push, and space push/PR
 - Change provider, model, reasoning level, and runtime mode when the provider supports it
 - Attach photos, documents, and videos to chats; videos support inline playback and files up to 100 MB (playback depends on browser codec support). Agents receive videos as local file attachments.
+- Keep drafting during a connection interruption. Messages sent while disconnected are saved with attachments on this device and delivered when Relay reconnects while the app is open. If delivery is uncertain, Relay asks you to check the chat before retrying.
+- Enable background notifications in **Settings → General** for chats that finish or need input. On iPhone and iPad, install Relay to the Home Screen first; browser push also requires a secure connection.
 - Respond to approval requests and other agent prompts from the browser
 - Follow delegated work: subagents show up as collapsed cards where they were spawned (name, model when known, status, result) and in an Agents sidecar; agent-to-agent reports are never shown as your own messages
 - Start review chats for a branch or for the files changed in a chat
@@ -215,18 +217,19 @@ Helpful extras:
 
 Common environment variables:
 
-| Variable         | Default                  | What it does                                                      |
-| ---------------- | ------------------------ | ----------------------------------------------------------------- |
-| `RELAY_PASSWORD` | unset                    | Turns on login                                                    |
-| `RELAY_HOME`     | `~/.relay`               | Relay state directory (`pnpm dev` defaults to `~/.relay-develop`) |
-| `PORT`           | `7777`                   | Server port                                                       |
-| `WORKING_DIR`    | current directory        | Default working directory                                         |
-| `MAX_PROCESSES`  | `15`                     | Max managed chats                                                 |
-| `TUNNEL`         | `false`                  | Starts a Cloudflare tunnel                                        |
-| `CLAUDE_DIR`     | `~/.claude`              | Claude data directory                                             |
-| `CODEX_DIR`      | `~/.codex`               | Codex data directory                                              |
-| `DB_PATH`        | `~/.relay/sessions.db`   | Relay SQLite path                                                 |
-| `SESSION_FILE`   | `~/.relay/sessions.json` | Auth session file                                                 |
+| Variable             | Default                               | What it does                                                             |
+| -------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
+| `RELAY_PASSWORD`     | unset                                 | Turns on login                                                           |
+| `RELAY_HOME`         | `~/.relay`                            | Relay state directory (`pnpm dev` defaults to `~/.relay-develop`)        |
+| `RELAY_PUSH_CONTACT` | `https://github.com/ehermanson/relay` | Contact (`mailto:` or `https:`) sent to push services with notifications |
+| `PORT`               | `7777`                                | Server port                                                              |
+| `WORKING_DIR`        | current directory                     | Default working directory                                                |
+| `MAX_PROCESSES`      | `15`                                  | Max managed chats                                                        |
+| `TUNNEL`             | `false`                               | Starts a Cloudflare tunnel                                               |
+| `CLAUDE_DIR`         | `~/.claude`                           | Claude data directory                                                    |
+| `CODEX_DIR`          | `~/.codex`                            | Codex data directory                                                     |
+| `DB_PATH`            | `~/.relay/sessions.db`                | Relay SQLite path                                                        |
+| `SESSION_FILE`       | `~/.relay/sessions.json`              | Auth session file                                                        |
 
 ## Development
 

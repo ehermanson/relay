@@ -147,6 +147,12 @@ Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight i
 - Videos have composer previews and inline chat playback, but travel as `attachments` / `[File: source: ...]` through the shared provider path, never as `images` or native video model input. Both Claude and Codex receive the local file path. Browser codec support determines playback; the chat keeps a file link as fallback.
 - `/api/file` streams video responses with single byte-range support for seeking. Draft video blobs use the existing IndexedDB attachment store; revoke their object URLs just like image previews.
 
+### Offline Drafts, Outbox & Push
+
+- Composer text drafts live in `localStorage` (with `sessionStorage` fallback for seeded/legacy drafts); attachment drafts remain in IndexedDB. A disconnected send stores text and Blob attachments in the separate `relay-outbox` IndexedDB store before clearing the composer. Keep the app open for reconnect delivery; the service worker handles push only, not offline app-shell boot or background sync.
+- `OutboxProvider` drains across chats after reconnect/reload. It uploads Blob attachments, then posts to `/api/outbox/:id`. `outbox_receipts` in `SessionDB` is authoritative for send IDs: reserve before dispatch, mark accepted afterward. A reservation without acceptance is **uncertain**, never automatically retried. Outbox sends require an idle chat because the existing mid-turn queue is memory-only. Connected sends retain WebSocket queue/edit/interrupt semantics. Preserve outbox owner identity and per-row lease when changing this flow.
+- `PushNotifications` owns VAPID keys and subscriptions in a private `push-notifications.json` next to the DB. Subscriptions belong to auth sessions and are removed when revoked or expired. The service worker shows user-visible notifications with same-origin chat links. Browser permission is requested only from the Settings click; iOS/iPadOS requires a Home Screen installation. Visible clients publish short-lived presence so their device gets in-app state instead of push. No silent push suppression in the service worker.
+
 ### Tool Result Previews
 
 - `ActivityMessage.toolUseId` carries the provider call identity on both tool uses and results (Claude SDK/CLI and transcript replay; Codex app-server items and rollout calls). Preserve it through new provider paths: parallel tools can finish out of order, so matching by the most recent tool attaches results to the wrong file.

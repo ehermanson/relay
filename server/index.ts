@@ -31,6 +31,7 @@ import { InstanceManager } from "#core/instance-manager.js";
 import { TerminalManager } from "#core/terminal-manager.js";
 import { createWebSocketServer } from "#server/websocket.js";
 import { createRequestHandler } from "#server/http.js";
+import { PushNotifications } from "#server/push-notifications.js";
 
 export class Relay {
   readonly config: RelayConfig;
@@ -46,6 +47,15 @@ export class Relay {
     this.config = resolveConfig(options);
     this.auth = new AuthManager(this.config);
     this.instanceManager = new InstanceManager(this.config);
+    let pushNotifications: PushNotifications | undefined;
+    try {
+      pushNotifications = new PushNotifications(this.auth, this.instanceManager, this.config);
+    } catch (error) {
+      this.config.logger.warn(
+        "Background notifications unavailable:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     // Use a lazy getter so the request handler can reference the WS connection count
     // even though the WSS is created after the HTTP server.
@@ -58,6 +68,7 @@ export class Relay {
       () => (wsGetConnectionCount ? wsGetConnectionCount() : 0),
       {
         ...(options.updateManager ? { updateManager: options.updateManager } : {}),
+        pushNotifications,
       },
     );
     this.server = http.createServer(handler);

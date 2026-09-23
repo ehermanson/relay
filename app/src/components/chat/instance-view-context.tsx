@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import type { MouseEvent, ReactNode, RefObject } from "react";
 import type { ChatItem, LiveActivity } from "@/hooks/use-instance-messages";
 import type { QueuedRestore, UserRow } from "@/lib/chat-types";
+import type { OutboxAttachment } from "@/lib/outbox-store";
 import type { SidecarTab } from "@/stores/sidecar-store";
 import type {
   AgentInfo,
@@ -110,7 +111,8 @@ export type InstanceViewContextValue = {
       images?: string[],
       internal?: boolean,
       attachments?: string[],
-    ) => void;
+    ) => boolean;
+    handleQueue: (text: string, attachments: OutboxAttachment[]) => Promise<void>;
     handleAnswerUserInput: (requestId: string, answers: Record<string, UserInputAnswer>) => void;
     handleTakeover: () => void;
     handleCancel: () => void;

@@ -13,6 +13,7 @@ export function registerUiRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         pathname === "/favicon.svg" ||
         pathname === "/favicon.ico" ||
         pathname === "/manifest.json" ||
+        pathname === "/sw.js" ||
         pathname === "/apple-touch-icon.png" ||
         pathname === "/icon-192.png" ||
         pathname === "/icon-512.png"

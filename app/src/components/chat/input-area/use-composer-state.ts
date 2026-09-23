@@ -11,7 +11,11 @@ function getDraftKey(key: string): string {
 
 function loadDraft(key: string): string {
   try {
-    return sessionStorage.getItem(getDraftKey(key)) || "";
+    return (
+      window.localStorage.getItem(getDraftKey(key)) ??
+      sessionStorage.getItem(getDraftKey(key)) ??
+      ""
+    );
   } catch {
     return "";
   }
@@ -20,17 +24,21 @@ function loadDraft(key: string): string {
 function saveDraft(key: string, value: string): void {
   try {
     if (value) {
-      sessionStorage.setItem(getDraftKey(key), value);
+      window.localStorage.setItem(getDraftKey(key), value);
     } else {
-      sessionStorage.removeItem(getDraftKey(key));
+      window.localStorage.removeItem(getDraftKey(key));
     }
+    // localStorage now owns the draft; a seeded sessionStorage copy would
+    // otherwise resurface through loadDraft's fallback once this is cleared.
+    sessionStorage.removeItem(getDraftKey(key));
   } catch {
-    // sessionStorage full or unavailable — silently ignore
+    // Storage can be unavailable in private browsing.
   }
 }
 
 function deleteDraft(key: string): void {
   try {
+    window.localStorage.removeItem(getDraftKey(key));
     sessionStorage.removeItem(getDraftKey(key));
   } catch {
     // ignore

@@ -1,18 +1,21 @@
 import { createFileRoute, useParams, useRouter } from "@tanstack/react-router";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { WebSocketProvider } from "../context/websocket-context";
+import { OutboxProvider } from "../context/outbox-context";
 import { AppLayout } from "../components/layout/app-layout";
 import { ProcessLimitDialog } from "../components/process-limit-dialog";
 import { ActionToastProvider } from "@/context/action-toast-context";
 import { useTerminalPendingToasts } from "../hooks/use-terminal-pending-toasts";
 import { useTerminalScopes } from "../hooks/use-terminal-scopes";
 import { useTurnEndToasts } from "../hooks/use-turn-end-toasts";
+import { usePushPresence } from "../hooks/use-push-presence";
 
 function AppLayoutWithToasts() {
   const { chatId } = useParams({ strict: false }) as { chatId?: string };
   useTerminalPendingToasts(chatId);
   useTerminalScopes();
   useTurnEndToasts(chatId);
+  usePushPresence(chatId);
   return <AppLayout />;
 }
 
@@ -42,10 +45,12 @@ export const Route = createFileRoute("/_app")({
   errorComponent: AppError,
   component: () => (
     <WebSocketProvider>
-      <ActionToastProvider>
-        <AppLayoutWithToasts />
-        <ProcessLimitDialog />
-      </ActionToastProvider>
+      <OutboxProvider>
+        <ActionToastProvider>
+          <AppLayoutWithToasts />
+          <ProcessLimitDialog />
+        </ActionToastProvider>
+      </OutboxProvider>
     </WebSocketProvider>
   ),
 });

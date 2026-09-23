@@ -11,6 +11,7 @@ export interface UploadedAttachments {
 export function useAttachmentState(draftKey?: string) {
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const attachmentsRef = useRef<FileAttachment[]>([]);
   const hydratedRef = useRef(false);
 
@@ -64,7 +65,13 @@ export function useAttachmentState(draftKey?: string) {
       type: entry.file.type,
       blob: entry.file,
     }));
-    saveAttachments(draftKey, items);
+    void saveAttachments(draftKey, items)
+      .then(() => setPersistenceError(null))
+      .catch(() =>
+        setPersistenceError(
+          "Attachment could not be saved on this device. Keep Relay open or remove it.",
+        ),
+      );
   }, [draftKey, attachments]);
 
   // Final cleanup of preview URLs on unmount.
@@ -109,7 +116,7 @@ export function useAttachmentState(draftKey?: string) {
     if (draftKey) {
       // Don't wait for the persistence effect — wipe the stored draft now so
       // a quick chat-switch right after send can't reload the just-sent files.
-      void deleteAttachments(draftKey);
+      void deleteAttachments(draftKey).catch(() => {});
     }
   };
 
@@ -142,6 +149,7 @@ export function useAttachmentState(draftKey?: string) {
   return {
     attachments,
     uploading,
+    persistenceError,
     addFiles,
     removeAttachment,
     clearAttachments,

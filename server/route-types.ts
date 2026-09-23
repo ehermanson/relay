@@ -4,6 +4,7 @@ import type { AuthManager } from "#server/auth.js";
 import type { InstanceManager } from "#core/instance-manager.js";
 import type { RelayConfig } from "#server/config.js";
 import type { UpdateManager } from "#server/update-manager.js";
+import type { PushNotifications } from "#server/push-notifications.js";
 import type {
   NativeOpenRequest,
   NativeOpenTargetsResponse,
@@ -30,6 +31,7 @@ export interface HttpDeps {
   openNativePath: (request: NativeOpenRequest) => Promise<void>;
   getGitRepos: () => Promise<string[]>;
   updateManager: UpdateManager;
+  pushNotifications?: PushNotifications;
 }
 
 export interface ContextVariables {

@@ -1,6 +1,5 @@
-// IndexedDB-backed store for draft attachments. Drafts (text) live in
-// sessionStorage, but Files can't be serialized there — IDB lets us keep
-// blobs around so attached-but-unsent files survive chat switches.
+// IndexedDB-backed store for draft attachments. Draft text lives in
+// localStorage; Files live here so attached-but-unsent files survive reloads.
 
 const DB_NAME = "relay-draft-attachments";
 const DB_VERSION = 1;
@@ -13,6 +12,7 @@ export interface StoredAttachment {
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+const pendingWrites = new Map<string, Promise<void>>();
 
 function openDB(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
@@ -41,6 +41,7 @@ function openDB(): Promise<IDBDatabase> {
 
 export async function loadAttachments(key: string): Promise<StoredAttachment[]> {
   try {
+    await pendingWrites.get(key);
     const db = await openDB();
     return await new Promise<StoredAttachment[]>((resolve, reject) => {
       const tx = db.transaction(STORE, "readonly");
@@ -54,7 +55,7 @@ export async function loadAttachments(key: string): Promise<StoredAttachment[]> 
 }
 
 export async function saveAttachments(key: string, items: StoredAttachment[]): Promise<void> {
-  try {
+  const write = async () => {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
@@ -68,8 +69,13 @@ export async function saveAttachments(key: string, items: StoredAttachment[]): P
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     });
-  } catch {
-    // Best-effort; persistence is a nice-to-have.
+  };
+  const pending = (pendingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(write);
+  pendingWrites.set(key, pending);
+  try {
+    await pending;
+  } finally {
+    if (pendingWrites.get(key) === pending) pendingWrites.delete(key);
   }
 }
 

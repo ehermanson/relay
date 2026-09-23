@@ -10,8 +10,8 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("./draft-attachment-store", () => ({
   loadAttachments: vi.fn(async () => []),
-  saveAttachments: vi.fn(),
-  deleteAttachments: vi.fn(),
+  saveAttachments: vi.fn(async () => {}),
+  deleteAttachments: vi.fn(async () => {}),
 }));
 
 beforeEach(() => {

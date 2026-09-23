@@ -19,6 +19,7 @@ interface WSMethodsContextValue {
   consumeUserAwaitingReply: (instanceId: string) => boolean;
   /** Clear the awaiting-reply flag without consuming it as a turn end. */
   clearUserAwaitingReply: (instanceId: string) => void;
+  markUserAwaitingReply: (instanceId: string) => void;
 }
 
 // State that changes over time
@@ -77,6 +78,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     awaitingReplyRef.current.delete(instanceId);
   }, []);
 
+  const markUserAwaitingReply = useCallback((instanceId: string) => {
+    awaitingReplyRef.current.add(instanceId);
+  }, []);
+
   const methods = useMemo(
     () => ({
       send,
@@ -86,6 +91,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       reconnectNow,
       consumeUserAwaitingReply,
       clearUserAwaitingReply,
+      markUserAwaitingReply,
     }),
     [
       send,
@@ -95,6 +101,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       reconnectNow,
       consumeUserAwaitingReply,
       clearUserAwaitingReply,
+      markUserAwaitingReply,
     ],
   );
   const state = useMemo(

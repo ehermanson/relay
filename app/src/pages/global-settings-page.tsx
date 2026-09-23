@@ -43,6 +43,7 @@ import { RadioGroup, RadioGroupField } from "@/components/ui/radio-group";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
 import { SettingsSection, SettingRow } from "@/components/settings/settings-shared";
+import { BackgroundNotificationsSetting } from "@/components/settings/background-notifications";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { SuggestionSettings } from "@/components/settings/suggestion-settings";
 import { endpointHint, isLocalhostUrl, resolveEndpointSelection } from "@/lib/remote-access";
@@ -127,6 +128,7 @@ export function GeneralSettingsSection() {
       <MaxProcessesSettingsRow />
       <UpdateSettingsRow />
       <RemoteAccessSettingsRow />
+      <BackgroundNotificationsSetting />
     </SettingsSection>
   );
 }

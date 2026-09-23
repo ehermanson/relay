@@ -621,6 +621,12 @@ export class SessionDB {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_space_id ON sessions(space_id);
       CREATE INDEX IF NOT EXISTS idx_managed_sessions_space_id ON managed_sessions(space_id);
+      CREATE TABLE IF NOT EXISTS outbox_receipts (
+        id TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('reserved', 'accepted')),
+        created_at INTEGER NOT NULL
+      );
     `);
     this.ensureSearchIndex();
 
@@ -642,6 +648,37 @@ export class SessionDB {
       CREATE INDEX IF NOT EXISTS idx_handoffs_source_chat_id ON handoffs(source_chat_id);
       CREATE INDEX IF NOT EXISTS idx_handoffs_target_chat_id ON handoffs(target_chat_id);
     `);
+  }
+
+  /** Reserve before handing a message to a provider. A stale reservation means
+   * delivery is uncertain, so clients must not retry it automatically. */
+  reserveOutboxReceipt(id: string, instanceId: string): "new" | "reserved" | "accepted" {
+    const inserted =
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO outbox_receipts (id, instance_id, state, created_at) VALUES (?, ?, 'reserved', ?)",
+        )
+        .run(id, instanceId, Date.now()).changes > 0;
+    const row = this.db
+      .prepare("SELECT instance_id, state FROM outbox_receipts WHERE id = ?")
+      .get(id) as { instance_id: string; state: "reserved" | "accepted" };
+    if (row.instance_id !== instanceId) throw new Error("Send ID belongs to another chat");
+    return inserted ? "new" : row.state;
+  }
+
+  getOutboxReceipt(id: string): { instanceId: string; state: "reserved" | "accepted" } | null {
+    const row = this.db
+      .prepare("SELECT instance_id, state FROM outbox_receipts WHERE id = ?")
+      .get(id) as { instance_id: string; state: "reserved" | "accepted" } | undefined;
+    return row ? { instanceId: row.instance_id, state: row.state } : null;
+  }
+
+  acceptOutboxReceipt(id: string): void {
+    this.db.prepare("UPDATE outbox_receipts SET state = 'accepted' WHERE id = ?").run(id);
+  }
+
+  releaseOutboxReceipt(id: string): void {
+    this.db.prepare("DELETE FROM outbox_receipts WHERE id = ? AND state = 'reserved'").run(id);
   }
 
   private ensureSearchIndex(): void {

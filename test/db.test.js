@@ -146,6 +146,24 @@ describe("SessionDB", () => {
     });
   });
 
+  describe("outbox receipts", () => {
+    it("preserves accepted and uncertain sends across a database reopen", () => {
+      assert.equal(db.reserveOutboxReceipt("send-1", "chat-1"), "new");
+      assert.equal(db.reserveOutboxReceipt("send-1", "chat-1"), "reserved");
+      db.acceptOutboxReceipt("send-1");
+      assert.equal(db.reserveOutboxReceipt("send-1", "chat-1"), "accepted");
+
+      assert.equal(db.reserveOutboxReceipt("send-2", "chat-2"), "new");
+      db.close();
+      db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
+      assert.deepEqual(db.getOutboxReceipt("send-1"), { instanceId: "chat-1", state: "accepted" });
+      assert.deepEqual(db.getOutboxReceipt("send-2"), { instanceId: "chat-2", state: "reserved" });
+      assert.throws(() => db.reserveOutboxReceipt("send-1", "chat-2"));
+      db.releaseOutboxReceipt("send-2");
+      assert.equal(db.getOutboxReceipt("send-2"), null);
+    });
+  });
+
   describe("upsert", () => {
     it("inserts a new row", () => {
       db.upsert(makeRow());

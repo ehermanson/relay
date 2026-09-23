@@ -3408,10 +3408,18 @@ export class InstanceManager extends EventEmitter {
     images?: string[],
     internal?: boolean,
     attachments?: string[],
+    allowQueue = true,
   ): Promise<InstanceInfo | undefined> {
     return this.enqueueInstanceMutation(id, (instance) => {
+      if (
+        !allowQueue &&
+        (instance.info.pendingPermission || instance.info.pendingTool || instance.info.pendingPlan)
+      ) {
+        throw new Error("Chat needs input before sending another message");
+      }
       // If the agent is mid-turn, queue the message for delivery when the turn ends
       if (instance.process?.isProcessing && !instance.info.external) {
+        if (!allowQueue) throw new Error("Chat is busy; try again when the current turn finishes");
         if (!instance.pendingMessages) instance.pendingMessages = [];
         const queuedId = randomUUID();
         instance.pendingMessages.push({ id: queuedId, text, images, attachments, internal });

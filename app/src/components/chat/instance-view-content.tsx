@@ -6,6 +6,7 @@ import { ConnectionStatusBanner } from "@/components/chat/connection-status-bann
 import { ChatDebug } from "@/components/chat/chat-debug";
 import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { InputArea } from "@/components/chat/input-area";
+import type { OutboxAttachment } from "@/lib/outbox-store";
 import { MessageList } from "@/components/chat/message-list";
 import {
   MessageRelayProvider,
@@ -127,7 +128,10 @@ function clearSpinOffMeta(instanceId: string): void {
 
 function hasStoredDraft(instanceId: string): boolean {
   try {
-    return !!sessionStorage.getItem(`${DRAFT_PREFIX}${instanceId}`)?.trim();
+    return !!(
+      window.localStorage.getItem(`${DRAFT_PREFIX}${instanceId}`) ??
+      sessionStorage.getItem(`${DRAFT_PREFIX}${instanceId}`)
+    )?.trim();
   } catch {
     return false;
   }
@@ -371,14 +375,13 @@ export function InstanceViewContent() {
   const handleSendWithSpinOff = useCallback(
     (text: string, images?: string[], internal?: boolean, attachments?: string[]) => {
       const meta = spinOffMeta;
-      if (meta) {
+      const attributed = meta ? `[Spun off from: ${meta.sourceName}]\n\n${text}` : text;
+      const sent = actions.handleSend(attributed, images, internal, attachments);
+      if (meta && sent) {
         clearSpinOffMeta(instanceId);
         setSpinOffMeta(null);
-        const attributed = `[Spun off from: ${meta.sourceName}]\n\n${text}`;
-        actions.handleSend(attributed, images, internal, attachments);
-      } else {
-        actions.handleSend(text, images, internal, attachments);
       }
+      return sent;
     },
     [instanceId, actions, spinOffMeta],
   );
@@ -386,13 +389,32 @@ export function InstanceViewContent() {
   // Wrap send to clear inline reply fragments after sending.
   const handleSendWithContext = useCallback(
     (text: string, images?: string[], internal?: boolean, attachments?: string[]) => {
+      const sent = handleSendWithSpinOff(text, images, internal, attachments);
+      if (sent && inlineReplyFragments.length > 0) {
+        setInlineReplyFragments([]);
+        clearInlineReplyFragments(instanceId);
+      }
+      return sent;
+    },
+    [instanceId, inlineReplyFragments, handleSendWithSpinOff],
+  );
+
+  const handleQueueWithContext = useCallback(
+    async (text: string, attachments: OutboxAttachment[]) => {
+      const attributed = spinOffMeta
+        ? `[Spun off from: ${spinOffMeta.sourceName}]\n\n${text}`
+        : text;
+      await actions.handleQueue(attributed, attachments);
+      if (spinOffMeta) {
+        clearSpinOffMeta(instanceId);
+        setSpinOffMeta(null);
+      }
       if (inlineReplyFragments.length > 0) {
         setInlineReplyFragments([]);
         clearInlineReplyFragments(instanceId);
       }
-      handleSendWithSpinOff(text, images, internal, attachments);
     },
-    [instanceId, inlineReplyFragments, handleSendWithSpinOff],
+    [actions, spinOffMeta, instanceId, inlineReplyFragments],
   );
 
   const handleRemoveInlineReply = useCallback(
@@ -780,6 +802,7 @@ export function InstanceViewContent() {
           <ErrorBoundary name="Input area" inline>
             <InputArea
               onSend={handleSendWithContext}
+              onQueue={handleQueueWithContext}
               onAnswerUserInput={actions.handleAnswerUserInput}
               onCancel={actions.handleCancel}
               onSwitchProvider={actions.handleSwitchProvider}

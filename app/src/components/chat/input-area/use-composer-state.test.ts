@@ -10,21 +10,38 @@ function makeRef() {
 
 describe("useComposerState – draft persistence", () => {
   beforeEach(() => {
+    const values = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          values.set(key, String(value));
+        },
+        removeItem: (key: string) => {
+          values.delete(key);
+        },
+        clear: () => values.clear(),
+        get length() {
+          return values.size;
+        },
+      },
+    });
     sessionStorage.clear();
   });
 
-  it("persists draft to sessionStorage on updateDraft", () => {
+  it("persists draft to window.localStorage on updateDraft", () => {
     const ref = makeRef();
     const { result } = renderHook(() => useComposerState("instance-1", ref));
 
     act(() => result.current.updateDraft("hello world"));
 
     expect(result.current.draftText).toBe("hello world");
-    expect(sessionStorage.getItem("relay:draft:instance-1")).toBe("hello world");
+    expect(window.localStorage.getItem("relay:draft:instance-1")).toBe("hello world");
   });
 
-  it("restores draft from sessionStorage on mount", () => {
-    sessionStorage.setItem("relay:draft:instance-1", "saved draft");
+  it("restores draft from window.localStorage on mount", () => {
+    window.localStorage.setItem("relay:draft:instance-1", "saved draft");
 
     const ref = makeRef();
     const { result } = renderHook(() => useComposerState("instance-1", ref));
@@ -34,8 +51,8 @@ describe("useComposerState – draft persistence", () => {
   });
 
   it("restores draft when draftKey changes (simulating route change back)", () => {
-    sessionStorage.setItem("relay:draft:instance-1", "draft for chat 1");
-    sessionStorage.setItem("relay:draft:instance-2", "draft for chat 2");
+    window.localStorage.setItem("relay:draft:instance-1", "draft for chat 1");
+    window.localStorage.setItem("relay:draft:instance-2", "draft for chat 2");
 
     const ref = makeRef();
     let draftKey = "instance-1";
@@ -56,17 +73,17 @@ describe("useComposerState – draft persistence", () => {
     expect(result.current.draftText).toBe("draft for chat 1");
   });
 
-  it("clears draft from sessionStorage on resetAfterSend", () => {
+  it("clears draft from window.localStorage on resetAfterSend", () => {
     const ref = makeRef();
     const { result } = renderHook(() => useComposerState("instance-1", ref));
 
     act(() => result.current.updateDraft("about to send"));
-    expect(sessionStorage.getItem("relay:draft:instance-1")).toBe("about to send");
+    expect(window.localStorage.getItem("relay:draft:instance-1")).toBe("about to send");
 
     act(() => result.current.resetAfterSend());
 
     expect(result.current.draftText).toBe("");
-    expect(sessionStorage.getItem("relay:draft:instance-1")).toBeNull();
+    expect(window.localStorage.getItem("relay:draft:instance-1")).toBeNull();
   });
 
   it("does not persist when draftKey is undefined", () => {
@@ -76,8 +93,8 @@ describe("useComposerState – draft persistence", () => {
     act(() => result.current.updateDraft("orphan text"));
 
     expect(result.current.draftText).toBe("orphan text");
-    // Nothing should be written to sessionStorage
-    expect(sessionStorage.length).toBe(0);
+    // Nothing should be written to window.localStorage
+    expect(window.localStorage.length).toBe(0);
   });
 
   it("keeps separate drafts per instance", () => {
@@ -88,18 +105,38 @@ describe("useComposerState – draft persistence", () => {
     act(() => r1.current.updateDraft("draft A"));
     act(() => r2.current.updateDraft("draft B"));
 
-    expect(sessionStorage.getItem("relay:draft:instance-a")).toBe("draft A");
-    expect(sessionStorage.getItem("relay:draft:instance-b")).toBe("draft B");
+    expect(window.localStorage.getItem("relay:draft:instance-a")).toBe("draft A");
+    expect(window.localStorage.getItem("relay:draft:instance-b")).toBe("draft B");
   });
 
-  it("removes sessionStorage entry when draft is cleared to empty string", () => {
+  it("removes window.localStorage entry when draft is cleared to empty string", () => {
     const ref = makeRef();
     const { result } = renderHook(() => useComposerState("instance-1", ref));
 
     act(() => result.current.updateDraft("some text"));
-    expect(sessionStorage.getItem("relay:draft:instance-1")).toBe("some text");
+    expect(window.localStorage.getItem("relay:draft:instance-1")).toBe("some text");
 
     act(() => result.current.updateDraft(""));
+    expect(window.localStorage.getItem("relay:draft:instance-1")).toBeNull();
+  });
+
+  it("loads a seeded legacy session draft and removes it after send", () => {
+    sessionStorage.setItem("relay:draft:instance-1", "seeded prompt");
+    const ref = makeRef();
+    const { result } = renderHook(() => useComposerState("instance-1", ref));
+    expect(result.current.draftText).toBe("seeded prompt");
+    act(() => result.current.resetAfterSend());
     expect(sessionStorage.getItem("relay:draft:instance-1")).toBeNull();
+  });
+
+  it("does not resurrect a seeded session draft after the user clears it", () => {
+    sessionStorage.setItem("relay:draft:instance-1", "seeded prompt");
+    const ref = makeRef();
+    const { result, unmount } = renderHook(() => useComposerState("instance-1", ref));
+    act(() => result.current.updateDraft(""));
+    expect(sessionStorage.getItem("relay:draft:instance-1")).toBeNull();
+    unmount();
+    const remount = renderHook(() => useComposerState("instance-1", ref));
+    expect(remount.result.current.draftText).toBe("");
   });
 });

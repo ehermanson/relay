@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { InstanceViewProvider } from "@/components/chat/instance-view-context";
 import { InstanceViewShell } from "@/components/chat/instance-view-shell";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
+import { useOutbox } from "@/context/outbox-context";
+import type { OutboxAttachment } from "@/lib/outbox-store";
 import { useInstanceMessages } from "@/hooks/use-instance-messages";
 import { useProviderModels } from "@/hooks/use-provider-models";
 import { useConnectionBanner } from "@/hooks/use-connection-banner";
@@ -94,6 +96,7 @@ export function InstanceView({
       : null;
   const navigate = useNavigate({ from: "/projects/$projectId/chats/$chatId" });
   const { send, subscribe, unsubscribe, addMessageHandler, reconnectNow } = useWSMethods();
+  const { enqueue: enqueueOutbox } = useOutbox();
   const { isConnected, isSyncing, connectionId, instances } = useWSState();
   const {
     items,
@@ -295,7 +298,7 @@ export function InstanceView({
     internal?: boolean,
     attachments?: string[],
   ) => {
-    if (!id) return;
+    if (!id) return false;
     // Prepend terminal context if attached
     let finalText = text;
     if (terminalContexts.length > 0 && !internal) {
@@ -303,9 +306,8 @@ export function InstanceView({
         .map((c) => `<terminal_context source="${c.terminalName}">\n${c.text}\n</terminal_context>`)
         .join("\n\n");
       finalText = `${blocks}\n\n${text}`;
-      clearTerminalContexts(id);
     }
-    send({
+    const sent = send({
       type: "instance_message",
       instanceId: id,
       text: finalText,
@@ -313,7 +315,24 @@ export function InstanceView({
       attachments,
       internal,
     });
-    showThinking();
+    if (sent) {
+      if (terminalContexts.length > 0 && !internal) clearTerminalContexts(id);
+      showThinking();
+    }
+    return sent;
+  };
+
+  const handleQueue = async (text: string, attachments: OutboxAttachment[]) => {
+    if (!id) throw new Error("Chat unavailable");
+    let finalText = text;
+    if (terminalContexts.length > 0) {
+      const blocks = terminalContexts
+        .map((c) => `<terminal_context source="${c.terminalName}">\n${c.text}\n</terminal_context>`)
+        .join("\n\n");
+      finalText = `${blocks}\n\n${text}`;
+    }
+    await enqueueOutbox(id, finalText, attachments);
+    if (terminalContexts.length > 0) clearTerminalContexts(id);
   };
 
   const handleTakeover = () => {
@@ -834,6 +853,7 @@ export function InstanceView({
       handleRename: (name: string) =>
         send({ type: "rename_instance", instanceId: resolvedInstance.id, name }),
       handleSend,
+      handleQueue,
       handleAnswerUserInput,
       handleTakeover,
       handleCancel,
