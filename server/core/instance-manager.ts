@@ -47,6 +47,11 @@ import { isSubagentSessionMeta } from "#core/providers/codex-discovery.js";
 import { fetchCodexProviderGlobalStateSnapshot } from "#core/providers/codex-app-server.js";
 import { getCachedCodexModels, prewarmCodexModels } from "#core/providers/codex-models.js";
 import { isCodexInstalled } from "#core/providers/codex-cli.js";
+import {
+  extractClaudeTitleRecord,
+  mayBeClaudeTitleLine,
+  readClaudeTranscriptTitle,
+} from "#core/providers/claude-session-title.js";
 import { SessionDB } from "#core/db.js";
 import type { SessionRow, ManagedInstanceRow, SessionEventRow } from "#core/db.js";
 import {
@@ -657,6 +662,23 @@ function isTrivialMessage(text: string): boolean {
     .split("\n")[0]
     .trim();
   return cleaned.length < 8 || TRIVIAL_MESSAGE_RE.test(cleaned);
+}
+
+/**
+ * The first user message in `history` that could serve as a title: authored
+ * by the human (not an agent note or child-agent frame), not server-injected,
+ * and not a throwaway like "ok" or "commit this".
+ */
+function firstSubstantiveUserText(history: HistoryEntry[]): string | null {
+  for (const entry of history) {
+    const msg = entry.message;
+    if (msg.type !== "user") continue;
+    const user = msg as UserMessage;
+    if (user.internal || user.agentId || user.author?.kind === "agent") continue;
+    if (!user.text || isTrivialMessage(user.text)) continue;
+    return user.text;
+  }
+  return null;
 }
 
 /**
@@ -2283,10 +2305,16 @@ export class InstanceManager extends EventEmitter {
       };
     }
 
-    // Resolve name: explicit > session summary > auto-title from first message
+    // Resolve name: explicit > title recorded in the transcript > auto-title from first message
     let name = options?.name || "";
     if (!name && resumeId) {
-      name = this.getSessionSummary(resumeId, workingDirectory) || "";
+      const resumePath = this.resolveManagedTranscriptPath(provider, {
+        sessionId: resumeId,
+        workingDirectory,
+      });
+      const recorded =
+        provider === "claude" && resumePath ? readClaudeTranscriptTitle(resumePath) : null;
+      if (recorded) name = sanitiseForTitle(recorded.title) || recorded.title;
     }
     if (!name) name = "New Session";
 
@@ -5619,8 +5647,7 @@ export class InstanceManager extends EventEmitter {
 
     const id = randomUUID();
     const name =
-      this.resolveSessionTitle(sessionId, workingDirectory, history, provider) ||
-      defaultSessionTitle(provider);
+      this.resolveSessionTitle(jsonlPath, history, provider) || defaultSessionTitle(provider);
     const now = Date.now();
     const lastActivity = history.length > 0 ? history[history.length - 1].timestamp : now;
 
@@ -6935,11 +6962,22 @@ export class InstanceManager extends EventEmitter {
           if (!live.watchState) return;
           if (live.watchState.fileOffset !== observedOffset) return;
           live.watchState.fileOffset = stat.size;
-          if (live.process?.isProcessing) return;
+          const processing = !!live.process?.isProcessing;
+          const isClaude = live.info.provider === "claude";
           for (const line of newContent.split("\n")) {
             if (!line.trim()) continue;
+            // Mid-turn the process owns the stream, but Claude's title records
+            // (no timestamp, never history) are applied right away so the AI
+            // title lands seconds after the first prompt, not at turn end.
+            if (processing && !(isClaude && mayBeClaudeTitleLine(line))) continue;
             try {
               const entry = JSON.parse(line);
+              const recorded = isClaude ? extractClaudeTitleRecord(entry) : null;
+              if (recorded) {
+                if (!live.info.customTitle) this.applyGeneratedTitle(live, recorded.title);
+                continue;
+              }
+              if (processing) continue;
               this.applyWatcherEntry(instanceId, live, entry);
             } catch {
               // skip malformed lines
@@ -7418,33 +7456,6 @@ export class InstanceManager extends EventEmitter {
           continue;
         }
 
-        // Try to read sessions-index.json for fast metadata
-        let sessionsIndex: Map<
-          string,
-          { summary?: string; createdAt?: number; lastActivityAt?: number; messageCount?: number }
-        > | null = null;
-        try {
-          const indexPath = join(fullProjDir, "sessions-index.json");
-          const indexData = JSON.parse(readFileSync(indexPath, "utf-8"));
-          if (indexData.entries && Array.isArray(indexData.entries)) {
-            sessionsIndex = new Map();
-            for (const e of indexData.entries) {
-              if (e.sessionId) {
-                sessionsIndex.set(e.sessionId, {
-                  summary: e.summary,
-                  createdAt: e.createdAt ? new Date(e.createdAt).getTime() : undefined,
-                  lastActivityAt: e.lastActivityAt
-                    ? new Date(e.lastActivityAt).getTime()
-                    : undefined,
-                  messageCount: e.messageCount,
-                });
-              }
-            }
-          }
-        } catch {
-          // no index or parse error
-        }
-
         for (const jsonlFile of jsonlFiles) {
           const jsonlPath = join(fullProjDir, jsonlFile);
           diskPaths.add(jsonlPath);
@@ -7509,7 +7520,6 @@ export class InstanceManager extends EventEmitter {
           }
 
           // New file — discover session
-          const indexEntry = sessionsIndex?.get(sessionId);
 
           // Try to resolve CWD from JSONL, with filesystem-validated fallback
           let cwd = readCwdFromJsonl(jsonlPath) || "";
@@ -7562,15 +7572,16 @@ export class InstanceManager extends EventEmitter {
             lastActivityAt = Date.now();
           }
 
-          if (!createdAt) {
-            createdAt = indexEntry?.createdAt ?? lastActivityAt;
-          }
+          if (!createdAt) createdAt = lastActivityAt;
 
-          const firstMsg = readFirstUserMessage(jsonlPath);
-          const rawSummary = indexEntry?.summary;
-          const name =
-            (rawSummary ? sanitiseForTitle(rawSummary) || rawSummary : null) ||
-            (firstMsg ? generateTitle(firstMsg, "claude") : defaultSessionTitle("claude"));
+          // Title: the CLI's own recorded title, else the first substantive prompt.
+          const recordedTitle = readClaudeTranscriptTitle(jsonlPath);
+          const firstMsg = recordedTitle ? null : readFirstUserMessage(jsonlPath);
+          const name = recordedTitle
+            ? sanitiseForTitle(recordedTitle.title) || recordedTitle.title
+            : firstMsg
+              ? generateTitle(firstMsg, "claude")
+              : defaultSessionTitle("claude");
           const gitInfo = scanWorktreePath ? getGitInfo(scanWorktreePath) : getGitInfo(cwd);
           const lastMsg = readLastMessage(jsonlPath);
           const model = readModelFromJsonl(jsonlPath);
@@ -7583,7 +7594,7 @@ export class InstanceManager extends EventEmitter {
             working_directory: cwd,
             jsonl_path: jsonlPath,
             created_at: createdAt,
-            last_activity_at: indexEntry?.lastActivityAt ?? lastActivityAt,
+            last_activity_at: lastActivityAt,
             type: "external",
             archived: 0,
             custom_title: 0,
@@ -7594,10 +7605,10 @@ export class InstanceManager extends EventEmitter {
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
 
-            summary: indexEntry?.summary ?? null,
+            summary: recordedTitle?.title ?? null,
             first_prompt: null,
             git_branch: scanGitBranch,
-            message_count: indexEntry?.messageCount ?? 0,
+            message_count: 0,
             allowed_tools: "[]",
             worktree_path: scanWorktreePath,
             original_directory: scanOriginalDir,
@@ -8241,14 +8252,9 @@ export class InstanceManager extends EventEmitter {
     // Defer plan-parent linking to after server.listen()
     queueMicrotask(() => this.linkPlanSessions());
 
-    // Refresh titles for sessions that have a trivial/stale name
+    // Refresh titles: adopt the CLI-recorded title, or upgrade a default/trivial name.
     for (const inst of this.instances.values()) {
-      if (
-        !inst.info.customTitle &&
-        (isDefaultSessionTitle(inst.info.name) || isTrivialMessage(inst.info.name))
-      ) {
-        this.doRefreshTitle(inst);
-      }
+      if (!inst.info.customTitle) this.doRefreshTitle(inst);
     }
 
     // Auto-continue instances that were mid-turn when the server shut down
@@ -9023,14 +9029,8 @@ export class InstanceManager extends EventEmitter {
       "titleUpdate" as keyof import("#core/provider.js").ProviderSessionEvents,
       ((name: string) => {
         void this.enqueueInstanceMutation(id, (live) => {
-          if (this.shuttingDown || live.process !== proc) return;
-          const sanitised = sanitiseForTitle(name) || name;
-          if (live.info.customTitle || sanitised === live.info.name) return;
-          live.info.name = sanitised;
-          this.emitInstanceStatus(live);
-          this.dbSave(live);
-          const sid = live.sessionId || live.info.sessionId;
-          if (sid) this.db.updateName(sid, name, false);
+          if (this.shuttingDown || live.process !== proc || live.info.customTitle) return;
+          this.applyGeneratedTitle(live, name);
         }).catch((err) => this.logQueuedMutationError("titleUpdate handler", id, err));
       }) as (...args: unknown[]) => void,
     );
@@ -9193,43 +9193,46 @@ export class InstanceManager extends EventEmitter {
    * 2. Fall back to first user message
    */
   private resolveSessionTitle(
-    sessionId: string,
-    cwd: string,
+    jsonlPath: string,
     history: HistoryEntry[],
     provider?: ProviderKind,
   ): string | null {
-    // Try sessions-index.json summary
-    const summary = this.getSessionSummary(sessionId, cwd);
-    if (summary) return summary;
+    const recorded = provider === "claude" ? readClaudeTranscriptTitle(jsonlPath) : null;
+    if (recorded) return sanitiseForTitle(recorded.title) || recorded.title;
 
-    // Fall back to first user message
-    for (const h of history) {
-      if (h.message.type === "user" && (h.message as UserMessage).text) {
-        return generateTitle((h.message as UserMessage).text, provider);
-      }
-    }
+    const firstText = firstSubstantiveUserText(history);
+    return firstText ? generateTitle(firstText, provider) : null;
+  }
 
-    return null;
+  /** The title Claude Code recorded in this instance's transcript, if any. */
+  private readInstanceTranscriptTitle(instance: Instance) {
+    if (instance.info.provider !== "claude") return null;
+    const sessionId = instance.sessionId || instance.info.sessionId;
+    const path =
+      instance.jsonlPath ||
+      instance.providerBinding?.transcriptPath ||
+      (sessionId
+        ? this.resolveManagedTranscriptPath("claude", {
+            sessionId,
+            workingDirectory: instance.info.workingDirectory,
+          })
+        : undefined);
+    return path ? readClaudeTranscriptTitle(path) : null;
   }
 
   /**
-   * Look up the summary for a session from sessions-index.json.
+   * Adopt a generated (non-custom) title: in memory, on the wire, and in both
+   * session tables. Returns false when the title is empty or unchanged.
    */
-  private getSessionSummary(sessionId: string, cwd: string): string | null {
-    const encoded = cwd.replace(/[^A-Za-z0-9_-]/g, "-");
-    const indexPath = join(this.providerDirs.claude, "projects", encoded, "sessions-index.json");
-    try {
-      const indexData = JSON.parse(readFileSync(indexPath, "utf-8"));
-      if (indexData.entries && Array.isArray(indexData.entries)) {
-        const entry = indexData.entries.find(
-          (e: { sessionId?: string }) => e.sessionId === sessionId,
-        );
-        if (entry?.summary) return sanitiseForTitle(entry.summary) || entry.summary;
-      }
-    } catch {
-      // no index or parse error
-    }
-    return null;
+  private applyGeneratedTitle(instance: Instance, rawTitle: string): boolean {
+    const title = sanitiseForTitle(rawTitle) || rawTitle.trim();
+    if (!title || title === instance.info.name) return false;
+    instance.info.name = title;
+    this.emitInstanceStatus(instance);
+    this.dbSave(instance);
+    const sid = instance.sessionId || instance.info.sessionId;
+    if (sid) this.db.updateName(sid, title, false);
+    return true;
   }
 
   async renameInstance(id: string, name: string): Promise<boolean> {
@@ -9604,45 +9607,22 @@ export class InstanceManager extends EventEmitter {
     const sessionId = instance.sessionId || instance.info.sessionId;
     if (!sessionId) return false;
 
-    // Best source: sessions-index.json summary (generated by Claude CLI)
-    const summary = this.getSessionSummary(sessionId, instance.info.workingDirectory);
-    if (summary && summary !== instance.info.name) {
-      instance.info.name = summary;
-      this.emitInstanceStatus(instance);
-      this.dbSave(instance);
-      if (sessionId) this.db.updateName(sessionId, summary, false);
-      return true;
-    }
+    // Best source: the title Claude Code itself recorded in the transcript.
+    // It is authoritative — the fallback below must never replace it (a short
+    // one like "Fix CI" would read as trivial and the two would churn).
+    const recorded = this.readInstanceTranscriptTitle(instance);
+    if (recorded) return this.applyGeneratedTitle(instance, recorded.title);
 
-    // Fallback: scan history backwards for a substantive user message
-    // (skip trivial messages like "ok", "done", "commit this", etc.)
-    for (let i = instance.history.length - 1; i >= 0; i--) {
-      const msg = instance.history[i].message;
-      if (msg.type === "agent_update") continue;
-      // Agent-authored notes and child-agent frames are not the user's intent.
-      if (
-        msg.type === "user" &&
-        ((msg as UserMessage).author?.kind === "agent" || (msg as UserMessage).agentId)
-      ) {
-        continue;
-      }
-      if (msg.type === "user" && (msg as UserMessage).text && !(msg as UserMessage).internal) {
-        const text = (msg as UserMessage).text;
-        if (isTrivialMessage(text)) continue;
-        const title = generateTitle(text);
-        if (title && title !== instance.info.name) {
-          instance.info.name = title;
-          this.emitInstanceStatus(instance);
-          this.dbSave(instance);
-          const sid = instance.sessionId || instance.info.sessionId;
-          if (sid) this.db.updateName(sid, title, false);
-          return true;
-        }
-        break;
-      }
+    // Fallback: the first substantive user message — and only to upgrade a
+    // default or trivial name. A real title is never overwritten by a later
+    // message, which used to retitle chats to whatever was said last
+    // ("ok, commit and push", "ci failed").
+    if (!isDefaultSessionTitle(instance.info.name) && !isTrivialMessage(instance.info.name)) {
+      return false;
     }
-
-    return false;
+    const firstText = firstSubstantiveUserText(instance.history);
+    if (!firstText) return false;
+    return this.applyGeneratedTitle(instance, generateTitle(firstText, instance.info.provider));
   }
 
   /**
