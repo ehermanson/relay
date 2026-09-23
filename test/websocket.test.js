@@ -348,7 +348,7 @@ describe("WebSocket Server", () => {
         }),
       );
 
-      const msg = await ws.nextMessage();
+      const msg = await ws.nextMessageOfType("error");
       assert.equal(msg.type, "error");
       assert.ok(msg.message.includes("not found"));
     });
