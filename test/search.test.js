@@ -816,4 +816,28 @@ describe("SessionDB search", () => {
       assert.equal(results[0].instanceId, "i-new", "recent result should rank first");
     });
   });
+
+  describe("incremental sync", () => {
+    it("replaces an instance's doc instead of duplicating it, across reopen", () => {
+      db.upsert(makeRow({ name: "original quokka title" }));
+      db.syncSearchIndexForInstance("inst-1");
+      db.close();
+      db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
+
+      db.updateName("sess-1", "renamed wombat title", true);
+      assert.equal(db.search("quokka").length, 0, "stale doc should be deleted by rowid");
+      const results = db.search("wombat");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].instanceId, "inst-1");
+    });
+
+    it("tracks which transcript state stored search text came from", () => {
+      db.updateSearchContent("inst-1", "text", "1:/tmp/a.jsonl:100:5");
+      assert.equal(db.hasSearchContentForSource("inst-1", "1:/tmp/a.jsonl:100:5"), true);
+      assert.equal(db.hasSearchContentForSource("inst-1", "1:/tmp/a.jsonl:200:5"), false);
+
+      db.updateSearchContent("inst-1", "text from memory");
+      assert.equal(db.hasSearchContentForSource("inst-1", "1:/tmp/a.jsonl:100:5"), false);
+    });
+  });
 });

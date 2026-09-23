@@ -40,9 +40,15 @@ function worktreePathsMatch(a: string | null | undefined, b: string | null | und
   return canonicalizePath(a) === canonicalizePath(b);
 }
 
+/** The space fields ownership inference reads; full `SpaceInfo` satisfies it. */
+export type SpaceOwnershipCandidate = Pick<
+  SpaceInfo,
+  "id" | "projectDirectory" | "gitBranch" | "worktreePath" | "missingWorktreePath" | "isDefault"
+>;
+
 export function inferSpaceIdForPersistenceRow(
   row: PersistenceOwnershipRow,
-  spaces: SpaceInfo[],
+  spaces: SpaceOwnershipCandidate[],
 ): string | undefined {
   if (row.space_id) return row.space_id;
 
@@ -72,7 +78,7 @@ export function inferSpaceIdForPersistenceRow(
 
 export function explicitOrInferredSpaceIdForPersistenceRow(
   row: PersistenceOwnershipRow,
-  spaces: SpaceInfo[],
+  spaces: SpaceOwnershipCandidate[],
 ): string | undefined {
   return row.space_id ?? inferSpaceIdForPersistenceRow(row, spaces);
 }

@@ -17,6 +17,7 @@ import { relayDir } from "#core/config.js";
 import type { SpaceRow } from "#core/db.js";
 import type { Logger } from "#core/logger.js";
 import type { SpaceInfo, SpaceStatus, MergeMethod } from "#core/types.js";
+import type { SpaceOwnershipCandidate } from "#core/instance-restore.js";
 import {
   isGitRepo,
   getRepoRoot,
@@ -495,6 +496,24 @@ export class SpaceManager extends EventEmitter {
     }
     const rows = this.db.getSpacesByProjectAll(projectDirectory);
     return rows.map((row) => this.toInfo(row));
+  }
+
+  /**
+   * Non-default spaces as ownership-inference candidates, straight from the
+   * DB. Restore matches every persisted chat against these, so this skips
+   * what `listAllSpaces` does per call — git probes, worktree existence
+   * checks, chat counts, and default-space creation — none of which the
+   * match reads. The stored worktree path is kept whether or not it exists,
+   * since inference matches live and missing worktree paths alike.
+   */
+  listOwnershipCandidates(projectDirectory: string): SpaceOwnershipCandidate[] {
+    return this.db.getSpacesByProjectAll(projectDirectory).map((row) => ({
+      id: row.id,
+      projectDirectory: row.project_directory,
+      gitBranch: row.git_branch,
+      worktreePath: row.worktree_path,
+      isDefault: row.is_default === 1,
+    }));
   }
 
   recoverSpacesFromSessionMetadata(): number {

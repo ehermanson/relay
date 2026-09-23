@@ -234,6 +234,7 @@ import {
 import {
   explicitOrInferredSpaceIdForPersistenceRow,
   inferSpaceIdForPersistenceRow,
+  type SpaceOwnershipCandidate,
   resolveExternalRestorePaths,
   resolveManagedRestorePaths,
 } from "#core/instance-restore.js";
@@ -661,6 +662,12 @@ function isTrivialMessage(text: string): boolean {
  * (auto-continue, permission grants, etc.) are stripped or excluded.
  */
 const MIN_SEARCHABLE_LENGTH = 80;
+/**
+ * Bump when `extractSearchableText` (or the transcript parsers feeding it)
+ * changes output, so startup re-extracts transcripts it would otherwise skip
+ * as unchanged.
+ */
+const SEARCH_CONTENT_VERSION = 1;
 const TASK_REF_SEARCH_RE = /@task:[a-f0-9]{8}(?::[^\s@]*)?\b/i;
 
 export function extractSearchableText(history: HistoryEntry[]): string {
@@ -1634,15 +1641,18 @@ export class InstanceManager extends EventEmitter {
       const directSpace = this.spaceManager.getSpaceByWorktreePath(row.worktree_path);
       if (directSpace) return directSpace.id;
     }
+    if (row.space_id) return row.space_id;
+    // Runs for every persisted chat on restore, so read candidate rows only —
+    // `listAllSpaces` probes git and counts chats per space on every call.
     const project = this.getRegisteredProjectForDirectory(projectDirectory);
-    const spaces = new Map<string, SpaceInfo>();
+    const spaces = new Map<string, SpaceOwnershipCandidate>();
     for (const candidate of getProjectDirectoryCandidates(projectDirectory)) {
-      for (const space of this.spaceManager.listAllSpaces(candidate)) {
+      for (const space of this.spaceManager.listOwnershipCandidates(candidate)) {
         spaces.set(space.id, space);
       }
     }
     if (project?.directory) {
-      for (const space of this.spaceManager.listAllSpaces(project.directory)) {
+      for (const space of this.spaceManager.listOwnershipCandidates(project.directory)) {
         spaces.set(space.id, space);
       }
     }
@@ -1650,7 +1660,7 @@ export class InstanceManager extends EventEmitter {
     if (inferred) return inferred;
 
     for (const knownProject of this.db.getAllProjects()) {
-      for (const space of this.spaceManager.listAllSpaces(knownProject.directory)) {
+      for (const space of this.spaceManager.listOwnershipCandidates(knownProject.directory)) {
         spaces.set(space.id, space);
       }
     }
@@ -5646,7 +5656,7 @@ export class InstanceManager extends EventEmitter {
                 original_directory: originalDirectory,
                 working_directory: workingDirectory,
               },
-              this.spaceManager.listAllSpaces(originalDirectory),
+              this.spaceManager.listOwnershipCandidates(originalDirectory),
             )
           : undefined,
       projectId: project?.id,
@@ -8249,13 +8259,21 @@ export class InstanceManager extends EventEmitter {
       for (const inst of this.instances.values()) {
         try {
           let history = inst.history;
+          let sourceKey: string | undefined;
           if (history.length === 0 && inst.jsonlPath) {
-            // Instance not yet hydrated — parse transcript from disk
+            // Instance not yet hydrated — parse transcript from disk, unless
+            // the stored text already came from this exact file state.
+            const stat = statSync(inst.jsonlPath);
+            sourceKey = `${SEARCH_CONTENT_VERSION}:${inst.jsonlPath}:${stat.mtimeMs}:${stat.size}`;
+            if (this.db.hasSearchContentForSource(inst.info.id, sourceKey)) {
+              indexed++;
+              continue;
+            }
             const parsed = this.parseProviderTranscript(inst.info.provider, inst.jsonlPath);
             history = parsed.history;
           }
           if (history.length > 0) {
-            this.db.updateSearchContent(inst.info.id, extractSearchableText(history));
+            this.db.updateSearchContent(inst.info.id, extractSearchableText(history), sourceKey);
             indexed++;
           }
         } catch {

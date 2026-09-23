@@ -531,9 +531,13 @@ export class SessionDB {
   private stmtRecentChatsProject!: StatementSync;
   private stmtRecentChatsGlobal!: StatementSync;
   private stmtDeleteSearchDoc!: StatementSync;
+  private stmtGetSearchDocRowids!: StatementSync;
+  private stmtDeleteSearchDocRowids!: StatementSync;
+  private stmtInsertSearchDocRowid!: StatementSync;
   private stmtInsertSearchDoc!: StatementSync;
   private stmtUpsertSearchContent!: StatementSync;
   private stmtGetSearchContent!: StatementSync;
+  private stmtGetSearchContentSourceKey!: StatementSync;
   private stmtDeleteSearchContent!: StatementSync;
   private stmtInsertSpinOff!: StatementSync;
   private stmtGetSpinOff!: StatementSync;
@@ -696,7 +700,11 @@ export class SessionDB {
       missingSearchColumn
     ) {
       this.db.exec("DROP TABLE IF EXISTS search_index");
+      this.db.exec("DROP TABLE IF EXISTS search_index_docs");
     }
+    const hasDocRowids = !!this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index_docs'")
+      .get();
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS search_content (
@@ -707,8 +715,27 @@ export class SessionDB {
       CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 ${buildSearchIndexSchemaSql()},
         tokenize='unicode61'
-      )
+      );
+
+      -- instance → FTS rowid, so per-chat index updates delete by rowid
+      CREATE TABLE IF NOT EXISTS search_index_docs (
+        instance_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        doc_rowid INTEGER NOT NULL,
+        PRIMARY KEY (instance_id, source)
+      );
     `);
+    const contentColumns = this.db.prepare("PRAGMA table_info(search_content)").all() as Array<{
+      name?: string;
+    }>;
+    if (!contentColumns.some((column) => column.name === "source_key")) {
+      this.db.exec("ALTER TABLE search_content ADD COLUMN source_key TEXT");
+    }
+    // Docs written before the rowid map existed could never be removed by
+    // rowid; drop them (startup rebuilds the index anyway).
+    if (!hasDocRowids) {
+      this.db.exec("DELETE FROM search_index");
+    }
   }
 
   private migrate(): void {
@@ -1266,7 +1293,7 @@ ${buildSearchIndexSchemaSql()},
     `);
 
     this.stmtUpdateLastActivity = this.db.prepare(
-      "UPDATE sessions SET last_activity_at = ? WHERE session_id = ?",
+      "UPDATE sessions SET last_activity_at = ? WHERE session_id = ? AND last_activity_at IS NOT ?",
     );
 
     this.stmtUpdateName = this.db.prepare(
@@ -1597,8 +1624,15 @@ ${buildSearchIndexSchemaSql()},
       LIMIT ?
     `);
 
-    this.stmtDeleteSearchDoc = this.db.prepare(
-      "DELETE FROM search_index WHERE instance_id = ? AND source = ?",
+    this.stmtDeleteSearchDoc = this.db.prepare("DELETE FROM search_index WHERE rowid = ?");
+    this.stmtGetSearchDocRowids = this.db.prepare(
+      "SELECT doc_rowid FROM search_index_docs WHERE instance_id = ?",
+    );
+    this.stmtDeleteSearchDocRowids = this.db.prepare(
+      "DELETE FROM search_index_docs WHERE instance_id = ?",
+    );
+    this.stmtInsertSearchDocRowid = this.db.prepare(
+      "INSERT OR REPLACE INTO search_index_docs (instance_id, source, doc_rowid) VALUES (?, ?, ?)",
     );
 
     this.stmtInsertSearchDoc = this.db.prepare(`
@@ -1616,9 +1650,13 @@ ${buildSearchIndexSchemaSql()},
     `);
 
     this.stmtUpsertSearchContent = this.db.prepare(`
-      INSERT OR REPLACE INTO search_content (instance_id, transcript_text)
-      VALUES (?, ?)
+      INSERT OR REPLACE INTO search_content (instance_id, transcript_text, source_key)
+      VALUES (?, ?, ?)
     `);
+
+    this.stmtGetSearchContentSourceKey = this.db.prepare(
+      "SELECT source_key FROM search_content WHERE instance_id = ?",
+    );
 
     this.stmtGetSearchContent = this.db.prepare(
       "SELECT transcript_text FROM search_content WHERE instance_id = ?",
@@ -1747,7 +1785,10 @@ ${buildSearchIndexSchemaSql()},
   }
 
   updateLastActivity(sessionId: string, timestamp: number): void {
-    this.stmtUpdateLastActivity.run(timestamp, sessionId);
+    // Shutdown calls this for every chat; skip the search-doc rewrite (which
+    // re-tokenizes the whole transcript) when the timestamp didn't move.
+    const result = this.stmtUpdateLastActivity.run(timestamp, sessionId, timestamp);
+    if (Number(result.changes) === 0) return;
     const row = this.getBySessionId(sessionId);
     if (row) this.syncSearchIndexForInstance(row.instance_id);
   }
@@ -2212,15 +2253,34 @@ ${buildSearchIndexSchemaSql()},
   // Search
   // =========================================================================
 
-  /** Persist extracted transcript text for use during search indexing */
-  updateSearchContent(instanceId: string, transcriptText: string): void {
-    this.stmtUpsertSearchContent.run(instanceId, transcriptText);
+  /**
+   * Persist extracted transcript text for use during search indexing.
+   * `sourceKey` identifies the transcript file state the text came from, so
+   * startup can skip re-parsing unchanged transcripts; omit it for text built
+   * from in-memory history.
+   */
+  updateSearchContent(instanceId: string, transcriptText: string, sourceKey?: string): void {
+    this.stmtUpsertSearchContent.run(instanceId, transcriptText, sourceKey ?? null);
+  }
+
+  /** Whether stored search text was extracted from exactly this transcript state */
+  hasSearchContentForSource(instanceId: string, sourceKey: string): boolean {
+    const row = this.stmtGetSearchContentSourceKey.get(instanceId) as
+      | { source_key: string | null }
+      | undefined;
+    return row?.source_key === sourceKey;
   }
 
   /** Remove all search docs for an instance before rebuilding its preferred doc */
   removeFromSearchIndex(instanceId: string): void {
-    this.stmtDeleteSearchDoc.run(instanceId, "session");
-    this.stmtDeleteSearchDoc.run(instanceId, "managed");
+    // Delete by rowid: a `WHERE instance_id = ?` on the FTS table scans every
+    // doc (UNINDEXED columns have no lookup), which made per-chat syncs on
+    // restore and shutdown cost seconds in aggregate.
+    const docs = this.stmtGetSearchDocRowids.all(instanceId) as Array<{ doc_rowid: number }>;
+    for (const doc of docs) {
+      this.stmtDeleteSearchDoc.run(doc.doc_rowid);
+    }
+    this.stmtDeleteSearchDocRowids.run(instanceId);
   }
 
   private insertSearchDoc(
@@ -2232,7 +2292,7 @@ ${buildSearchIndexSchemaSql()},
       | { transcript_text: string }
       | undefined;
 
-    this.stmtInsertSearchDoc.run(
+    const result = this.stmtInsertSearchDoc.run(
       asBindParams({
         instance_id: row.instance_id,
         source,
@@ -2251,6 +2311,7 @@ ${buildSearchIndexSchemaSql()},
         transcript_content: contentRow?.transcript_text ?? "",
       }),
     );
+    this.stmtInsertSearchDocRowid.run(row.instance_id, source, result.lastInsertRowid);
   }
 
   // =========================================================================
@@ -2321,6 +2382,7 @@ ${buildSearchIndexSchemaSql()},
   rebuildSearchIndex(): void {
     this.withTransaction(() => {
       this.db.exec("DELETE FROM search_index");
+      this.db.exec("DELETE FROM search_index_docs");
 
       // Index managed sessions first so we can skip their shadow session rows
       const managed = asRows<ManagedInstanceRow>(
