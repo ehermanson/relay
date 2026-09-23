@@ -504,6 +504,53 @@ describe("useInstanceMessages passive history hydration", () => {
     ]);
   });
 
+  it("applies events missed while disconnected from a reconnect delta replay", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+
+    act(() => {
+      result.current.setInstanceId("inst-resume");
+      result.current.handleMessage("inst-resume", {
+        type: "instance_history",
+        instanceId: "inst-resume",
+        history: [
+          {
+            timestamp: 1,
+            message: { type: "user", instanceId: "inst-resume", text: "before sleep" },
+          },
+        ],
+        replayMode: "full",
+        latestSequence: 2,
+        replayEpoch: 7,
+      });
+    });
+
+    // Reconnect with cursor 2: the server acks with the delta header carrying
+    // the latest sequence, then streams the missed events.
+    act(() => {
+      result.current.handleMessage("inst-resume", {
+        type: "instance_history",
+        instanceId: "inst-resume",
+        history: [],
+        replayMode: "delta",
+        latestSequence: 3,
+        replayEpoch: 7,
+      });
+      result.current.handleMessage("inst-resume", {
+        type: "output",
+        instanceId: "inst-resume",
+        text: "written while away",
+        isWaiting: true,
+        eventSequence: 3,
+      } as OutputMessage);
+    });
+
+    expect(result.current.items).toEqual([
+      expect.objectContaining({ kind: "user", text: "before sleep" }),
+      expect.objectContaining({ kind: "assistant", text: "written while away" }),
+    ]);
+    expect(result.current.rawHistory).toHaveLength(2);
+  });
+
   it("ignores delta replay acks until a full history baseline exists", () => {
     const { result } = renderHook(() => useInstanceMessages());
 
@@ -746,10 +793,22 @@ describe("delegated agent routing", () => {
     const { result } = renderHook(() => useInstanceMessages());
     act(() => result.current.setInstanceId("inst-agents-1"));
     act(() => {
-      result.current.handleMessage("inst-agents-1", { ...output("orchestrator says", undefined, 1), instanceId: "inst-agents-1" });
-      result.current.handleMessage("inst-agents-1", { ...output("child says", "agent-1", 2), instanceId: "inst-agents-1" });
-      result.current.handleMessage("inst-agents-1", { ...agentTool("t1", "agent-1"), instanceId: "inst-agents-1" });
-      result.current.handleMessage("inst-agents-1", { ...agentResult("t1", "agent-1"), instanceId: "inst-agents-1" });
+      result.current.handleMessage("inst-agents-1", {
+        ...output("orchestrator says", undefined, 1),
+        instanceId: "inst-agents-1",
+      });
+      result.current.handleMessage("inst-agents-1", {
+        ...output("child says", "agent-1", 2),
+        instanceId: "inst-agents-1",
+      });
+      result.current.handleMessage("inst-agents-1", {
+        ...agentTool("t1", "agent-1"),
+        instanceId: "inst-agents-1",
+      });
+      result.current.handleMessage("inst-agents-1", {
+        ...agentResult("t1", "agent-1"),
+        instanceId: "inst-agents-1",
+      });
       result.current.handleMessage("inst-agents-1", {
         type: "user",
         instanceId: "inst-agents-1",
@@ -795,10 +854,22 @@ describe("delegated agent routing", () => {
     const { result } = renderHook(() => useInstanceMessages());
     act(() => result.current.setInstanceId("inst-agents-3"));
     act(() => {
-      result.current.handleMessage("inst-agents-3", { ...output("A1 ", "agent-a", 1), instanceId: "inst-agents-3" });
-      result.current.handleMessage("inst-agents-3", { ...output("B1 ", "agent-b", 2), instanceId: "inst-agents-3" });
-      result.current.handleMessage("inst-agents-3", { ...output("A2", "agent-a", 3), instanceId: "inst-agents-3" });
-      result.current.handleMessage("inst-agents-3", { ...output("B2", "agent-b", 4), instanceId: "inst-agents-3" });
+      result.current.handleMessage("inst-agents-3", {
+        ...output("A1 ", "agent-a", 1),
+        instanceId: "inst-agents-3",
+      });
+      result.current.handleMessage("inst-agents-3", {
+        ...output("B1 ", "agent-b", 2),
+        instanceId: "inst-agents-3",
+      });
+      result.current.handleMessage("inst-agents-3", {
+        ...output("A2", "agent-a", 3),
+        instanceId: "inst-agents-3",
+      });
+      result.current.handleMessage("inst-agents-3", {
+        ...output("B2", "agent-b", 4),
+        instanceId: "inst-agents-3",
+      });
     });
     expect(result.current.items).toEqual([]);
     expect(result.current.agentItems["agent-a"]).toEqual([
@@ -826,7 +897,12 @@ describe("delegated agent routing", () => {
       });
     });
     const agent = result.current.agents["agent-1"];
-    expect(agent).toEqual({ agentId: "agent-1", name: "explorer", status: "completed", result: "ok" });
+    expect(agent).toEqual({
+      agentId: "agent-1",
+      name: "explorer",
+      status: "completed",
+      result: "ok",
+    });
     expect("model" in agent).toBe(false);
     expect(agent.model).toBeUndefined();
   });
@@ -1012,7 +1088,11 @@ describe("delegated agent routing", () => {
     expect(result.current.items.filter((i) => i.kind === "agent-card")).toEqual([
       expect.objectContaining({ kind: "agent-card", agentId: "thr-top" }),
     ]);
-    expect(Object.keys(result.current.agents).sort()).toEqual(["thr-child", "thr-top", "tu-grandchild"]);
+    expect(Object.keys(result.current.agents).sort()).toEqual([
+      "thr-child",
+      "thr-top",
+      "tu-grandchild",
+    ]);
   });
 
   it("flushes the in-flight response on a clean exit during replay", () => {
@@ -1071,7 +1151,10 @@ describe("delegated agent routing", () => {
     const messages = result.current.rawHistory?.map((e) => e.message) ?? [];
     expect(messages[0]).toEqual(expect.objectContaining({ type: "output", agentId: "agent-1" }));
     expect(messages[1]).toEqual(
-      expect.objectContaining({ type: "agent_update", agent: { agentId: "agent-1", status: "running" } }),
+      expect.objectContaining({
+        type: "agent_update",
+        agent: { agentId: "agent-1", status: "running" },
+      }),
     );
   });
 });

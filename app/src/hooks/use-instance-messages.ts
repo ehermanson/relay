@@ -716,12 +716,14 @@ function coreReducer(state: State, action: Action): State {
       );
 
       if (isSafeDelta) {
+        // Keep the cursor where it is: the missed events follow this header,
+        // and each advances it. Jumping to `latestSequence` here would make
+        // the sequence dedup drop every one of them.
         return {
           ...state,
           hasLoadedHistory: true,
           hasSyncedHistory: true,
           replayEpoch: action.replayEpoch ?? state.replayEpoch,
-          lastSeenSequence: action.latestSequence ?? state.lastSeenSequence,
         };
       }
 
