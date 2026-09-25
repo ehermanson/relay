@@ -45,6 +45,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
 import { SettingsSection, SettingRow } from "@/components/settings/settings-shared";
 import { Switch } from "@/components/ui/switch";
+import { AccountProfilesBlock } from "@/components/settings/account-profiles";
 import { BackgroundNotificationsSetting } from "@/components/settings/background-notifications";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { SuggestionSettings } from "@/components/settings/suggestion-settings";
@@ -775,6 +776,15 @@ export function ProvidersSettingsSection() {
     save.mutate({ providerDefaults: updated });
   };
 
+  // null clears the global override so new chats fall back to the default profile.
+  const handleProfileIdChange = (provider: string, profileId: string | null) => {
+    const updated = {
+      ...providerDefaults,
+      [provider]: { ...providerDefaults[provider], profileId },
+    };
+    save.mutate({ providerDefaults: updated });
+  };
+
   return (
     <SettingsSection
       title="Providers"
@@ -805,6 +815,7 @@ export function ProvidersSettingsSection() {
           provider={p}
           defaults={providerDefaults[p.provider] ?? {}}
           onChange={(field, value) => handleProviderDefaultChange(p.provider, field, value)}
+          onProfileIdChange={(profileId) => handleProfileIdChange(p.provider, profileId)}
           runtimeState={providerGlobalState[p.provider]}
           availableProviders={providers}
         />
@@ -1262,12 +1273,14 @@ function ProviderDefaultsRow({
   provider,
   defaults,
   onChange,
+  onProfileIdChange,
   runtimeState,
   availableProviders,
 }: {
   provider: ProviderDescriptor;
   defaults: ProviderDefaults;
   onChange: (field: keyof ProviderDefaults, value: string) => void;
+  onProfileIdChange: (profileId: string | null) => void;
   runtimeState?: ProviderGlobalState;
   availableProviders: ProviderDescriptor[];
 }) {
@@ -1307,7 +1320,7 @@ function ProviderDefaultsRow({
   // silently disappear for the entire 30-min refresh window.
   const showAdvisory = versionAdvisory != null;
 
-  if (!hasAnyControls && !hasRuntime && !showAdvisory) return null;
+  if (!hasAnyControls && !hasRuntime && !showAdvisory && !caps.supportsAccountProfiles) return null;
 
   return (
     <div className="py-5">
@@ -1447,6 +1460,13 @@ function ProviderDefaultsRow({
           ) : null}
         </div>
       )}
+      {caps.supportsAccountProfiles ? (
+        <AccountProfilesBlock
+          provider={provider}
+          selectedProfileId={defaults.profileId}
+          onSelectProfile={onProfileIdChange}
+        />
+      ) : null}
       <McpManagementForm
         provider={provider}
         runtimeState={runtimeState}

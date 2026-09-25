@@ -247,6 +247,13 @@ import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
+import {
+  accountProfileRoots,
+  listAccountProfiles,
+  normalizeConfigDir,
+  resolveAccountProfile,
+} from "#core/account-profiles.js";
+import type { ProviderAccountProfile, ProviderDefaults } from "#core/types.js";
 
 // =============================================================================
 // Re-exports
@@ -1439,6 +1446,8 @@ export class InstanceManager extends EventEmitter {
   /** Timestamp of the last git branch refresh pass (throttled to GIT_REFRESH_INTERVAL) */
   private lastGitRefreshAt = 0;
   private providerDirs: Record<ProviderKind, string>;
+  /** Claude transcript roots (default + account profiles), memoized on the stored profiles JSON. */
+  private claudeRootsCache: { key: string; roots: string[] } | null = null;
   /** Pre-resolved SDK query function — null if SDK not available (falls back to CLI) */
   private _sdkQueryFn: ((params: { prompt: unknown; options?: unknown }) => unknown) | null = null;
   /** Cached project icon paths: dir → absolute file path (null = scanned, not found) */
@@ -1521,6 +1530,154 @@ export class InstanceManager extends EventEmitter {
   }
 
   /** Access the session DB for global settings. */
+  /** Provider data roots the server resolved at boot (Claude: the default account's config dir). */
+  getProviderDirs(): Readonly<Record<ProviderKind, string>> {
+    return this.providerDirs;
+  }
+
+  /** User-added account profiles from global settings (never the implicit default). */
+  private storedAccountProfiles(): ProviderAccountProfile[] {
+    const raw = this.db.getGlobalSettings().provider_profiles_json;
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as ProviderAccountProfile[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Every Claude config dir whose transcripts Relay indexes — the server
+   * default first, then each account profile's dir, deduped. Memoized on the
+   * stored profiles JSON so discovery polls and summary builders don't
+   * re-parse settings on every call.
+   */
+  getClaudeRoots(): string[] {
+    const key = this.db.getGlobalSettings().provider_profiles_json ?? "";
+    if (this.claudeRootsCache?.key === key) return this.claudeRootsCache.roots;
+    const roots = accountProfileRoots(
+      listAccountProfiles(this.storedAccountProfiles(), "claude", this.providerDirs.claude),
+    );
+    this.claudeRootsCache = { key, roots };
+    return roots;
+  }
+
+  /**
+   * Account profiles changed (added/removed in Settings): re-derive the set of
+   * Claude transcript roots and pick up sessions under any newly added root.
+   * `scanAllSessions()` is idempotent (known paths are refreshed, not
+   * duplicated), so a full re-scan is safe; it only runs once a root is new.
+   */
+  refreshAccountProfileRoots(): void {
+    const previous = new Set(this.claudeRootsCache?.roots ?? [this.providerDirs.claude]);
+    this.claudeRootsCache = null;
+    const roots = this.getClaudeRoots();
+    const added = roots.filter((root) => !previous.has(root));
+    this.baseConfig.logger.info(
+      `[InstanceManager] Claude transcript roots: ${roots.join(", ")}${added.length ? ` (new: ${added.join(", ")})` : ""}`,
+    );
+    if (added.length === 0 || !this.scanComplete || this.shuttingDown) return;
+    try {
+      this.scanAndRestoreNew();
+    } catch (err) {
+      this.baseConfig.logger.warn(
+        `[InstanceManager] Re-scan after account profile change failed: ${err}`,
+      );
+    }
+  }
+
+  /**
+   * Provider data roots for one chat: the shared dirs with Claude's replaced
+   * by the chat's bound config dir. Every per-instance driver context/config
+   * (session spawn, capture, transcript path, child history) goes through here.
+   */
+  private providerDirsFor(instance: Pick<Instance, "info">): Record<ProviderKind, string> {
+    return this.providerDirsForConfigDir(instance.info.configDir);
+  }
+
+  private providerDirsForConfigDir(configDir: string | undefined): Record<ProviderKind, string> {
+    if (
+      !configDir ||
+      normalizeConfigDir(configDir) === normalizeConfigDir(this.providerDirs.claude)
+    )
+      return this.providerDirs;
+    return { ...this.providerDirs, claude: configDir };
+  }
+
+  /**
+   * The non-default Claude root a transcript lives under, if any — the
+   * ancestor of its `/projects/` segment. Undefined for the default root and
+   * for other providers. Derived, never stored: `sessions` rows keep only the
+   * JSONL path.
+   */
+  private claudeConfigDirForTranscript(
+    provider: ProviderKind,
+    jsonlPath: string | null | undefined,
+  ): string | undefined {
+    if (provider !== "claude" || !jsonlPath) return undefined;
+    const defaultRoot = normalizeConfigDir(this.providerDirs.claude);
+    for (const root of this.getClaudeRoots()) {
+      if (normalizeConfigDir(root) === defaultRoot) continue;
+      if (jsonlPath.startsWith(`${normalizeConfigDir(root)}/projects/`)) return root;
+    }
+    return undefined;
+  }
+
+  /** External summary with the account root stamped from the transcript path. */
+  private externalSummaryFromRow(row: SessionRow, slugs?: Map<string, string>): InstanceInfo {
+    const summary = summaryFromSessionRow(row, slugs);
+    const configDir = this.claudeConfigDirForTranscript(summary.provider, row.jsonl_path);
+    if (configDir) summary.configDir = configDir;
+    return summary;
+  }
+
+  /**
+   * Bind a new chat to an account: explicit profile > project default > global
+   * provider default > server default. Only providers that advertise
+   * `supportsAccountProfiles` are bound; the result is undefined for the
+   * default profile so `InstanceInfo.configDir` stays absent.
+   */
+  private resolveCreateConfigDir(options: {
+    provider: ProviderKind;
+    profileId?: string;
+    project?: Project;
+    providerDefaults: Record<string, ProviderDefaults>;
+  }): string | undefined {
+    if (!getProviderCapabilities(options.provider).supportsAccountProfiles) return undefined;
+    const profiles = listAccountProfiles(
+      this.storedAccountProfiles(),
+      options.provider,
+      this.providerDirs[options.provider],
+    );
+    return resolveAccountProfile({
+      provider: options.provider,
+      profileId: options.profileId,
+      projectDefaultProfileId: options.project?.defaultProfileId,
+      providerDefaults: options.providerDefaults,
+      profiles,
+    }).configDir;
+  }
+
+  /**
+   * For a resume: the root whose project dir already holds `<sessionId>.jsonl`,
+   * so `--resume` runs under the account that owns the transcript. Returns the
+   * non-default root, `null` when it lives under the default root, and
+   * `undefined` when no root has it (caller falls back to profile resolution).
+   */
+  private findClaudeTranscriptRoot(
+    sessionId: string,
+    workingDirectory: string,
+  ): string | null | undefined {
+    const encoded = workingDirectory.replace(/[^A-Za-z0-9_-]/g, "-");
+    const defaultRoot = normalizeConfigDir(this.providerDirs.claude);
+    for (const root of this.getClaudeRoots()) {
+      if (!existsSync(join(root, "projects", encoded, `${sessionId}.jsonl`))) continue;
+      return normalizeConfigDir(root) === defaultRoot ? null : root;
+    }
+    return undefined;
+  }
+
   get sessionDb(): SessionDB {
     return this.db;
   }
@@ -1882,7 +2039,11 @@ export class InstanceManager extends EventEmitter {
     void this.ensureProviderGlobalState("codex");
   }
 
-  private getProviderContext() {
+  /**
+   * Driver context for shared (non-chat-specific) work: discovery, model
+   * lists, availability. Pass `configDir` to scope it to one chat's account.
+   */
+  private getProviderContext(configDir?: string) {
     const registeredDirectories = new Set(
       this.getKnownDirectories().map((directoryInfo) => directoryInfo.path),
     );
@@ -1894,7 +2055,8 @@ export class InstanceManager extends EventEmitter {
       }
     }
     return {
-      providerDirs: this.providerDirs,
+      providerDirs: this.providerDirsForConfigDir(configDir),
+      claudeRoots: this.getClaudeRoots(),
       logger: this.baseConfig.logger,
       sdkQueryFn: this._sdkQueryFn,
       registeredDirectories,
@@ -1914,10 +2076,23 @@ export class InstanceManager extends EventEmitter {
       allowedTools?: string[];
       modelOptions?: ProviderModelOptions;
       bootstrapContext?: ProviderSessionBootstrap;
+      /** The chat's bound account (`InstanceInfo.configDir`); absent = server default. */
+      configDir?: string;
     },
   ): ProviderSession {
     const provider = options?.provider ?? "claude";
-    return createManagedProviderSession(provider, config, options, this.getProviderContext());
+    // A bound chat's config and driver context both point at its account dir,
+    // so the SDK spawn, the legacy process, and any path the driver derives
+    // from `providerDirs` agree on where the transcript lives.
+    const providerDirs = this.providerDirsForConfigDir(options?.configDir);
+    const sessionConfig: CoreConfig =
+      providerDirs === this.providerDirs ? config : { ...config, providerDirs };
+    return createManagedProviderSession(
+      provider,
+      sessionConfig,
+      options,
+      this.getProviderContext(options?.configDir),
+    );
   }
 
   private buildBootstrapContext(
@@ -2135,6 +2310,8 @@ export class InstanceManager extends EventEmitter {
     modelOptions?: ProviderModelOptions;
     parentSessionId?: string;
     review?: import("#core/types.js").ReviewSessionInfo;
+    /** Account profile to bind the chat to (explicit > project > global default). */
+    profileId?: string;
   }): InstanceInfo {
     const activeCount = [...this.instances.values()].filter(
       (i) => i.process && !i.info.external,
@@ -2195,21 +2372,30 @@ export class InstanceManager extends EventEmitter {
         "claude");
 
     // Parse per-provider defaults from global settings
-    let providerDefaults: Record<
-      string,
-      {
-        model?: string;
-        reasoningEffort?: string;
-        runtimeMode?: string;
-        fastMode?: boolean;
-      }
-    > = {};
+    let providerDefaults: Record<string, ProviderDefaults> = {};
     if (globalSettings.provider_defaults_json) {
       try {
         providerDefaults = JSON.parse(globalSettings.provider_defaults_json);
       } catch {}
     }
     const perProvider = providerDefaults[provider];
+
+    // Account binding — fixed for the chat's whole life, like the provider.
+    // A resume follows its transcript: `--resume` must run under the config
+    // dir the JSONL lives in, whatever profile the defaults would pick.
+    const transcriptRoot =
+      resumeId && provider === "claude"
+        ? this.findClaudeTranscriptRoot(resumeId, workingDirectory)
+        : undefined;
+    const configDir =
+      transcriptRoot !== undefined
+        ? (transcriptRoot ?? undefined)
+        : this.resolveCreateConfigDir({
+            provider,
+            profileId: options?.profileId,
+            project,
+            providerDefaults,
+          });
 
     // Resolve model: explicit > project default > per-provider default.
     // `isExplicitModel` tracks whether this came from a user choice (vs. being
@@ -2290,6 +2476,7 @@ export class InstanceManager extends EventEmitter {
       runtimeMode: resolvedRuntimeMode,
       modelOptions,
       bootstrapContext,
+      configDir,
     });
     const deliveredBootstrap = bootstrapContext ?? proc.bootstrapContext;
     const initialBinding = proc.getRuntimeBinding();
@@ -2315,6 +2502,7 @@ export class InstanceManager extends EventEmitter {
       const resumePath = this.resolveManagedTranscriptPath(provider, {
         sessionId: resumeId,
         workingDirectory,
+        configDir,
       });
       const recorded =
         provider === "claude" && resumePath ? readClaudeTranscriptTitle(resumePath) : null;
@@ -2337,6 +2525,7 @@ export class InstanceManager extends EventEmitter {
       parentSessionId: options?.parentSessionId,
       preferredModel: isExplicitModel ? model : undefined,
       modelOptions,
+      configDir,
       runtimeMode: resolvedRuntimeMode,
       originalDirectory: spaceOriginalDirectory,
       projectId: project?.id,
@@ -2385,6 +2574,7 @@ export class InstanceManager extends EventEmitter {
       const transcriptPath = this.resolveManagedTranscriptPath(provider, {
         sessionId: resumeId,
         workingDirectory,
+        configDir,
       });
       instance.sessionId = resumeId;
       instance.jsonlPath = transcriptPath;
@@ -2440,7 +2630,7 @@ export class InstanceManager extends EventEmitter {
     }
 
     this.baseConfig.logger.info(
-      `[InstanceManager] Created instance "${name}" (${id})${resumeId ? ` resuming ${resumeId}` : ""}`,
+      `[InstanceManager] Created instance "${name}" (${id})${resumeId ? ` resuming ${resumeId}` : ""}${configDir ? ` bound to config dir ${configDir}` : ""}`,
     );
     const result = { ...info };
     this.emit("instance:created", id, result);
@@ -3033,7 +3223,7 @@ export class InstanceManager extends EventEmitter {
 
     const external = this.db.getByInstanceId(id);
     if (external) {
-      return summaryFromSessionRow(external, slugs);
+      return this.externalSummaryFromRow(external, slugs);
     }
 
     const managed = this.db.getManagedByInstanceId(id);
@@ -3097,7 +3287,7 @@ export class InstanceManager extends EventEmitter {
         continue;
       }
       if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, summaryFromSessionRow(row, slugs));
+        chats.set(row.instance_id, this.externalSummaryFromRow(row, slugs));
       }
     }
 
@@ -3157,7 +3347,7 @@ export class InstanceManager extends EventEmitter {
         continue;
       }
       if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, summaryFromSessionRow(row, slugs));
+        chats.set(row.instance_id, this.externalSummaryFromRow(row, slugs));
       }
     }
 
@@ -3719,6 +3909,7 @@ export class InstanceManager extends EventEmitter {
         model: instance.info.preferredModel,
         runtimeMode: instance.info.runtimeMode,
         modelOptions: instance.info.modelOptions,
+        configDir: instance.info.configDir,
       });
     } catch (err) {
       this.baseConfig.logger.error(`[InstanceManager] Failed to create process for resume: ${err}`);
@@ -3792,6 +3983,7 @@ export class InstanceManager extends EventEmitter {
         model: instance.info.preferredModel,
         runtimeMode: instance.info.runtimeMode,
         modelOptions: instance.info.modelOptions,
+        configDir: instance.info.configDir,
       });
     } catch (err) {
       this.baseConfig.logger.error(`[InstanceManager] Failed to create process for revive: ${err}`);
@@ -3976,7 +4168,7 @@ export class InstanceManager extends EventEmitter {
 
     if (!agent) return null;
     return {
-      providerDirs: this.providerDirs,
+      providerDirs: this.providerDirsFor(instance),
       transcriptPath,
       sessionId,
       workingDirectory: instance.actualCwd || instance.info.workingDirectory,
@@ -4477,6 +4669,7 @@ export class InstanceManager extends EventEmitter {
       runtimeMode: instance.info.runtimeMode,
       allowedTools: this.getPersistedAllowedTools(resumeSessionId),
       modelOptions: instance.info.modelOptions,
+      configDir: instance.info.configDir,
     });
 
     instance.process = proc;
@@ -4532,8 +4725,15 @@ export class InstanceManager extends EventEmitter {
    * Returns the directory name or null if not found.
    */
   resolveProjectId(slug: string): string | null {
-    const projectsDir = join(this.providerDirs.claude, "projects");
+    // Default root first: the first account root that has the dir wins.
+    for (const root of this.getClaudeRoots()) {
+      const resolved = this.resolveProjectIdInRoot(join(root, "projects"), slug);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
 
+  private resolveProjectIdInRoot(projectsDir: string, slug: string): string | null {
     // Exact match first
     const exact = join(projectsDir, slug);
     try {
@@ -4606,44 +4806,51 @@ export class InstanceManager extends EventEmitter {
   getProjectArtifacts(projectId: string): ProjectArtifacts | null {
     const registeredProject = this._projectManager.getProject(projectId);
     const resolvedId = registeredProject ? null : this.resolveProjectId(projectId);
-    const claudeProjectsDir = join(this.providerDirs.claude, "projects");
 
-    // projectDir is the provider-specific metadata directory (e.g. ~/.claude/projects/...).
-    // May not exist for projects that only have sessions from other providers (e.g. Codex-only).
-    const projectDir = registeredProject
-      ? this.cwdToProjectDir(registeredProject.directory, claudeProjectsDir)
-      : resolvedId
-        ? join(claudeProjectsDir, resolvedId)
-        : null;
+    // One Claude metadata dir per account root (`<root>/projects/<encoded>`),
+    // default root first, keeping only the ones that exist. Empty for projects
+    // whose sessions all come from other providers (e.g. Codex-only).
+    const projectDirsByRoot: Array<{ root: string; projectDir: string }> = [];
+    for (const root of this.getClaudeRoots()) {
+      const claudeProjectsDir = join(root, "projects");
+      const candidate = registeredProject
+        ? this.cwdToProjectDir(registeredProject.directory, claudeProjectsDir)
+        : resolvedId
+          ? join(claudeProjectsDir, resolvedId)
+          : null;
+      if (candidate && existsSync(candidate))
+        projectDirsByRoot.push({ root, projectDir: candidate });
+    }
 
     // Resolve real path — JSONL cwd is authoritative, with instance-based fallback.
     let directory = registeredProject?.directory ?? "";
-    if (projectDir) {
-      try {
-        const jsonlFiles = readdirSync(projectDir)
-          .filter((f) => f.endsWith(".jsonl"))
-          .map((f) => {
+    if (projectDirsByRoot.length > 0) {
+      const jsonlFiles: Array<{ path: string; mtime: number }> = [];
+      for (const { projectDir } of projectDirsByRoot) {
+        try {
+          for (const f of readdirSync(projectDir)) {
+            if (!f.endsWith(".jsonl")) continue;
             const fullPath = join(projectDir, f);
             try {
-              return { path: fullPath, mtime: statSync(fullPath).mtimeMs };
+              jsonlFiles.push({ path: fullPath, mtime: statSync(fullPath).mtimeMs });
             } catch {
-              return null;
+              /* vanished */
             }
-          })
-          .filter((f): f is { path: string; mtime: number } => f !== null);
-
-        if (jsonlFiles.length > 0) {
-          jsonlFiles.sort((a, b) => b.mtime - a.mtime);
-          try {
-            const head = readFileSync(jsonlFiles[0].path, "utf-8").split("\n")[0];
-            const parsed = JSON.parse(head);
-            if (parsed.cwd && existsSync(parsed.cwd)) directory = parsed.cwd;
-          } catch {
-            /* fall back below */
           }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+      }
+
+      if (jsonlFiles.length > 0) {
+        jsonlFiles.sort((a, b) => b.mtime - a.mtime);
+        try {
+          const head = readFileSync(jsonlFiles[0].path, "utf-8").split("\n")[0];
+          const parsed = JSON.parse(head);
+          if (parsed.cwd && existsSync(parsed.cwd)) directory = parsed.cwd;
+        } catch {
+          /* fall back below */
+        }
       }
     }
 
@@ -4675,14 +4882,14 @@ export class InstanceManager extends EventEmitter {
       directory = decodeProjectDir(resolvedId);
     }
 
-    // Memory
+    // Memory — the first account root (default first) that has one.
     let memory: string | null = null;
-    if (projectDir) {
-      const memoryPath = join(projectDir, "memory", "MEMORY.md");
+    for (const { projectDir } of projectDirsByRoot) {
       try {
-        memory = readFileSync(memoryPath, "utf-8");
+        memory = readFileSync(join(projectDir, "memory", "MEMORY.md"), "utf-8");
+        break;
       } catch {
-        /* no memory file */
+        /* no memory file in this root */
       }
     }
 
@@ -4708,9 +4915,11 @@ export class InstanceManager extends EventEmitter {
 
     // Plans — Claude-specific: collect slugs from JSONL files, then check {claudeDir}/plans/.
     // Skipped entirely for non-Claude projects (projectDir is null).
+    // Each account root has its own `plans/` dir; plans are unioned across
+    // roots with the default first (a slug seen in one root isn't re-added).
     const plans: ProjectPlan[] = [];
     const seenSlugs = new Set<string>();
-    if (projectDir)
+    for (const { root: claudeRoot, projectDir } of projectDirsByRoot)
       try {
         const jsonlFiles = readdirSync(projectDir)
           .filter((f) => f.endsWith(".jsonl"))
@@ -4721,7 +4930,7 @@ export class InstanceManager extends EventEmitter {
           const slug = this.extractSlugFromJsonl(jsonlPath);
           if (slug && !seenSlugs.has(slug)) {
             seenSlugs.add(slug);
-            const planPath = join(this.providerDirs.claude, "plans", `${slug}.md`);
+            const planPath = join(claudeRoot, "plans", `${slug}.md`);
             try {
               const content = readFileSync(planPath, "utf-8");
               // Use the JSONL session mtime (when the plan was last used) rather than
@@ -4749,7 +4958,7 @@ export class InstanceManager extends EventEmitter {
         // Pass 2: discover plans with custom filenames (not matching session slug).
         // Check plan files on disk that weren't found via slug, then search JSONL
         // content for references to them (Write/Edit tool calls to ~/.claude/plans/).
-        const plansDir = join(this.providerDirs.claude, "plans");
+        const plansDir = join(claudeRoot, "plans");
         try {
           const undiscovered = readdirSync(plansDir)
             .filter((f) => f.endsWith(".md"))
@@ -4761,7 +4970,7 @@ export class InstanceManager extends EventEmitter {
               if (undiscovered.length === 0) break;
               try {
                 const raw = readFileSync(jsonlPath, "utf-8");
-                if (!raw.includes(`${this.providerDirs.claude}/plans/`)) continue;
+                if (!raw.includes(`${claudeRoot}/plans/`)) continue;
                 for (let i = undiscovered.length - 1; i >= 0; i--) {
                   const planSlug = undiscovered[i];
                   if (raw.includes(`plans/${planSlug}.md`)) {
@@ -5495,7 +5704,8 @@ export class InstanceManager extends EventEmitter {
       if (instance.info.provider !== "claude") continue;
       const cwd = instance.actualCwd || instance.info.workingDirectory;
       const encoded = cwd.replace(/[^A-Za-z0-9_-]/g, "-");
-      const projectDir = join(this.providerDirs.claude, "projects", encoded);
+      // A bound chat's JSONL lands under its own account root.
+      const projectDir = join(this.providerDirsFor(instance).claude, "projects", encoded);
       if (!existsSync(projectDir)) continue;
       let recentJsonls = recentJsonlsByProjectDir.get(projectDir);
       if (!recentJsonls) {
@@ -5685,6 +5895,9 @@ export class InstanceManager extends EventEmitter {
       gitBranch,
       originalDirectory,
       parentSessionId,
+      // Terminal chats under a non-default account root are labelled by it;
+      // derived from the transcript path, never stored in `sessions`.
+      configDir: this.claudeConfigDirForTranscript(provider, jsonlPath),
       spaceId:
         originalDirectory && (worktreePath || gitBranch)
           ? explicitOrInferredSpaceIdForPersistenceRow(
@@ -6050,11 +6263,14 @@ export class InstanceManager extends EventEmitter {
       sessionId?: string;
       transcriptPath?: string;
       workingDirectory?: string;
+      /** The chat's bound account; the transcript lives under its root, not the default. */
+      configDir?: string;
     },
   ): string | undefined {
+    const { configDir, ...rest } = options;
     return resolveManagedTranscriptPathForProvider(provider, {
-      ...options,
-      providerDirs: this.providerDirs,
+      ...rest,
+      providerDirs: this.providerDirsForConfigDir(configDir),
     });
   }
 
@@ -7405,6 +7621,7 @@ export class InstanceManager extends EventEmitter {
         sessionId: row.provider_session_id ?? extractResumeSessionId(resumeCursor),
         transcriptPath: row.transcript_path ?? undefined,
         workingDirectory: row.working_directory,
+        configDir: row.config_dir ?? undefined,
       });
       if (!transcriptPath) continue;
 
@@ -7426,7 +7643,10 @@ export class InstanceManager extends EventEmitter {
    */
   private scanAllSessions(): void {
     const scanStart = performance.now();
-    const projectsDir = join(this.providerDirs.claude, "projects");
+    // Every account root is scanned (default first); a chat whose transcript
+    // lives under a profile's dir is indexed exactly like a default-root one.
+    const claudeProjectsDirs = this.getClaudeRoots().map((root) => join(root, "projects"));
+    const existingProjectsDirs = claudeProjectsDirs.filter((dir) => existsSync(dir));
 
     const knownPaths = this.db.getJsonlPaths();
     const managedKeys = this.collectManagedSessionKeys();
@@ -7441,16 +7661,21 @@ export class InstanceManager extends EventEmitter {
     // --- Scan Codex sessions (~/.codex/sessions/) ---
     this.scanCodexSessions(knownPaths, diskPaths, managedKeys);
 
-    if (!existsSync(projectsDir)) return;
+    if (existingProjectsDirs.length === 0) return;
 
     try {
-      const projectDirs = readdirSync(projectsDir).filter((name) =>
-        this.shouldScanClaudeProjectDir(projectsDir, name),
-      );
+      const projectDirs: Array<{ projectsDir: string; projDir: string }> = [];
+      for (const projectsDir of existingProjectsDirs) {
+        for (const name of readdirSync(projectsDir)) {
+          if (this.shouldScanClaudeProjectDir(projectsDir, name)) {
+            projectDirs.push({ projectsDir, projDir: name });
+          }
+        }
+      }
 
       const rows: SessionRow[] = [];
 
-      for (const projDir of projectDirs) {
+      for (const { projectsDir, projDir } of projectDirs) {
         const fullProjDir = join(projectsDir, projDir);
         scannedProjectDirs.add(fullProjDir);
         let jsonlFiles: string[];
@@ -7670,7 +7895,7 @@ export class InstanceManager extends EventEmitter {
         continue;
       }
       // Claude sessions: only archive if the parent project dir was scanned
-      if (!knownPath.startsWith(projectsDir)) continue;
+      if (!claudeProjectsDirs.some((dir) => knownPath.startsWith(dir))) continue;
       const parentDir = knownPath.substring(0, knownPath.lastIndexOf("/"));
       if (!scannedProjectDirs.has(parentDir)) continue;
       if (!diskPaths.has(knownPath)) {
@@ -8030,6 +8255,8 @@ export class InstanceManager extends EventEmitter {
         restoredState.info.projectId,
       )?.slug;
     }
+    const externalConfigDir = this.claudeConfigDirForTranscript(provider, entry.jsonl_path);
+    if (externalConfigDir) restoredState.info.configDir = externalConfigDir;
 
     const instance: Instance = {
       info: restoredState.info,
@@ -8125,6 +8352,8 @@ export class InstanceManager extends EventEmitter {
       sessionId: resumeSessionId,
       transcriptPath: entry.transcript_path ?? undefined,
       workingDirectory: restoreActualCwd,
+      // The row's bound account: its transcript lives under that root.
+      configDir: entry.config_dir ?? undefined,
     });
     if (!resumeSessionId && !transcriptPath) {
       this.db.archiveManaged(entry.instance_id);
@@ -9060,7 +9289,7 @@ export class InstanceManager extends EventEmitter {
             instance.providerBinding?.providerSessionId ||
             instance.sessionId,
           workingDirectory: instance.actualCwd || instance.info.workingDirectory,
-          providerDirs: this.providerDirs,
+          providerDirs: this.providerDirsFor(instance),
         });
         if (!captured?.sessionId) return;
 
@@ -9219,6 +9448,7 @@ export class InstanceManager extends EventEmitter {
         ? this.resolveManagedTranscriptPath("claude", {
             sessionId,
             workingDirectory: instance.info.workingDirectory,
+            configDir: instance.info.configDir,
           })
         : undefined);
     return path ? readClaudeTranscriptTitle(path) : null;
@@ -9574,6 +9804,7 @@ export class InstanceManager extends EventEmitter {
       const proc = this.createProviderSession(instanceConfig, {
         provider,
         runtimeMode: instance.info.runtimeMode,
+        configDir: instance.info.configDir,
         model:
           preferredModel ??
           (provider === "claude" && getSdkDiscoveredModels()?.length

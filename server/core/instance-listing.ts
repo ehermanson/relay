@@ -147,6 +147,7 @@ export function summaryFromManagedRow(
       entry.original_git_branch ?? entry.git_branch ?? entry.git_info_branch ?? undefined,
     parentSessionId: entry.parent_session_id ?? undefined,
     preferredModel: entry.preferred_model ?? undefined,
+    configDir: entry.config_dir ?? undefined,
     runtimeMode: (entry.runtime_mode as ProviderRuntimeMode | null) ?? undefined,
     spaceId: entry.space_id ?? undefined,
     projectId: entry.project_id ?? undefined,

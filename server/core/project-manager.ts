@@ -101,6 +101,7 @@ function rowToProject(row: ProjectRow): Project {
     spaceBranchSource: (row.space_branch_source as "local" | "remote") ?? null,
     defaultProvider: row.default_provider,
     defaultModel: row.default_model,
+    defaultProfileId: row.default_profile_id ?? null,
     createdAt: row.created_at,
     lastActivityAt: row.last_activity_at,
     suggestions: parseJson<SuggestionsConfig>(row.suggestions_json),
@@ -268,6 +269,7 @@ export class ProjectManager extends EventEmitter {
           space_branch_source: null,
           default_provider: null,
           default_model: null,
+          default_profile_id: null,
           created_at: now,
           last_activity_at: null,
           suggestions_json: null,
@@ -366,6 +368,7 @@ export class ProjectManager extends EventEmitter {
       space_branch_source: null,
       default_provider: null,
       default_model: null,
+      default_profile_id: null,
       created_at: now,
       last_activity_at: null,
       suggestions_json: null,
@@ -491,6 +494,7 @@ export class ProjectManager extends EventEmitter {
       spaceBranchSource?: "local" | "remote" | null;
       defaultProvider?: string | null;
       defaultModel?: string | null;
+      defaultProfileId?: string | null;
       suggestions?: SuggestionsConfig | null;
     },
   ): Project | undefined {
@@ -518,6 +522,10 @@ export class ProjectManager extends EventEmitter {
         updates.defaultProvider !== undefined ? updates.defaultProvider : existing.default_provider,
       default_model:
         updates.defaultModel !== undefined ? updates.defaultModel : existing.default_model,
+      default_profile_id:
+        updates.defaultProfileId !== undefined
+          ? updates.defaultProfileId
+          : (existing.default_profile_id ?? null),
       suggestions_json:
         "suggestions" in updates
           ? updates.suggestions

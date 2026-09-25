@@ -35,6 +35,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         modelOptions?: ProviderModelOptions;
         parentSessionId?: string;
         review?: import("#core/types.js").ReviewSessionInfo;
+        profileId?: string;
       }>(c);
       const info = instanceManager.createInstance({
         provider: body.provider,
@@ -47,6 +48,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         modelOptions: body.modelOptions,
         parentSessionId: body.parentSessionId,
         review: body.review,
+        profileId: body.profileId,
       });
       return c.json(info, 201);
     } catch (err) {

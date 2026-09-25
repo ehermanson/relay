@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { readJsonBody } from "#server/hono-utils.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
-import type { GlobalSettings, SuggestionsConfig } from "#core/types.js";
+import type { GlobalSettings, ProviderAccountProfile, SuggestionsConfig } from "#core/types.js";
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -25,6 +25,7 @@ function rowToSettings(row: {
   suggestions_json: string | null;
   max_processes: number | null;
   sidebar_layout: string | null;
+  provider_profiles_json?: string | null;
 }): GlobalSettings {
   let providerDefaults: Record<string, unknown> = {};
   if (row.provider_defaults_json) {
@@ -48,6 +49,7 @@ function rowToSettings(row: {
     providerDefaults: providerDefaults as GlobalSettings["providerDefaults"],
     customInstructions: row.custom_instructions,
     projectOrder,
+    providerProfiles: parseJson<ProviderAccountProfile[]>(row.provider_profiles_json ?? null) ?? [],
     suggestions: parseJson<SuggestionsConfig>(row.suggestions_json),
     maxProcesses:
       typeof row.max_processes === "number" && row.max_processes > 0 ? row.max_processes : null,
@@ -101,6 +103,8 @@ export function registerSettingsRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       dbPatch.project_order_json =
         body.projectOrder !== null ? JSON.stringify(body.projectOrder) : null;
 
+    // `providerProfiles` is deliberately ignored here: profiles are mutated only
+    // through /api/providers/:provider/profiles (fs validation + root refresh).
     if (body.providerDefaults !== undefined) {
       const existing = instanceManager.sessionDb.getGlobalSettings();
       let current: Record<string, unknown> = {};

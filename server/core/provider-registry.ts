@@ -22,6 +22,7 @@ import type { ProviderSession } from "#core/provider.js";
 import type {
   FileChange,
   HistoryEntry,
+  ProviderAccountProfileStatus,
   ProviderCapabilities,
   ProviderDescriptor,
   ProviderKind,
@@ -35,7 +36,9 @@ import type {
 } from "#core/types.js";
 import {
   createSdkSessionSync,
+  getClaudeAccountIdentitySnapshot,
   getSdkDiscoveredModels,
+  probeClaudeAccountIdentity,
   refreshSdkDiscoveredModelsIfStale,
 } from "#core/providers/claude-sdk.js";
 import { findClaudeBinary, isClaudeInstalled } from "#core/providers/claude-cli.js";
@@ -95,6 +98,12 @@ interface ProviderSessionOptions {
   allowedTools?: string[];
   modelOptions?: ProviderModelOptions;
   bootstrapContext?: ProviderSessionBootstrap;
+  /**
+   * Provider config dir this chat is bound to (`InstanceInfo.configDir`).
+   * Claude pins it as `CLAUDE_CONFIG_DIR` on the spawn so a resume runs under
+   * the account whose transcript it continues. Absent = `config.providerDirs`.
+   */
+  configDir?: string;
 }
 
 interface ProviderCaptureContext {
@@ -133,6 +142,13 @@ interface ProviderExternalDiscoveryContext extends ProviderDriverContext {
    * without a discoverable local process (Codex Desktop) consult it.
    */
   transcriptActivityWindowMs?: number;
+  /**
+   * Every Claude config dir whose transcripts may belong to a running
+   * process: the default (`providerDirs.claude`) first, then each account
+   * profile's dir. A terminal session under a non-default account writes its
+   * JSONL there, so pairing by cwd must look in every root. Absent = default only.
+   */
+  claudeRoots?: string[];
 }
 
 /**
@@ -188,7 +204,25 @@ interface ProviderDriver {
    */
   readAgentHistory?(context: ProviderAgentHistoryContext): Promise<HistoryEntry[] | null>;
   readAgentModel?(context: ProviderAgentHistoryContext): string | undefined;
+  /**
+   * Account profiles (`ProviderCapabilities.supportsAccountProfiles`): ask the
+   * provider which login a config dir holds. `probeAccountIdentity` may spawn
+   * a short-lived provider process and caches per dir; `getAccountIdentitySnapshot`
+   * is a synchronous cache read that never probes.
+   */
+  probeAccountIdentity?(
+    configDir: string,
+    logger: CoreConfig["logger"],
+    options: { force?: boolean },
+  ): Promise<ProviderAccountIdentitySnapshot>;
+  getAccountIdentitySnapshot?(configDir: string): ProviderAccountIdentitySnapshot;
 }
+
+/** The probed half of `ProviderAccountProfileStatus` — what a driver knows about one config dir. */
+export type ProviderAccountIdentitySnapshot = Pick<
+  ProviderAccountProfileStatus,
+  "probeState" | "identity" | "probeError" | "probedAt"
+>;
 
 /**
  * Claude writes each subagent's transcript next to the parent's:
@@ -272,26 +306,6 @@ export function inferClaudeModelIdFromSdkInfo(model: ClaudeSdkModelInfo): string
 function resolveClaudeProjectDir(providerRoot: string, workingDirectory: string): string {
   const projectsDir = join(providerRoot, "projects");
   return join(projectsDir, workingDirectory.replace(/[^A-Za-z0-9_-]/g, "-"));
-}
-
-function findRecentJsonls(projectDir: string, count: number): string[] {
-  try {
-    const files = readdirSync(projectDir)
-      .filter((file) => file.endsWith(".jsonl"))
-      .map((file) => {
-        const fullPath = join(projectDir, file);
-        try {
-          return { path: fullPath, mtime: statSync(fullPath).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-      .filter((entry): entry is { path: string; mtime: number } => entry !== null)
-      .sort((a, b) => b.mtime - a.mtime);
-    return files.slice(0, count).map((entry) => entry.path);
-  } catch {
-    return [];
-  }
 }
 
 function normalizeDiscoveryDirectory(directory: string): string {
@@ -447,11 +461,16 @@ async function discoverClaudeExternalSessions(
     context.runningProcessCwds?.get("claude") ??
     (await findRunningProcessCwdsAsync("claude", context.excludePids));
   const sessions: DiscoveredExternalSession[] = [];
+  // Every account's config dir is a candidate root: a terminal `claude` under
+  // a non-default CLAUDE_CONFIG_DIR writes its transcript there, and pairing
+  // it with the default root's newest JSONL would attach the wrong file.
+  const roots = claudeDiscoveryRoots(context);
   for (const [cwd, info] of cwdInfoMap) {
     if (!isRegisteredDiscoveryDirectory(cwd, context.registeredDirectories)) continue;
-    const projectDir = resolveClaudeProjectDir(context.providerDirs.claude, cwd);
-    if (!existsSync(projectDir)) continue;
-    const jsonlPaths = findRecentJsonls(projectDir, info.count);
+    const jsonlPaths = findRecentJsonlsAcrossRoots(
+      roots.map((root) => resolveClaudeProjectDir(root, cwd)),
+      info.count,
+    );
     for (let i = 0; i < jsonlPaths.length; i++) {
       const transcriptPath = jsonlPaths[i];
       const fileName = transcriptPath.split("/").pop() || "";
@@ -465,6 +484,36 @@ async function discoverClaudeExternalSessions(
     }
   }
   return sessions;
+}
+
+/** Default root first, then each profile root — deduped, never empty. */
+function claudeDiscoveryRoots(context: ProviderExternalDiscoveryContext): string[] {
+  const roots = [context.providerDirs.claude, ...(context.claudeRoots ?? [])];
+  return [...new Set(roots.filter((root): root is string => !!root))];
+}
+
+/** The `count` most recently modified JSONLs across several project dirs (missing dirs skipped). */
+function findRecentJsonlsAcrossRoots(projectDirs: string[], count: number): string[] {
+  const candidates: Array<{ path: string; mtime: number }> = [];
+  for (const projectDir of new Set(projectDirs)) {
+    if (!existsSync(projectDir)) continue;
+    let files: string[];
+    try {
+      files = readdirSync(projectDir).filter((file) => file.endsWith(".jsonl"));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const fullPath = join(projectDir, file);
+      try {
+        candidates.push({ path: fullPath, mtime: statSync(fullPath).mtimeMs });
+      } catch {
+        // vanished between readdir and stat
+      }
+    }
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates.slice(0, count).map((entry) => entry.path);
 }
 
 async function discoverCodexExternalSessions(
@@ -499,6 +548,10 @@ function createClaudeSession(
   options: ProviderSessionOptions | undefined,
   context: ProviderDriverContext,
 ): ProviderSession {
+  // The chat's bound account wins over the server default: a resume must run
+  // under the config dir its transcript lives in, and a new chat under the
+  // profile it was created with.
+  const configDir = options?.configDir ?? config.providerDirs.claude;
   if (context.sdkQueryFn) {
     return createSdkSessionSync(
       {
@@ -512,12 +565,16 @@ function createClaudeSession(
         processTimeout: config.processTimeout,
         allowedTools: options?.allowedTools,
         bootstrapContext: options?.bootstrapContext,
-        configDir: config.providerDirs.claude,
+        configDir,
       },
       context.sdkQueryFn as Parameters<typeof createSdkSessionSync>[1],
     );
   }
 
+  // The legacy process reads `config.providerDirs.claude` for its spawn env.
+  if (configDir && configDir !== config.providerDirs.claude) {
+    config = { ...config, providerDirs: { ...config.providerDirs, claude: configDir } };
+  }
   const proc = options?.resumeSessionId
     ? new ClaudeProcess(config, {
         resumeSessionId: options.resumeSessionId,
@@ -725,6 +782,12 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
     },
     discoverExternalSessions(context) {
       return discoverClaudeExternalSessions(context);
+    },
+    probeAccountIdentity(configDir, logger, options) {
+      return probeClaudeAccountIdentity(configDir, logger, options);
+    },
+    getAccountIdentitySnapshot(configDir) {
+      return getClaudeAccountIdentitySnapshot(configDir);
     },
   },
   codex: {
@@ -1171,6 +1234,34 @@ export async function readAgentHistoryForProvider(
   const driver = getProviderDriver(provider);
   if (!driver.readAgentHistory) return null;
   return driver.readAgentHistory(context);
+}
+
+/**
+ * Probe which account a provider config dir is logged in as. Resolves to an
+ * "unknown" snapshot for providers without account profiles, so routes never
+ * branch on the provider name.
+ */
+export function probeProviderAccountIdentity(
+  provider: ProviderKind,
+  configDir: string,
+  logger: CoreConfig["logger"],
+  options: { force?: boolean } = {},
+): Promise<ProviderAccountIdentitySnapshot> {
+  const driver = getProviderDriver(provider);
+  if (!driver.probeAccountIdentity) return Promise.resolve({ probeState: "unknown" });
+  return driver.probeAccountIdentity(configDir, logger, options);
+}
+
+/** Cached identity for a provider config dir; never spawns anything. */
+export function getProviderAccountIdentitySnapshot(
+  provider: ProviderKind,
+  configDir: string,
+): ProviderAccountIdentitySnapshot {
+  return (
+    getProviderDriver(provider).getAccountIdentitySnapshot?.(configDir) ?? {
+      probeState: "unknown",
+    }
+  );
 }
 
 export function readAgentModelForProvider(

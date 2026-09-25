@@ -134,6 +134,7 @@ export function buildManagedRestoreState(options: {
     parentSessionId: entry.parent_session_id ?? undefined,
     preferredModel: entry.preferred_model ?? undefined,
     modelOptions,
+    configDir: entry.config_dir ?? undefined,
     runtimeMode: entry.runtime_mode as ProviderRuntimeMode,
     spaceId: inferredSpaceId ?? undefined,
     projectId: entry.project_id ?? undefined,

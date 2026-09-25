@@ -5,6 +5,7 @@ import type {
   InstanceInfo,
   NativeOpenTargetsResponse,
   Project,
+  ProviderAccountProfileStatus,
   ProviderDescriptor,
   ProviderUpdateResponse,
   ProviderKind,
@@ -827,6 +828,7 @@ export async function updateProject(
     spaceBranchSource?: "local" | "remote" | null;
     defaultProvider?: string | null;
     defaultModel?: string | null;
+    defaultProfileId?: string | null;
     suggestions?: import("@shared/types").SuggestionsConfig | null;
   },
 ): Promise<Project> {
@@ -1181,6 +1183,78 @@ export async function updateGlobalSettings(
     const data = await res.json().catch(() => ({ error: "Failed to update settings" }));
     throw new Error(data.error || "Failed to update settings");
   }
+  return res.json();
+}
+
+// ─── Provider account profiles ─────────────────────────────────────────────
+//
+// One provider login per config dir. The server lists the implicit default
+// profile first and probes each dir's identity; `?probe=1` re-probes in the
+// background, `/probe` awaits a single row's probe.
+
+function profilesUrl(provider: ProviderKind, suffix = ""): string {
+  return `/api/providers/${encodeURIComponent(provider)}/profiles${suffix}`;
+}
+
+async function readProfileError(res: Response, fallback: string): Promise<never> {
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  throw new ApiError(data.error || fallback, res.status);
+}
+
+export async function fetchProviderProfiles(
+  provider: ProviderKind,
+  options: { probe?: boolean } = {},
+): Promise<ProviderAccountProfileStatus[]> {
+  const res = await fetch(profilesUrl(provider, options.probe ? "?probe=1" : ""));
+  if (!res.ok) return readProfileError(res, "Failed to load accounts");
+  const data = (await res.json()) as
+    | ProviderAccountProfileStatus[]
+    | { profiles?: ProviderAccountProfileStatus[] };
+  return Array.isArray(data) ? data : (data.profiles ?? []);
+}
+
+export async function addProviderProfile(
+  provider: ProviderKind,
+  input: { label: string; configDir: string },
+): Promise<ProviderAccountProfileStatus> {
+  const res = await fetch(profilesUrl(provider), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return readProfileError(res, "Failed to add account");
+  return res.json();
+}
+
+export async function renameProviderProfile(
+  provider: ProviderKind,
+  id: string,
+  label: string,
+): Promise<ProviderAccountProfileStatus> {
+  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!res.ok) return readProfileError(res, "Failed to rename account");
+  return res.json();
+}
+
+export async function removeProviderProfile(provider: ProviderKind, id: string): Promise<void> {
+  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}`), {
+    method: "DELETE",
+  });
+  if (!res.ok) return readProfileError(res, "Failed to remove account");
+}
+
+export async function probeProviderProfile(
+  provider: ProviderKind,
+  id: string,
+): Promise<ProviderAccountProfileStatus> {
+  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}/probe`), {
+    method: "POST",
+  });
+  if (!res.ok) return readProfileError(res, "Failed to check account");
   return res.json();
 }
 

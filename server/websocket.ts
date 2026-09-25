@@ -574,6 +574,7 @@ export function createWebSocketServer(
                 modelOptions: message.modelOptions,
                 parentSessionId: message.parentSessionId,
                 review: message.review,
+                profileId: message.profileId,
               });
             } catch (err) {
               if (err instanceof MaxProcessesError) {
@@ -595,6 +596,7 @@ export function createWebSocketServer(
                     modelOptions: message.modelOptions,
                     parentSessionId: message.parentSessionId,
                     review: message.review,
+                    profileId: message.profileId,
                   },
                 });
               } else {

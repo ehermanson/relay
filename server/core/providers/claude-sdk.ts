@@ -34,6 +34,7 @@ import type {
   UserInputQuestion,
   SystemEventMessage,
   ProviderRateLimitStatus,
+  ProviderAccountStatus,
   AgentInfo,
   AgentUpdateMessage,
   UserMessage,
@@ -739,6 +740,149 @@ export function getSdkDiscoveredAccountInfo(): AccountInfo | null {
  */
 export function getSdkDiscoveredRateLimits(): ProviderRateLimitStatus[] | null {
   return sdkDiscoveredRateLimits;
+}
+
+// =============================================================================
+// Account identity probe (per config dir)
+// =============================================================================
+
+/**
+ * What one Claude config dir reports about its login. Kept separate from the
+ * module-level default caches above: those describe the server's own resolved
+ * dir and feed provider global state; this is per account profile.
+ */
+export interface ClaudeAccountIdentitySnapshot {
+  probeState: "unknown" | "probing" | "ok" | "error";
+  identity?: ProviderAccountStatus;
+  probeError?: string;
+  probedAt?: number;
+}
+
+interface ClaudeAccountIdentityCacheEntry extends ClaudeAccountIdentitySnapshot {
+  inflight: Promise<ClaudeAccountIdentitySnapshot> | null;
+}
+
+/** Re-probe an identity older than this (matches the model-discovery TTL). */
+export const CLAUDE_ACCOUNT_IDENTITY_TTL_MS = 30 * 60 * 1000;
+
+const claudeAccountIdentityCache = new Map<string, ClaudeAccountIdentityCacheEntry>();
+
+function accountIdentityCacheKey(configDir: string): string {
+  return configDir.trim().replace(/\/+$/, "") || "/";
+}
+
+/** Map the SDK's AccountInfo onto Relay's account status (same fields fetchAccountInfo emits). */
+function accountInfoToStatus(info: AccountInfo): ProviderAccountStatus | undefined {
+  const account: ProviderAccountStatus = {};
+  if (info.subscriptionType) account.plan = info.subscriptionType;
+  if (info.email) account.email = info.email;
+  if (info.organization) account.label = info.organization;
+  return Object.keys(account).length > 0 ? account : undefined;
+}
+
+function publicIdentitySnapshot(
+  entry: ClaudeAccountIdentityCacheEntry | undefined,
+): ClaudeAccountIdentitySnapshot {
+  if (!entry) return { probeState: "unknown" };
+  const snapshot: ClaudeAccountIdentitySnapshot = { probeState: entry.probeState };
+  if (entry.identity) snapshot.identity = entry.identity;
+  if (entry.probeError) snapshot.probeError = entry.probeError;
+  if (entry.probedAt) snapshot.probedAt = entry.probedAt;
+  return snapshot;
+}
+
+/** Synchronous read of the cached identity for a config dir (never probes). */
+export function getClaudeAccountIdentitySnapshot(configDir: string): ClaudeAccountIdentitySnapshot {
+  return publicIdentitySnapshot(claudeAccountIdentityCache.get(accountIdentityCacheKey(configDir)));
+}
+
+/** Test seam: forget every cached identity. */
+export function clearClaudeAccountIdentityCache(): void {
+  claudeAccountIdentityCache.clear();
+}
+
+/**
+ * Probe which account a Claude config dir is logged in as, by spawning a
+ * short-lived SDK subprocess pinned to that dir (`CLAUDE_CONFIG_DIR`) and
+ * asking it for accountInfo(). Zero-token, like the pre-warm. Results are
+ * cached per dir for CLAUDE_ACCOUNT_IDENTITY_TTL_MS; concurrent callers share
+ * one in-flight probe; `force` bypasses the TTL (never the in-flight dedupe).
+ * A probe that yields no identity at all is reported as "Not signed in".
+ */
+export function probeClaudeAccountIdentity(
+  configDir: string,
+  logger: CoreConfig["logger"],
+  options: { force?: boolean } = {},
+): Promise<ClaudeAccountIdentitySnapshot> {
+  const key = accountIdentityCacheKey(configDir);
+  const existing = claudeAccountIdentityCache.get(key);
+  if (existing?.inflight) return existing.inflight;
+  if (
+    !options.force &&
+    existing?.probedAt &&
+    existing.probeState !== "unknown" &&
+    Date.now() - existing.probedAt < CLAUDE_ACCOUNT_IDENTITY_TTL_MS
+  ) {
+    return Promise.resolve(publicIdentitySnapshot(existing));
+  }
+
+  const entry: ClaudeAccountIdentityCacheEntry = {
+    ...existing,
+    probeState: "probing",
+    inflight: null,
+  };
+  claudeAccountIdentityCache.set(key, entry);
+
+  const finish = (patch: Partial<ClaudeAccountIdentitySnapshot>): ClaudeAccountIdentitySnapshot => {
+    const current = claudeAccountIdentityCache.get(key) ?? entry;
+    Object.assign(current, patch, { inflight: null, probedAt: Date.now() });
+    claudeAccountIdentityCache.set(key, current);
+    return publicIdentitySnapshot(current);
+  };
+
+  entry.inflight = (async () => {
+    if (!cachedStartupFn) {
+      return finish({
+        probeState: "error",
+        probeError: "Claude SDK not initialized",
+        identity: undefined,
+      });
+    }
+    try {
+      const warm = await cachedStartupFn({
+        options: {
+          pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
+          env: buildClaudeSpawnEnv(configDir) as Record<string, string | undefined>,
+        },
+        initializeTimeoutMs: 30_000,
+      });
+      const promptQueue = new PromptQueue();
+      const handle = warm.query(promptQueue);
+      try {
+        const identity = accountInfoToStatus(await handle.accountInfo());
+        if (!identity) {
+          logger.debug(`[SdkSession] account probe for ${configDir}: no identity reported`);
+          return finish({ probeState: "error", probeError: "Not signed in", identity: undefined });
+        }
+        logger.info(
+          `[SdkSession] account probe for ${configDir}: ${identity.email ?? identity.label ?? identity.plan}`,
+        );
+        return finish({ probeState: "ok", identity, probeError: undefined });
+      } finally {
+        promptQueue.terminate();
+        try {
+          await handle.close();
+        } catch {
+          /* ignore close errors */
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.debug(`[SdkSession] account probe for ${configDir} failed: ${message}`);
+      return finish({ probeState: "error", probeError: message, identity: undefined });
+    }
+  })();
+  return entry.inflight;
 }
 
 /**

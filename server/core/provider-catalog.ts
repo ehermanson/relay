@@ -226,6 +226,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     reasoningEffortLevels: EXTENDED_EFFORTS,
     composerHints: { helpText: "Use @ for files and / for commands and skills" },
     supportsAgentActivity: true,
+    supportsAccountProfiles: true,
     runtimeModes: {
       "approval-required": {
         label: "Ask Permission",

@@ -28,7 +28,15 @@ import { SuggestionSettings } from "@/components/settings/suggestion-settings";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { PageShell } from "@/components/ui/page-shell";
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
-import type { Project, GlobalSettings, ProviderDescriptor, ProviderKind } from "@shared/types";
+import { useProviderProfiles } from "@/hooks/use-provider-profiles";
+import { formatIdentity } from "@/lib/account-profiles";
+import {
+  DEFAULT_ACCOUNT_PROFILE_ID,
+  type Project,
+  type GlobalSettings,
+  type ProviderDescriptor,
+  type ProviderKind,
+} from "@shared/types";
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
@@ -504,9 +512,28 @@ function ProvidersSection({
     return builtInDefault?.label ?? "Provider default";
   })();
 
+  // Account profiles: gated on the effective provider's capability, never on
+  // its name. The global default is `providerDefaults[provider].profileId`
+  // (null = the provider's default profile).
+  const effectiveDescriptor = providers.find((p) => p.provider === effectiveProvider);
+  const effectiveProviderLabel = effectiveDescriptor?.label ?? effectiveProvider;
+  const supportsAccountProfiles = Boolean(
+    (providerModels?.capabilities ?? effectiveDescriptor?.capabilities)?.supportsAccountProfiles,
+  );
+  const { data: profiles = [] } = useProviderProfiles(
+    effectiveProvider ? (effectiveProvider as ProviderKind) : undefined,
+    { enabled: supportsAccountProfiles },
+  );
+  const globalProfileId = providerDefaults[effectiveProvider]?.profileId ?? null;
+  const globalProfile =
+    profiles.find((p) => p.id === globalProfileId) ??
+    profiles.find((p) => p.id === DEFAULT_ACCOUNT_PROFILE_ID) ??
+    profiles[0];
+  const globalProfileLabel = globalProfile?.label ?? "Default";
+
   const handleProviderChange = (value: string) => {
-    // When changing provider, also clear model since it may not be valid
-    save.mutate({ defaultProvider: value || null, defaultModel: null });
+    // When changing provider, also clear model and account since they may not be valid
+    save.mutate({ defaultProvider: value || null, defaultModel: null, defaultProfileId: null });
   };
 
   const handleModelChange = (value: string) => {
@@ -528,7 +555,8 @@ function ProvidersSection({
               project.defaultProvider != null &&
               project.defaultProvider !== effectiveGlobalProvider,
             globalLabel: globalProviderLabel,
-            onReset: () => save.mutate({ defaultProvider: null, defaultModel: null }),
+            onReset: () =>
+              save.mutate({ defaultProvider: null, defaultModel: null, defaultProfileId: null }),
           }}
         >
           <Select
@@ -575,6 +603,43 @@ function ProvidersSection({
             ))}
         </Select>
       </SettingRow>
+
+      {/* Account profile — only when the effective provider keeps several logins */}
+      {supportsAccountProfiles && effectiveProvider ? (
+        <SettingRow
+          label="Account"
+          description={`Which ${effectiveProviderLabel} login new chats in this project use.`}
+          overrideInfo={{
+            isOverridden:
+              project.defaultProfileId != null &&
+              profiles.some((p) => p.id === project.defaultProfileId) &&
+              project.defaultProfileId !== globalProfileId,
+            globalLabel: globalProfileLabel,
+            onReset: () => save.mutate({ defaultProfileId: null }),
+          }}
+        >
+          <Select
+            inputSize="md"
+            value={
+              project.defaultProfileId && profiles.some((p) => p.id === project.defaultProfileId)
+                ? project.defaultProfileId
+                : ""
+            }
+            onChange={(e) => save.mutate({ defaultProfileId: e.target.value || null })}
+            className="w-52"
+          >
+            <option value="">Global default ({globalProfileLabel})</option>
+            {profiles.map((p) => {
+              const identity = formatIdentity(p.identity);
+              return (
+                <option key={p.id} value={p.id}>
+                  {identity ? `${p.label} — ${identity}` : p.label}
+                </option>
+              );
+            })}
+          </Select>
+        </SettingRow>
+      ) : null}
 
       {/* Per-provider defaults display (read-only summary) */}
       {providers.length > 0 && (

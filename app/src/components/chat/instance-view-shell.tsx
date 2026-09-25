@@ -152,6 +152,7 @@ export function InstanceViewShell() {
                   provider={shared.instance.provider}
                   providerStatus={shared.instance.providerStatus}
                   providerGlobalState={currentProviderGlobalState}
+                  configDir={shared.instance.configDir}
                   instanceId={shared.id}
                   createdAt={shared.instance.createdAt}
                   lastActivityAt={shared.instance.lastActivityAt}
@@ -181,6 +182,7 @@ export function InstanceViewShell() {
             provider={shared.instance.provider}
             providerStatus={shared.instance.providerStatus}
             providerGlobalState={currentProviderGlobalState}
+            configDir={shared.instance.configDir}
             instanceId={shared.id}
             createdAt={shared.instance.createdAt}
             lastActivityAt={shared.instance.lastActivityAt}

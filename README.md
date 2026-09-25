@@ -217,20 +217,20 @@ Helpful extras:
 
 Common environment variables:
 
-| Variable             | Default                               | What it does                                                                                                              |
-| -------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `RELAY_PASSWORD`     | unset                                 | Turns on login                                                                                                            |
-| `RELAY_HOME`         | `~/.relay`                            | Relay state directory (`pnpm dev` defaults to `~/.relay-develop`)                                                         |
-| `RELAY_PUSH_CONTACT` | `https://github.com/ehermanson/relay` | Contact (`mailto:` or `https:`) sent to push services with notifications                                                  |
-| `PORT`               | `7777`                                | Server port                                                                                                               |
-| `WORKING_DIR`        | current directory                     | Default working directory                                                                                                 |
-| `MAX_PROCESSES`      | `15`                                  | Max managed chats                                                                                                         |
-| `TUNNEL`             | `false`                               | Starts a Cloudflare tunnel                                                                                                |
-| `CLAUDE_CONFIG_DIR`  | `~/.claude`                           | Claude Code config dir — the account Relay runs and indexes; honored so a machine with several Claude logins can pick one |
-| `CLAUDE_DIR`         | `$CLAUDE_CONFIG_DIR`                  | Relay-only override of the Claude data directory                                                                          |
-| `CODEX_DIR`          | `~/.codex`                            | Codex data directory                                                                                                      |
-| `DB_PATH`            | `~/.relay/sessions.db`                | Relay SQLite path                                                                                                         |
-| `SESSION_FILE`       | `~/.relay/sessions.json`              | Auth session file                                                                                                         |
+| Variable             | Default                               | What it does                                                                                                                     |
+| -------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `RELAY_PASSWORD`     | unset                                 | Turns on login                                                                                                                   |
+| `RELAY_HOME`         | `~/.relay`                            | Relay state directory (`pnpm dev` defaults to `~/.relay-develop`)                                                                |
+| `RELAY_PUSH_CONTACT` | `https://github.com/ehermanson/relay` | Contact (`mailto:` or `https:`) sent to push services with notifications                                                         |
+| `PORT`               | `7777`                                | Server port                                                                                                                      |
+| `WORKING_DIR`        | current directory                     | Default working directory                                                                                                        |
+| `MAX_PROCESSES`      | `15`                                  | Max managed chats                                                                                                                |
+| `TUNNEL`             | `false`                               | Starts a Cloudflare tunnel                                                                                                       |
+| `CLAUDE_CONFIG_DIR`  | `~/.claude`                           | Claude Code config dir Relay runs and indexes by default. More logins: add their config dirs as accounts in Settings → Providers |
+| `CLAUDE_DIR`         | `$CLAUDE_CONFIG_DIR`                  | Relay-only override of the Claude data directory                                                                                 |
+| `CODEX_DIR`          | `~/.codex`                            | Codex data directory                                                                                                             |
+| `DB_PATH`            | `~/.relay/sessions.db`                | Relay SQLite path                                                                                                                |
+| `SESSION_FILE`       | `~/.relay/sessions.json`              | Auth session file                                                                                                                |
 
 ## Development
 

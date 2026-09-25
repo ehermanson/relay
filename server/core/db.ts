@@ -39,6 +39,8 @@ export interface ProjectRow {
   space_branch_source: string | null;
   default_provider: string | null;
   default_model: string | null;
+  /** Account profile id for new chats (null = global default). */
+  default_profile_id?: string | null;
   created_at: number;
   last_activity_at: number | null;
   suggestions_json: string | null;
@@ -81,6 +83,8 @@ export interface GlobalSettingsRow {
   suggestions_json: string | null;
   max_processes: number | null;
   sidebar_layout: string | null;
+  /** JSON `ProviderAccountProfile[]` — user-added account profiles. */
+  provider_profiles_json?: string | null;
 }
 
 export interface SessionRow {
@@ -158,6 +162,8 @@ export interface ManagedInstanceRow {
   model: string | null;
   model_options_json: string | null;
   original_git_branch: string | null;
+  /** Provider config dir the chat is bound to (null = server default). */
+  config_dir?: string | null;
 }
 
 /**
@@ -234,6 +240,7 @@ function normalizeManagedInstanceRow(row: ManagedInstanceRow): ManagedInstanceRo
   normalized.model ??= null;
   normalized.model_options_json ??= null;
   normalized.original_git_branch ??= null;
+  normalized.config_dir ??= null;
   return normalized;
 }
 
@@ -768,6 +775,7 @@ ${buildSearchIndexSchemaSql()},
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
       this.ensureSpacePinColumn();
+      this.ensureAccountProfileColumns();
       this.db.exec(`INSERT INTO schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION})`);
       return;
     }
@@ -783,6 +791,7 @@ ${buildSearchIndexSchemaSql()},
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
       this.ensureSpacePinColumn();
+      this.ensureAccountProfileColumns();
       return;
     }
 
@@ -794,6 +803,7 @@ ${buildSearchIndexSchemaSql()},
     this.ensureRuntimeModeColumns();
     this.ensureChatFlagColumns();
     this.ensureSpacePinColumn();
+    this.ensureAccountProfileColumns();
     this.db.exec(`UPDATE schema_version SET version = ${CURRENT_SCHEMA_VERSION}`);
   }
 
@@ -879,7 +889,8 @@ ${buildSearchIndexSchemaSql()},
         project_id TEXT,
         model TEXT,
         model_options_json TEXT,
-        original_git_branch TEXT
+        original_git_branch TEXT,
+        config_dir TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_managed_sessions_provider ON managed_sessions(provider_name);
@@ -911,6 +922,7 @@ ${buildSearchIndexSchemaSql()},
         space_branch_source TEXT,
         default_provider TEXT,
         default_model TEXT,
+        default_profile_id TEXT,
         created_at INTEGER NOT NULL,
         last_activity_at INTEGER,
         suggestions_json TEXT
@@ -982,6 +994,26 @@ ${buildSearchIndexSchemaSql()},
     }
     if (!columnNames.has("sidebar_layout")) {
       this.db.exec("ALTER TABLE global_settings ADD COLUMN sidebar_layout TEXT");
+    }
+    if (!columnNames.has("provider_profiles_json")) {
+      this.db.exec("ALTER TABLE global_settings ADD COLUMN provider_profiles_json TEXT");
+    }
+  }
+
+  /**
+   * Account-profile columns: `projects.default_profile_id` and
+   * `managed_sessions.config_dir`. Idempotent ALTERs, no schema-version bump.
+   */
+  private ensureAccountProfileColumns(): void {
+    const has = (table: string, column: string) =>
+      (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).some(
+        (c) => c.name === column,
+      );
+    if (!has("projects", "default_profile_id")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN default_profile_id TEXT");
+    }
+    if (!has("managed_sessions", "config_dir")) {
+      this.db.exec("ALTER TABLE managed_sessions ADD COLUMN config_dir TEXT");
     }
   }
 
@@ -1180,7 +1212,7 @@ ${buildSearchIndexSchemaSql()},
         resume_cursor_json, runtime_payload_json, transcript_path,
         last_message_text, last_message_from, last_message_at,
         git_info_branch, git_info_is_worktree, space_id, project_id, model,
-        model_options_json, original_git_branch
+        model_options_json, original_git_branch, config_dir
       ) VALUES (
         @instance_id, @provider_name, @provider_session_id, @name, @working_directory,
         @created_at, @last_activity_at, @archived, @custom_title, @pinned, @done_at,
@@ -1190,7 +1222,7 @@ ${buildSearchIndexSchemaSql()},
         @resume_cursor_json, @runtime_payload_json, @transcript_path,
         @last_message_text, @last_message_from, @last_message_at,
         @git_info_branch, @git_info_is_worktree, @space_id, @project_id, @model,
-        @model_options_json, @original_git_branch
+        @model_options_json, @original_git_branch, @config_dir
       )
       ON CONFLICT(instance_id) DO UPDATE SET
         provider_name = excluded.provider_name,
@@ -1226,7 +1258,8 @@ ${buildSearchIndexSchemaSql()},
         project_id = excluded.project_id,
         model = excluded.model,
         model_options_json = excluded.model_options_json,
-        original_git_branch = excluded.original_git_branch
+        original_git_branch = excluded.original_git_branch,
+        config_dir = excluded.config_dir
     `),
     );
 
@@ -1429,8 +1462,8 @@ ${buildSearchIndexSchemaSql()},
 
     // Project CRUD
     this.stmtUpsertProject = this.db.prepare(`
-      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_space_branch, space_branch_source, default_provider, default_model, created_at, last_activity_at, suggestions_json)
-      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_space_branch, @space_branch_source, @default_provider, @default_model, @created_at, @last_activity_at, @suggestions_json)
+      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_space_branch, space_branch_source, default_provider, default_model, default_profile_id, created_at, last_activity_at, suggestions_json)
+      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_space_branch, @space_branch_source, @default_provider, @default_model, @default_profile_id, @created_at, @last_activity_at, @suggestions_json)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         slug = excluded.slug,
@@ -1443,6 +1476,7 @@ ${buildSearchIndexSchemaSql()},
         space_branch_source = excluded.space_branch_source,
         default_provider = excluded.default_provider,
         default_model = excluded.default_model,
+        default_profile_id = excluded.default_profile_id,
         last_activity_at = excluded.last_activity_at,
         suggestions_json = excluded.suggestions_json
     `);
@@ -1614,7 +1648,8 @@ ${buildSearchIndexSchemaSql()},
         project_order_json = @project_order_json,
         suggestions_json = @suggestions_json,
         max_processes = @max_processes,
-        sidebar_layout = @sidebar_layout
+        sidebar_layout = @sidebar_layout,
+        provider_profiles_json = @provider_profiles_json
       WHERE id = 1
     `);
 
@@ -2063,6 +2098,17 @@ ${buildSearchIndexSchemaSql()},
     this.stmtUpdateProjectActivity.run(timestamp, id);
   }
 
+  /**
+   * Drop every project's default account profile that points at `profileId`
+   * (the profile was removed). Returns the number of projects cleared.
+   */
+  clearProjectDefaultProfile(profileId: string): number {
+    const result = this.db
+      .prepare("UPDATE projects SET default_profile_id = NULL WHERE default_profile_id = ?")
+      .run(profileId);
+    return Number(result.changes);
+  }
+
   /** Bulk-assign project_id to all sessions matching a working directory */
   assignSessionsToProject(projectId: string | null, directory: string): void {
     this.stmtUpdateSessionProjectId.run(projectId, directory);
@@ -2295,6 +2341,10 @@ ${buildSearchIndexSchemaSql()},
           "suggestions_json" in patch ? patch.suggestions_json : current.suggestions_json,
         max_processes: "max_processes" in patch ? patch.max_processes : current.max_processes,
         sidebar_layout: "sidebar_layout" in patch ? patch.sidebar_layout : current.sidebar_layout,
+        provider_profiles_json:
+          "provider_profiles_json" in patch
+            ? patch.provider_profiles_json
+            : (current.provider_profiles_json ?? null),
       }),
     );
     return this.getGlobalSettings();

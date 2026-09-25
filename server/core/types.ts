@@ -496,6 +496,44 @@ export interface ProviderCapabilities {
    * agent cards and the Agents sidecar; when false/absent neither appears.
    */
   supportsAgentActivity?: boolean;
+  /**
+   * The provider keeps one login per config dir, so several accounts can
+   * coexist on one machine as separate dirs (`ProviderAccountProfile`). When
+   * true the UI offers account profiles in Settings and per-project defaults,
+   * and shows a chat's account beside its model.
+   */
+  supportsAccountProfiles?: boolean;
+}
+
+/**
+ * One provider login on this machine, identified by its config dir (Claude:
+ * `CLAUDE_CONFIG_DIR`). The server's own resolved dir is the implicit default
+ * profile (`DEFAULT_ACCOUNT_PROFILE_ID`) and is never stored in settings.
+ */
+export interface ProviderAccountProfile {
+  id: string;
+  provider: ProviderKind;
+  /** User-facing name ("Work", "Personal"). */
+  label: string;
+  /** Absolute config dir the provider CLI runs against. */
+  configDir: string;
+}
+
+/** Id of the implicit profile backed by the server's resolved config dir. */
+export const DEFAULT_ACCOUNT_PROFILE_ID = "default";
+
+/**
+ * A profile plus what the provider reports about it. Identity is probed, never
+ * typed: a label alone can't tell two logins apart.
+ */
+export interface ProviderAccountProfileStatus extends ProviderAccountProfile {
+  /** True for the server's resolved dir (never removable). */
+  isDefault: boolean;
+  probeState: "unknown" | "probing" | "ok" | "error";
+  /** Provider-reported account (email/org/plan) when the probe succeeded. */
+  identity?: ProviderAccountStatus;
+  probeError?: string;
+  probedAt?: number;
 }
 
 export type ProviderInstallMethod = "npm" | "brew" | "bun" | "pnpm" | "native" | "manual";
@@ -568,6 +606,8 @@ export interface ProviderModelsResponse {
 
 export interface ProviderDefaults {
   model?: string;
+  /** Global default account profile for new chats; null/absent = the server default. */
+  profileId?: string | null;
   reasoningEffort?: ReasoningEffort;
   runtimeMode?: ProviderRuntimeMode;
   fastMode?: boolean;
@@ -581,6 +621,8 @@ export interface GlobalSettings {
   defaultSpaceBranch: string | null;
   spaceBranchSource: "local" | "remote";
   providerDefaults: Record<string, ProviderDefaults>;
+  /** User-added account profiles (the implicit default is never listed here). */
+  providerProfiles: ProviderAccountProfile[];
   customInstructions: string | null;
   projectOrder: string[] | null;
   suggestions: SuggestionsConfig | null;
@@ -686,6 +728,12 @@ export interface InstanceInfo {
   preferredModel?: string;
   /** Canonical provider-agnostic model options */
   modelOptions?: ProviderModelOptions;
+  /**
+   * Provider config dir this chat is bound to (Claude: the dir its transcript
+   * lives in, pinned via CLAUDE_CONFIG_DIR on every spawn/resume). Absent =
+   * the server's resolved default. Fixed at creation, like the provider.
+   */
+  configDir?: string;
   /** Active provider runtime mode for this instance (defaults to "approval-required") */
   runtimeMode?: ProviderRuntimeMode;
   /** Pending plan markdown from ExitPlanMode, awaiting user approval/feedback */
@@ -751,6 +799,11 @@ export interface CreateInstancePayload {
   parentSessionId?: string;
   /** Review-session metadata */
   review?: ReviewSessionInfo;
+  /**
+   * Account profile to bind the chat to (`ProviderAccountProfile.id`).
+   * Absent = project default, then global provider default, then the server default.
+   */
+  profileId?: string;
 }
 
 export interface RemoveInstancePayload {
@@ -1597,6 +1650,8 @@ export interface Project {
   spaceBranchSource: "local" | "remote" | null;
   defaultProvider: string | null;
   defaultModel: string | null;
+  /** Account profile for new chats in this project; null = the global default. */
+  defaultProfileId: string | null;
   createdAt: number;
   lastActivityAt: number | null;
   suggestions: SuggestionsConfig | null;

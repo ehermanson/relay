@@ -314,6 +314,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         spaceBranchSource?: "local" | "remote" | null;
         defaultProvider?: string | null;
         defaultModel?: string | null;
+        defaultProfileId?: string | null;
         suggestions?: import("#core/types.js").SuggestionsConfig | null;
       }>(c);
       const project = instanceManager.projectManager.updateProject(c.req.param("id"), body);
