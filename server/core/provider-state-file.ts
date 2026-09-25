@@ -27,13 +27,15 @@ export function loadPersistedProviderState(filePath: string): ProviderGlobalStat
     const raw = readFileSync(filePath, "utf8");
     const data = JSON.parse(raw) as Record<string, unknown>;
     if (!Array.isArray(data?.states)) return [];
-    return data.states.filter(
-      (s): s is ProviderGlobalState =>
-        s !== null &&
-        typeof s === "object" &&
-        typeof (s as ProviderGlobalState).provider === "string" &&
-        typeof (s as ProviderGlobalState).updatedAt === "number",
-    );
+    return data.states
+      .filter(
+        (s): s is ProviderGlobalState =>
+          s !== null &&
+          typeof s === "object" &&
+          typeof (s as ProviderGlobalState).provider === "string" &&
+          typeof (s as ProviderGlobalState).updatedAt === "number",
+      )
+      .map(scrubLegacyAccountLabel);
   } catch {
     return [];
   }
@@ -49,4 +51,16 @@ export function persistProviderState(filePath: string, states: ProviderGlobalSta
   } catch {
     /* non-fatal */
   }
+}
+
+/**
+ * A short-lived build wrote the auth path ("Signed in via none") into
+ * `account.label`. Labels persist here and merges are shallow, so nothing
+ * later replaces it — drop it on load so the org name can take its place.
+ */
+function scrubLegacyAccountLabel(state: ProviderGlobalState): ProviderGlobalState {
+  const label = state.account?.label;
+  if (!label || !/^(Signed in via|Auth token \(|API key \()/i.test(label)) return state;
+  const { label: _dropped, ...account } = state.account!;
+  return { ...state, account };
 }

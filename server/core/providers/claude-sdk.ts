@@ -14,10 +14,15 @@
  */
 
 import { EventEmitter } from "events";
+import { resolve } from "node:path";
 import {
   buildClaudeSpawnEnv,
+  claudeConfigDirEnvMode,
+  defaultClaudeConfigDir,
   findClaudeBinary,
+  recordClaudeConfigDirEnvMode,
   resolveClaudeConfigDir,
+  type ClaudeConfigDirEnvMode,
 } from "#core/providers/claude-cli.js";
 import type {
   OutputMessage,
@@ -516,9 +521,19 @@ function buildRateLimitsFromWindows(
 async function probeUsageRateLimits(
   handle: QueryHandle,
 ): Promise<Map<string, RateLimitWindowData> | null> {
+  return windowsFromUsageSnapshot(await readUsageSnapshot(handle));
+}
+
+/** The raw experimental get_usage snapshot, or null when the SDK lacks the method. */
+async function readUsageSnapshot(handle: QueryHandle): Promise<SdkUsageSnapshot | null> {
   const getUsage = handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
   if (typeof getUsage !== "function") return null;
-  const snapshot = await getUsage.call(handle);
+  return (await getUsage.call(handle)) ?? null;
+}
+
+function windowsFromUsageSnapshot(
+  snapshot: SdkUsageSnapshot | null,
+): Map<string, RateLimitWindowData> | null {
   const limits = snapshot?.rate_limits;
   if (!limits || typeof limits !== "object") return null;
 
@@ -601,70 +616,52 @@ export async function prewarmSdk(
 ): Promise<void> {
   if (sdkDiscoveredModels && sdkDiscoveredAccountInfo) return; // already discovered
   if (!cachedStartupFn) return;
-  try {
-    const warm = await cachedStartupFn({
-      options: {
-        pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
-        env: buildClaudeSpawnEnv(configDir) as Record<string, string | undefined>,
-      },
-      initializeTimeoutMs: 30_000,
-    });
-    logger.info("[SdkSession] Pre-warmed Claude Code subprocess via startup()");
-
-    // Consume the single-use warm handle to probe both models and account info.
-    // supportedModels() reads from the already-resolved initialization promise,
-    // so it's effectively free. accountInfo() is also a zero-token lookup
-    // against the SDK's cached auth state. Running them in parallel keeps the
-    // warm subprocess alive for only as long as the slower of the two takes.
-    const promptQueue = new PromptQueue();
-    const handle = warm.query(promptQueue);
+  // The default dir has two credential keyings (see claudeConfigDirEnvMode).
+  // Inspect the preferred one first and fall through to the other when it is
+  // logged out, so boot-time models/account/usage describe the login the user
+  // actually has — and every later spawn uses the keying that worked.
+  const modes = candidateEnvModes(configDir);
+  for (const [index, mode] of modes.entries()) {
+    const lastMode = index === modes.length - 1;
+    let inspection: ClaudeLoginInspection;
     try {
-      const [modelsResult, accountResult, usageResult] = await Promise.allSettled([
-        handle.supportedModels(),
-        handle.accountInfo(),
-        probeUsageRateLimits(handle),
-      ]);
-      if (modelsResult.status === "fulfilled") {
-        sdkDiscoveredModels = modelsResult.value;
-        sdkModelsProbedAt = Date.now();
-        logger.info(`[SdkSession] Pre-warm discovered ${modelsResult.value.length} models`);
-      } else {
-        logger.debug(
-          `[SdkSession] Pre-warm supportedModels() failed (non-fatal): ${modelsResult.reason}`,
-        );
-      }
-      if (accountResult.status === "fulfilled") {
-        sdkDiscoveredAccountInfo = accountResult.value;
-        const mapped = accountInfoToStatus(accountResult.value);
-        logger.info(
-          hasNamedIdentity(mapped)
-            ? `[SdkSession] Pre-warm accountInfo: ${mapped?.email ?? mapped?.label ?? mapped?.plan}`
-            : `[SdkSession] Pre-warm accountInfo carried no name: ${JSON.stringify(accountResult.value)}`,
-        );
-      } else {
-        logger.debug(
-          `[SdkSession] Pre-warm accountInfo() failed (non-fatal): ${accountResult.reason}`,
-        );
-      }
-      if (usageResult.status === "fulfilled" && usageResult.value) {
-        sdkDiscoveredRateLimits = buildRateLimitsFromWindows(usageResult.value);
-        logger.info(
-          `[SdkSession] Pre-warm usage snapshot: ${usageResult.value.size} rate-limit windows`,
-        );
-      } else if (usageResult.status === "rejected") {
-        logger.debug(`[SdkSession] Pre-warm get_usage failed (non-fatal): ${usageResult.reason}`);
-      }
-    } finally {
-      // Done with the warm subprocess — close it cleanly.
-      promptQueue.terminate();
-      try {
-        await handle.close();
-      } catch {
-        /* ignore close errors */
-      }
+      inspection = await inspectClaudeLogin(configDir, mode, logger, { withModels: true });
+    } catch (err) {
+      logger.debug(`[SdkSession] startup() pre-warm (${mode}) failed (non-fatal): ${err}`);
+      continue;
     }
-  } catch (err) {
-    logger.debug(`[SdkSession] startup() pre-warm failed (non-fatal): ${err}`);
+    if (!inspection.signedIn && !lastMode) {
+      logger.info(
+        `[SdkSession] Pre-warm: ${configDir} is not signed in with CLAUDE_CONFIG_DIR ${mode}; trying ${modes[index + 1]}`,
+      );
+      continue;
+    }
+    if (inspection.signedIn) recordClaudeConfigDirEnvMode(configDir, mode);
+    logger.info(`[SdkSession] Pre-warmed Claude Code subprocess (CLAUDE_CONFIG_DIR ${mode})`);
+    if (inspection.models) {
+      sdkDiscoveredModels = inspection.models;
+      sdkModelsProbedAt = Date.now();
+      logger.info(`[SdkSession] Pre-warm discovered ${inspection.models.length} models`);
+    }
+    if (inspection.rawAccount) {
+      sdkDiscoveredAccountInfo = inspection.rawAccount;
+      const mapped = accountInfoToStatus(inspection.rawAccount);
+      logger.info(
+        hasNamedIdentity(mapped)
+          ? `[SdkSession] Pre-warm accountInfo: ${mapped?.email ?? mapped?.label ?? mapped?.plan}`
+          : `[SdkSession] Pre-warm accountInfo carried no name: ${JSON.stringify(inspection.rawAccount)}`,
+      );
+    }
+    if (inspection.usageWindows) {
+      sdkDiscoveredRateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
+      logger.info(
+        `[SdkSession] Pre-warm usage snapshot: ${inspection.usageWindows.size} rate-limit windows`,
+      );
+    }
+    // The Settings Accounts row for this dir can answer from the pre-warm
+    // instead of spawning its own probe.
+    seedClaudeAccountIdentity(configDir, inspection);
+    return;
   }
 }
 
@@ -834,10 +831,9 @@ function hasNamedIdentity(account: ProviderAccountStatus | undefined): boolean {
  * seats, at least) report no email/org/plan from accountInfo() at startup even
  * though they are signed in — this is how such a profile still shows as live.
  */
-async function probeUsageIdentity(handle: QueryHandle): Promise<ProviderAccountStatus | null> {
-  const getUsage = handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
-  if (typeof getUsage !== "function") return null;
-  const snapshot = await getUsage.call(handle);
+function identityFromUsageSnapshot(
+  snapshot: SdkUsageSnapshot | null,
+): ProviderAccountStatus | null {
   const limits = snapshot?.rate_limits;
   const hasWindows =
     !!limits && typeof limits === "object" && Object.keys(limits as object).length > 0;
@@ -866,6 +862,117 @@ export function getClaudeAccountIdentitySnapshot(configDir: string): ClaudeAccou
 /** Test seam: forget every cached identity. */
 export function clearClaudeAccountIdentityCache(): void {
   claudeAccountIdentityCache.clear();
+}
+
+interface ClaudeLoginInspection {
+  mode: ClaudeConfigDirEnvMode;
+  rawAccount: AccountInfo | null;
+  /** accountInfo() mapped, with the usage snapshot filling in a nameless login. */
+  identity: ProviderAccountStatus | undefined;
+  /** Any auth signal from accountInfo(), or a usage snapshot (subscription only). */
+  signedIn: boolean;
+  models?: SdkModelInfo[];
+  usageWindows: Map<string, RateLimitWindowData> | null;
+}
+
+/** Which env keyings to try for a dir: both for the default dir (preferred first), else explicit. */
+function candidateEnvModes(configDir: string): ClaudeConfigDirEnvMode[] {
+  const preferred = claudeConfigDirEnvMode(configDir);
+  if (resolve(configDir) !== defaultClaudeConfigDir()) return [preferred];
+  return preferred === "explicit" ? ["explicit", "implicit"] : ["implicit", "explicit"];
+}
+
+/**
+ * Spawn the CLI once under one env keying and ask what it knows: account
+ * (with short retries — the CLI can fill its profile a beat after init), the
+ * usage snapshot (a sign-in signal that survives a nameless accountInfo), and
+ * optionally the model list. Zero tokens; the subprocess is closed before
+ * returning.
+ */
+async function inspectClaudeLogin(
+  configDir: string,
+  mode: ClaudeConfigDirEnvMode,
+  logger: CoreConfig["logger"],
+  options: { withModels?: boolean } = {},
+): Promise<ClaudeLoginInspection> {
+  if (!cachedStartupFn) throw new Error("Claude SDK not initialized");
+  const warm = await cachedStartupFn({
+    options: {
+      pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
+      env: buildClaudeSpawnEnv(configDir, process.env, mode) as Record<string, string | undefined>,
+    },
+    initializeTimeoutMs: 30_000,
+  });
+  const promptQueue = new PromptQueue();
+  const handle = warm.query(promptQueue);
+  try {
+    const modelsPromise: Promise<SdkModelInfo[] | undefined> = options.withModels
+      ? handle.supportedModels().catch((err: unknown) => {
+          logger.debug(`[SdkSession] supportedModels() failed (non-fatal): ${err}`);
+          return undefined;
+        })
+      : Promise.resolve(undefined);
+    let rawAccount: AccountInfo | null = null;
+    let identity: ProviderAccountStatus | undefined;
+    try {
+      rawAccount = await handle.accountInfo();
+      identity = accountInfoToStatus(rawAccount);
+      for (let attempt = 0; attempt < 3 && !hasNamedIdentity(identity); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        rawAccount = await handle.accountInfo();
+        identity = accountInfoToStatus(rawAccount);
+      }
+    } catch (err) {
+      logger.debug(`[SdkSession] accountInfo() failed for ${configDir} (${mode}): ${err}`);
+    }
+    let usageWindows: Map<string, RateLimitWindowData> | null = null;
+    let usageIdentity: ProviderAccountStatus | null = null;
+    try {
+      const snapshot = await readUsageSnapshot(handle);
+      usageWindows = windowsFromUsageSnapshot(snapshot);
+      usageIdentity = identityFromUsageSnapshot(snapshot);
+    } catch (err) {
+      logger.debug(`[SdkSession] get_usage failed for ${configDir} (${mode}): ${err}`);
+    }
+    const models = await modelsPromise;
+    const signedIn = !!identity || !!usageIdentity;
+    if (usageIdentity && !hasNamedIdentity(identity)) {
+      identity = {
+        ...usageIdentity,
+        ...identity,
+        status: identity?.status ?? usageIdentity.status,
+      };
+    }
+    if (!signedIn) {
+      // Surface the raw payload: a signed-in account we fail to recognise is a
+      // Relay bug, and this line is the only way to see what the CLI said.
+      logger.info(
+        `[SdkSession] ${configDir} (CLAUDE_CONFIG_DIR ${mode}): not signed in (accountInfo=${JSON.stringify(rawAccount)}, usage=none)`,
+      );
+    }
+    return { mode, rawAccount, identity, signedIn, models, usageWindows };
+  } finally {
+    promptQueue.terminate();
+    try {
+      await handle.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
+}
+
+/** Record a pre-warm's answer for a dir so the profile row needn't re-probe. */
+function seedClaudeAccountIdentity(configDir: string, inspection: ClaudeLoginInspection): void {
+  const key = accountIdentityCacheKey(configDir);
+  const existing = claudeAccountIdentityCache.get(key);
+  if (existing?.inflight) return;
+  claudeAccountIdentityCache.set(key, {
+    probeState: inspection.signedIn ? "ok" : "error",
+    identity: inspection.signedIn ? inspection.identity : undefined,
+    probeError: inspection.signedIn ? undefined : "Not signed in",
+    probedAt: Date.now(),
+    inflight: null,
+  });
 }
 
 /**
@@ -915,65 +1022,29 @@ export function probeClaudeAccountIdentity(
         identity: undefined,
       });
     }
-    try {
-      const warm = await cachedStartupFn({
-        options: {
-          pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
-          env: buildClaudeSpawnEnv(configDir) as Record<string, string | undefined>,
-        },
-        initializeTimeoutMs: 30_000,
-      });
-      const promptQueue = new PromptQueue();
-      const handle = warm.query(promptQueue);
+    let lastError: string | undefined;
+    for (const mode of candidateEnvModes(configDir)) {
+      let inspection: ClaudeLoginInspection;
       try {
-        // The CLI can populate the account profile a beat after init, so a
-        // nameless first answer gets a couple of short retries before we
-        // trust it.
-        let raw = await handle.accountInfo();
-        let identity = accountInfoToStatus(raw);
-        for (let attempt = 0; attempt < 3 && !hasNamedIdentity(identity); attempt++) {
-          await new Promise((resolve) => setTimeout(resolve, 750));
-          raw = await handle.accountInfo();
-          identity = accountInfoToStatus(raw);
-        }
-        if (!hasNamedIdentity(identity)) {
-          let usage: ProviderAccountStatus | null = null;
-          try {
-            usage = await probeUsageIdentity(handle);
-          } catch (err) {
-            logger.debug(
-              `[SdkSession] account probe for ${configDir}: usage lookup failed: ${err}`,
-            );
-          }
-          // Surface the raw payload: a signed-in account we fail to name is a
-          // Relay bug, and this line is the only way to see what the CLI said.
-          logger.info(
-            `[SdkSession] account probe for ${configDir}: no named identity (accountInfo=${JSON.stringify(raw)}, usage=${usage ? "signed in" : "none"})`,
-          );
-          if (usage) {
-            identity = { ...usage, ...identity, status: identity?.status ?? usage.status };
-          }
-        }
-        if (!identity) {
-          return finish({ probeState: "error", probeError: "Not signed in", identity: undefined });
-        }
-        logger.info(
-          `[SdkSession] account probe for ${configDir}: ${identity.email ?? identity.label ?? identity.plan ?? identity.status}`,
-        );
-        return finish({ probeState: "ok", identity, probeError: undefined });
-      } finally {
-        promptQueue.terminate();
-        try {
-          await handle.close();
-        } catch {
-          /* ignore close errors */
-        }
+        inspection = await inspectClaudeLogin(configDir, mode, logger);
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        logger.debug(`[SdkSession] account probe for ${configDir} (${mode}) failed: ${lastError}`);
+        continue;
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.debug(`[SdkSession] account probe for ${configDir} failed: ${message}`);
-      return finish({ probeState: "error", probeError: message, identity: undefined });
+      if (!inspection.signedIn) continue;
+      recordClaudeConfigDirEnvMode(configDir, mode);
+      const identity = inspection.identity;
+      logger.info(
+        `[SdkSession] account probe for ${configDir} (CLAUDE_CONFIG_DIR ${mode}): ${identity?.email ?? identity?.label ?? identity?.plan ?? identity?.status}`,
+      );
+      return finish({ probeState: "ok", identity, probeError: undefined });
     }
+    return finish({
+      probeState: "error",
+      probeError: lastError ?? "Not signed in",
+      identity: undefined,
+    });
   })();
   return entry.inflight;
 }

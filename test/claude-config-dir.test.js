@@ -5,6 +5,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   buildClaudeSpawnEnv,
+  claudeConfigDirEnvMode,
+  clearClaudeConfigDirEnvModes,
+  recordClaudeConfigDirEnvMode,
   resolveClaudeConfigDir,
   resolveClaudeGlobalConfigPath,
 } from "../dist/server/core/providers/claude-cli.js";
@@ -31,7 +34,43 @@ describe("resolveClaudeConfigDir", () => {
   });
 });
 
+describe("claudeConfigDirEnvMode", () => {
+  it("is explicit for any non-default dir", () => {
+    clearClaudeConfigDirEnvModes();
+    assert.equal(claudeConfigDirEnvMode("/tmp/claude-work", {}), "explicit");
+  });
+
+  it("defaults to implicit for the default dir unless the server env sets it explicitly", () => {
+    clearClaudeConfigDirEnvModes();
+    assert.equal(claudeConfigDirEnvMode(DEFAULT_DIR, {}), "implicit");
+    assert.equal(
+      claudeConfigDirEnvMode(DEFAULT_DIR, { CLAUDE_CONFIG_DIR: "~/.claude" }),
+      "explicit",
+    );
+    assert.equal(
+      claudeConfigDirEnvMode(DEFAULT_DIR, { CLAUDE_CONFIG_DIR: "/tmp/other" }),
+      "implicit",
+    );
+  });
+
+  it("honours the keying a login probe recorded", () => {
+    clearClaudeConfigDirEnvModes();
+    recordClaudeConfigDirEnvMode(DEFAULT_DIR, "explicit");
+    assert.equal(claudeConfigDirEnvMode(DEFAULT_DIR, {}), "explicit");
+    const env = buildClaudeSpawnEnv(DEFAULT_DIR, { HOME: "/x" });
+    assert.equal(env.CLAUDE_CONFIG_DIR, DEFAULT_DIR);
+    clearClaudeConfigDirEnvModes();
+  });
+});
+
 describe("buildClaudeSpawnEnv", () => {
+  it("sets CLAUDE_CONFIG_DIR explicitly for the default dir in explicit mode", () => {
+    const env = buildClaudeSpawnEnv(DEFAULT_DIR, { HOME: "/x" }, "explicit");
+    assert.equal(env.CLAUDE_CONFIG_DIR, DEFAULT_DIR);
+    const aligned = { CLAUDE_CONFIG_DIR: DEFAULT_DIR };
+    assert.equal(buildClaudeSpawnEnv(DEFAULT_DIR, aligned, "explicit"), aligned);
+  });
+
   it("returns the base env untouched when it already targets the config dir", () => {
     const base = { CLAUDE_CONFIG_DIR: "/tmp/claude-work", HOME: "/x" };
     assert.equal(buildClaudeSpawnEnv("/tmp/claude-work", base), base);

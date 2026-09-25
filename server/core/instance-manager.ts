@@ -248,7 +248,7 @@ import { searchWorkspaceEntries, type WorkspaceEntry } from "#core/workspace-ent
 import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
-import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
+import { findClaudeBinary, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import {
   accountProfileRoots,
   listAccountProfiles,
@@ -1999,7 +1999,7 @@ export class InstanceManager extends EventEmitter {
       this._sdkQueryFn = (await resolveQueryFn()) as typeof this._sdkQueryFn;
       this.baseConfig.logger.info("[InstanceManager] Agent SDK provider initialized");
       this.baseConfig.logger.info(
-        `[InstanceManager] Claude config dir: ${this.providerDirs.claude}`,
+        `[InstanceManager] Claude config dir: ${this.providerDirs.claude}; CLI: ${findClaudeBinary() ?? "not found (SDK bundled)"}`,
       );
       // Spawn a short-lived subprocess to discover models + account info from
       // the SDK so both are available immediately (not just after the first
