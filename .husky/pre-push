@@ -11,6 +11,7 @@ export PATH="/usr/local/bin:$HOME/.cargo/bin:$PATH"
 ZERO="0000000000000000000000000000000000000000"
 remote="$1"
 changed=""
+tips=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   # Branch deletion — nothing to check.
@@ -33,6 +34,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   files="$(git diff --name-only "$range" 2>/dev/null)"
   changed="$changed
 $files"
+  tips="$tips $local_sha"
 done
 
 # Nothing to push (e.g. up to date) — allow.
@@ -77,5 +79,9 @@ if [ "$code_changed" -eq 0 ]; then
   exit 0
 fi
 
-echo "pre-push: code changed — running CI checks (build → typecheck → lint → task checks → test)…"
-pnpm ci-check
+# Check the pushed commits, never the working tree: a partial commit of a dirty
+# tree can depend on untracked files and pass in place while failing in CI.
+echo "pre-push: code changed — running CI checks (build → typecheck → lint → task checks → test) against the pushed commit…"
+for sha in $(printf '%s\n' $tips | sort -u); do
+  scripts/check-commit.sh "$sha" || exit $?
+done
