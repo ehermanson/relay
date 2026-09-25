@@ -124,16 +124,11 @@ function buildLegacyProviderSkill(skill: {
   };
 }
 
-function buildPromptPlaceholder(
-  question: UserInputQuestion | null,
-  allowFreeform: boolean,
-): string {
-  if (!question) return "";
-  if (!allowFreeform) return "Choose an option above to continue";
-  if (question.options?.length) {
-    return `Type your own answer for "${question.question}", or leave this blank to use the selected option`;
-  }
-  return `Type your answer for "${question.question}"`;
+// Keep this short: it renders as an overlay inside the composer and long text
+// (e.g. the full question) spills over the toolbar.
+function buildPromptPlaceholder(composerAnswersQuestion: boolean, questionCount: number): string {
+  if (composerAnswersQuestion) return "Type your answer...";
+  return questionCount > 1 ? "Answer the questions above" : "Answer the question above";
 }
 
 function formatInlineReplyFragment(selectedText: string, reply: string): string {
@@ -340,6 +335,7 @@ export function InputArea({
   } = useComposerState(instanceId, composerRef);
   const [promptText, setPromptText] = useState("");
   const [selectedPromptAnswers, setSelectedPromptAnswers] = useState<Record<string, string[]>>({});
+  const [customPromptAnswers, setCustomPromptAnswers] = useState<Record<string, string>>({});
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
   const [promptReplyMode, setPromptReplyMode] = useState(false);
   const [planComments, setPlanComments] = useState<PlanComment[]>([]);
@@ -391,14 +387,19 @@ export function InputArea({
   const promptQuestions =
     pendingUserInput?.kind === "user_input" ? (pendingUserInput.questions ?? []) : [];
   const hasPendingPrompt = !!promptRequestId && promptQuestions.length > 0;
-  const primaryPromptQuestion = promptQuestions[0] ?? null;
-  const freeformQuestionId = promptQuestions.find((question) => question.isOther)?.id ?? null;
-  const allowPromptTextInput =
-    hasPendingPrompt && (!primaryPromptQuestion?.options?.length || !!freeformQuestionId);
+  // The composer answers a question only when it is the sole question and has no
+  // options (a plain text prompt). Otherwise every question carries its own inline
+  // "type your own answer" field, so typed text can never land on the wrong question.
+  const composerQuestionId =
+    promptQuestions.length === 1 && !promptQuestions[0].options?.length
+      ? promptQuestions[0].id
+      : null;
+  const allowPromptTextInput = hasPendingPrompt && !!composerQuestionId;
 
   useEffect(() => {
     setPromptText("");
     setSelectedPromptAnswers({});
+    setCustomPromptAnswers({});
     setIsQuestionPanelCollapsed(false);
     setPromptReplyMode(false);
     if (promptRequestId && shouldAutoFocusComposer()) {
@@ -577,13 +578,13 @@ export function InputArea({
 
   const promptAnswerForQuestion = (question: UserInputQuestion) => {
     const selected = selectedPromptAnswers[question.id] ?? [];
-    if (freeformQuestionId && question.id === freeformQuestionId) {
-      const customAnswer = promptText.trim();
-      if (customAnswer) {
-        // Multi-select: the typed note is an extra answer alongside checked
-        // options. Single-select: the note replaces the pick (radio semantics).
-        return question.multiSelect ? [...selected, customAnswer] : [customAnswer];
-      }
+    const customAnswer = (
+      question.id === composerQuestionId ? promptText : (customPromptAnswers[question.id] ?? "")
+    ).trim();
+    if (customAnswer) {
+      // Multi-select: the typed answer is an extra answer alongside checked
+      // options. Single-select: typing clears the pick (radio semantics).
+      return question.multiSelect ? [...selected, customAnswer] : [customAnswer];
     }
     return selected;
   };
@@ -605,6 +606,7 @@ export function InputArea({
     onAnswerUserInput(promptRequestId, answers);
     setPromptText("");
     setSelectedPromptAnswers({});
+    setCustomPromptAnswers({});
   };
 
   const promptReplyText = promptText.trim();
@@ -753,7 +755,7 @@ export function InputArea({
         : hasPendingPrompt
           ? promptReplyMode
             ? "Write your reply to send back to the agent..."
-            : buildPromptPlaceholder(primaryPromptQuestion, allowPromptTextInput)
+            : buildPromptPlaceholder(allowPromptTextInput, promptQuestions.length)
           : hasPendingPlan
             ? "Add feedback to refine the plan, or leave blank to approve"
             : isStopped
@@ -773,16 +775,28 @@ export function InputArea({
       <AskUserQuestionPanel
         questions={promptQuestions}
         selectedAnswers={selectedPromptAnswers}
-        onSelectOption={(questionId, answer) =>
+        onSelectOption={(questionId, answer) => {
+          const multiSelect = promptQuestions.find((q) => q.id === questionId)?.multiSelect;
           setSelectedPromptAnswers((prev) => ({
             ...prev,
-            [questionId]: toggleAnswerSelection(
-              prev[questionId],
-              answer,
-              promptQuestions.find((q) => q.id === questionId)?.multiSelect,
-            ),
-          }))
-        }
+            [questionId]: toggleAnswerSelection(prev[questionId], answer, multiSelect),
+          }));
+          // Radio semantics: picking an option replaces a typed answer.
+          if (!multiSelect) {
+            setCustomPromptAnswers((prev) => ({ ...prev, [questionId]: "" }));
+          }
+        }}
+        customAnswers={customPromptAnswers}
+        onCustomAnswerChange={(questionId, text) => {
+          setCustomPromptAnswers((prev) => ({ ...prev, [questionId]: text }));
+          // Radio semantics: typing an answer replaces the picked option.
+          const multiSelect = promptQuestions.find((q) => q.id === questionId)?.multiSelect;
+          if (!multiSelect && text.trim()) {
+            setSelectedPromptAnswers((prev) => ({ ...prev, [questionId]: [] }));
+          }
+        }}
+        composerQuestionId={composerQuestionId}
+        onSubmit={handleSubmitPrompt}
         collapsed={isQuestionPanelCollapsed}
         onToggleCollapse={() => setIsQuestionPanelCollapsed((v) => !v)}
       />

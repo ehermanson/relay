@@ -218,6 +218,7 @@ type ComposerMode = "idle" | "plan-review" | "ask-user";
 const ASK_USER_QUESTIONS: UserInputQuestion[] = [
   {
     id: "approach",
+    isOther: true,
     header: "Implementation approach",
     question: "How should we handle the migration?",
     options: [
@@ -234,6 +235,7 @@ const ASK_USER_QUESTIONS: UserInputQuestion[] = [
   },
   {
     id: "testing",
+    isOther: true,
     header: "Testing strategy",
     question: "Which test types should we add? (multi-select)",
     multiSelect: true,
@@ -1473,11 +1475,12 @@ function MockComposer({
   onSelectAnswer: (qId: string, answer: string) => void;
 }) {
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
   const hasPlanFeedback = planComments.length > 0;
 
   const placeholder = (() => {
     if (mode === "plan-review") return "Add feedback to refine the plan, or leave blank to approve";
-    if (mode === "ask-user") return "Add additional context (optional)...";
+    if (mode === "ask-user") return "Answer the questions above";
     if (isStopped) return "Send a message to resume...";
     return "Send a message...";
   })();
@@ -1512,6 +1515,10 @@ function MockComposer({
               questions={ASK_USER_QUESTIONS}
               selectedAnswers={selectedAnswers}
               onSelectOption={onSelectAnswer}
+              customAnswers={customAnswers}
+              onCustomAnswerChange={(qId, text) =>
+                setCustomAnswers((prev) => ({ ...prev, [qId]: text }))
+              }
               collapsed={isQuestionPanelCollapsed}
               onToggleCollapse={() => setIsQuestionPanelCollapsed((v) => !v)}
             />

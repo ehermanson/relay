@@ -1,11 +1,22 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, PenLine } from "lucide-react";
 import type { UserInputQuestion } from "@shared/types";
 
 interface AskUserQuestionPanelProps {
   questions: UserInputQuestion[];
   selectedAnswers: Record<string, string[]>;
   onSelectOption: (questionId: string, answer: string) => void;
+  /** Per-question typed answers ("Other"). Keyed by question id. */
+  customAnswers?: Record<string, string>;
+  /**
+   * Renders an inline "type your own answer" field for every question that
+   * accepts one. Omit to hide the fields (e.g. the sandbox preview).
+   */
+  onCustomAnswerChange?: (questionId: string, text: string) => void;
+  /** A question whose freeform answer is typed in the composer instead. */
+  composerQuestionId?: string | null;
+  /** Enter in an inline answer field. */
+  onSubmit?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }
@@ -14,14 +25,19 @@ export function AskUserQuestionPanel({
   questions,
   selectedAnswers,
   onSelectOption,
+  customAnswers = {},
+  onCustomAnswerChange,
+  composerQuestionId = null,
+  onSubmit,
   collapsed = false,
   onToggleCollapse,
 }: AskUserQuestionPanelProps) {
   if (questions.length === 0) return null;
 
-  const answeredCount = questions.filter(
-    (q, i) => (selectedAnswers[q.id || `question-${i}`]?.length ?? 0) > 0,
-  ).length;
+  const answeredCount = questions.filter((q, i) => {
+    const id = q.id || `question-${i}`;
+    return (selectedAnswers[id]?.length ?? 0) > 0 || !!customAnswers[id]?.trim();
+  }).length;
 
   return (
     <div className="border-b border-border/80">
@@ -92,7 +108,7 @@ export function AskUserQuestionPanel({
                               key={`${questionId}-${option.label}-${optionIndex}`}
                               type="button"
                               onClick={() => onSelectOption(questionId, option.label)}
-                              className={`flex w-full items-start gap-2.5 px-3.5 py-1.5 text-left transition-colors ${
+                              className={`flex w-full items-start gap-2.5 px-3.5 py-1.5 text-left outline-none transition-colors focus-visible:bg-accent/5 ${
                                 isSelected ? "bg-accent/8" : "hover:bg-accent/5"
                               }`}
                             >
@@ -131,6 +147,46 @@ export function AskUserQuestionPanel({
                           );
                         })}
                       </div>
+                    ) : null}
+
+                    {onCustomAnswerChange &&
+                    questionId !== composerQuestionId &&
+                    (question.isOther || options.length === 0) ? (
+                      <label
+                        className={`mb-2 flex items-start gap-2.5 px-3.5 py-1.5 transition-colors ${
+                          customAnswers[questionId]?.trim() ? "bg-accent/8" : ""
+                        }`}
+                      >
+                        <span
+                          className={`mt-px inline-flex size-[1.375rem] shrink-0 items-center justify-center rounded-md border ${
+                            customAnswers[questionId]?.trim()
+                              ? "border-accent/40 bg-accent text-white"
+                              : "border-border/70 bg-surface text-muted"
+                          }`}
+                        >
+                          <PenLine size={12} strokeWidth={2.25} />
+                        </span>
+                        <input
+                          type={question.isSecret ? "password" : "text"}
+                          value={customAnswers[questionId] ?? ""}
+                          onChange={(event) => onCustomAnswerChange(questionId, event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                              event.preventDefault();
+                              onSubmit?.();
+                            }
+                          }}
+                          placeholder={
+                            options.length === 0
+                              ? "Type your answer"
+                              : multiSelect
+                                ? "Add your own answer"
+                                : "Or type your own answer"
+                          }
+                          aria-label={`Your own answer: ${question.question}`}
+                          className="min-w-0 flex-1 border-b border-border/70 bg-transparent pb-0.5 text-[0.8125rem] text-text outline-none placeholder:text-muted focus:border-accent/60 max-[768px]:text-[16px]"
+                        />
+                      </label>
                     ) : null}
                   </section>
                 );
