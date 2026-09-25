@@ -2,6 +2,9 @@ import { useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ComposerEditorHandle } from "../composer-editor";
 import { ComposerEditor } from "../composer-editor";
+import { ComposerTextarea } from "../composer-textarea";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { useNativeMobileComposer } from "@/hooks/use-native-mobile-composer";
 import { useTaskMentionPopover, TaskMentionPopoverOverlay } from "../task-mention-popover";
 import type { Task } from "@shared/types";
 
@@ -46,6 +49,10 @@ export function ComposerPanel({
   expanded,
 }: ComposerPanelProps) {
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const [nativeMobileComposer] = useNativeMobileComposer();
+  const isCoarsePointer = useMediaQuery("(pointer: coarse)");
+  // Experiment: native textarea on touch devices (Settings → General).
+  const Editor = nativeMobileComposer && isCoarsePointer ? ComposerTextarea : ComposerEditor;
   const { popoverState, close: closeTaskPopover } = useTaskMentionPopover(editorContainerRef, {
     projectId,
     spaceId,
@@ -69,7 +76,7 @@ export function ComposerPanel({
         ) : null}
       </AnimatePresence>
       <div ref={editorContainerRef}>
-        <ComposerEditor
+        <Editor
           ref={composerRef}
           value={value}
           placeholder={placeholder}

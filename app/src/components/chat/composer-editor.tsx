@@ -47,7 +47,7 @@ export interface ComposerEditorHandle {
   focus: () => void;
 }
 
-interface ComposerEditorProps {
+export interface ComposerEditorProps {
   value: string;
   placeholder: string;
   placeholderClassName?: string;
@@ -56,8 +56,8 @@ interface ComposerEditorProps {
   onChange: (value: string, selectionOffset: number) => void;
   onSelectionApplied?: () => void;
   selectionOffset?: number | null;
-  onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
-  onPaste?: (event: ClipboardEvent<HTMLDivElement>) => void;
+  onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
+  onPaste?: (event: ClipboardEvent<HTMLElement>) => void;
 }
 
 type SerializedComposerMentionNode = Spread<

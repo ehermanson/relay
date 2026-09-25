@@ -28,6 +28,7 @@ import {
   addProviderMcpServer,
 } from "../lib/api";
 import { useGlobalSettings } from "@/hooks/use-global-settings";
+import { useNativeMobileComposer } from "@/hooks/use-native-mobile-composer";
 import { useSystemUpdate, describeUpdateStage } from "@/hooks/use-system-update";
 import {
   INSTALL_METHOD_LABEL,
@@ -43,6 +44,7 @@ import { RadioGroup, RadioGroupField } from "@/components/ui/radio-group";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
 import { SettingsSection, SettingRow } from "@/components/settings/settings-shared";
+import { Switch } from "@/components/ui/switch";
 import { BackgroundNotificationsSetting } from "@/components/settings/background-notifications";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { SuggestionSettings } from "@/components/settings/suggestion-settings";
@@ -125,6 +127,7 @@ export function GeneralSettingsSection() {
         <ThemeToggle value={themeStore.preference} onChange={handleThemeChange} />
       </SettingRow>
       <SidebarLayoutSettingsRow />
+      <NativeMobileComposerSettingsRow />
       <MaxProcessesSettingsRow />
       <UpdateSettingsRow />
       <RemoteAccessSettingsRow />
@@ -720,6 +723,18 @@ function SidebarLayoutSettingsRow() {
           );
         })}
       </div>
+    </SettingRow>
+  );
+}
+
+function NativeMobileComposerSettingsRow() {
+  const [enabled, setEnabled] = useNativeMobileComposer();
+  return (
+    <SettingRow
+      label="Native text field on touch devices"
+      description="Experimental. Use the browser's built-in text field for the composer on phones and tablets for native autocorrect and predictive text. Mentions and slash commands appear as plain text. Saved on this device only."
+    >
+      <Switch checked={enabled} onCheckedChange={setEnabled} />
     </SettingRow>
   );
 }
