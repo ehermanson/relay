@@ -5,6 +5,7 @@ import { ChevronRight, GitBranch, Plus } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ProjectAvatar } from "@/components/ui/project-avatar";
 import { MobileSidebarToggle } from "@/components/ui/view-header";
+import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { AddProjectDialog } from "@/components/layout/sidebar-chrome";
 import { buildInboxProjectOptions, getAttentionLabel, type InboxSourceGroup } from "@/lib/inbox";
@@ -21,6 +22,14 @@ import { findProviderModelLabel } from "@shared/provider-catalog";
 
 const ROW_TRANSITION = { type: "spring", stiffness: 500, damping: 40 } as const;
 
+/**
+ * How long after the initial load finishes before rows start animating.
+ * The last stragglers (a project's summary refetch landing just after the
+ * WS list, a status burst on connect) arrive within this window; animating
+ * them would read as churn, not activity.
+ */
+const SETTLE_DELAY_MS = 300;
+
 /** Why a row is in Needs input: the single reason, or a count when several chats wait. */
 function attentionReason(entry: HomeEntry): string | null {
   const waiting = homeEntryInstances(entry).filter(
@@ -33,7 +42,7 @@ function attentionReason(entry: HomeEntry): string | null {
   return `${waiting.length} chats need input`;
 }
 
-function HomeRow({ entry }: { entry: HomeEntry }) {
+function HomeRow({ entry, animate }: { entry: HomeEntry; animate: boolean }) {
   const route =
     entry.kind === "space" ? getInboxSpaceRoute(entry) : getInstanceChatRoute(entry.instance);
   const destinationChatId = "chatId" in route.params ? route.params.chatId : undefined;
@@ -46,11 +55,14 @@ function HomeRow({ entry }: { entry: HomeEntry }) {
   const preview = chat?.lastMessage?.text.trim();
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0 }}
+      // Static until the initial load settles: the cache, each project's
+      // summaries and the WS list land at different times, and animating every
+      // stage made first paint a cascade of springs and fades.
+      layout={animate}
+      initial={animate ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={ROW_TRANSITION}
+      exit={animate ? { opacity: 0 } : undefined}
+      transition={animate ? ROW_TRANSITION : { duration: 0 }}
       className="bg-surface"
     >
       <Link
@@ -111,12 +123,12 @@ function HomeRow({ entry }: { entry: HomeEntry }) {
   );
 }
 
-function HomeRows({ entries }: { entries: HomeEntry[] }) {
+function HomeRows({ entries, animate }: { entries: HomeEntry[]; animate: boolean }) {
   return (
     <div className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border bg-surface">
       <AnimatePresence initial={false} mode="popLayout">
         {entries.map((entry) => (
-          <HomeRow key={entry.id} entry={entry} />
+          <HomeRow key={entry.id} entry={entry} animate={animate} />
         ))}
       </AnimatePresence>
     </div>
@@ -141,12 +153,26 @@ export function MobileHome({
     const id = setInterval(() => setTick((tick) => tick + 1), 60_000);
     return () => clearInterval(id);
   }, []);
+  // Rows animate only once the initial load has settled (and re-freeze on a
+  // reconnect, which replaces the whole list). Before that, sorting is live
+  // but silent.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (loading) {
+      setSettled(false);
+      return;
+    }
+    const id = setTimeout(() => setSettled(true), SETTLE_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [loading]);
   const options = buildInboxProjectOptions(projects);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-2">
         <MobileSidebarToggle />
         <h1 className="flex-1 text-[0.875rem] font-semibold text-text-bright">Home</h1>
+        {/* Active account (only with two or more) — Home lists that account's chats. */}
+        <AccountSwitcher variant="compact" />
         {options.length > 0 && (
           <NewChatMenu
             projectOptions={options}
@@ -177,7 +203,7 @@ export function MobileHome({
                   {needsInput.length}
                 </span>
               </h2>
-              <HomeRows entries={needsInput} />
+              <HomeRows entries={needsInput} animate={settled} />
             </section>
           )}
           <section aria-labelledby="home-continue" className="mb-7">
@@ -185,7 +211,7 @@ export function MobileHome({
               Continue
             </h2>
             {recent.length > 0 ? (
-              <HomeRows entries={recent} />
+              <HomeRows entries={recent} animate={settled} />
             ) : (
               <p className="text-[0.75rem] text-muted">
                 {loading
