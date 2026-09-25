@@ -1310,7 +1310,10 @@ function ProviderDefaultsRow({
 
   const hasRuntime = runtimeState != null;
   const accountLabel =
-    runtimeState?.account?.label ?? runtimeState?.account?.email ?? runtimeState?.account?.plan;
+    runtimeState?.account?.label ??
+    runtimeState?.account?.email ??
+    runtimeState?.account?.plan ??
+    runtimeState?.account?.status;
 
   const versionAdvisory = provider.capabilities.versionAdvisory;
   // Always render the advisory section when an advisory exists, including

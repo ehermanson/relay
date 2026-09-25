@@ -635,12 +635,12 @@ export async function prewarmSdk(
       }
       if (accountResult.status === "fulfilled") {
         sdkDiscoveredAccountInfo = accountResult.value;
-        const summary =
-          accountResult.value.subscriptionType ||
-          accountResult.value.apiProvider ||
-          accountResult.value.tokenSource ||
-          "account-ok";
-        logger.info(`[SdkSession] Pre-warm accountInfo: ${summary}`);
+        const mapped = accountInfoToStatus(accountResult.value);
+        logger.info(
+          hasNamedIdentity(mapped)
+            ? `[SdkSession] Pre-warm accountInfo: ${mapped?.email ?? mapped?.label ?? mapped?.plan}`
+            : `[SdkSession] Pre-warm accountInfo carried no name: ${JSON.stringify(accountResult.value)}`,
+        );
       } else {
         logger.debug(
           `[SdkSession] Pre-warm accountInfo() failed (non-fatal): ${accountResult.reason}`,
@@ -801,16 +801,50 @@ export function accountInfoToStatus(
   if (info.subscriptionType) account.plan = info.subscriptionType;
   if (info.email) account.email = info.email;
   if (info.organization) account.label = info.organization;
-  if (!account.label) {
-    if (info.apiProvider && info.apiProvider !== "firstParty") {
-      account.label = API_PROVIDER_LABELS[info.apiProvider] ?? info.apiProvider;
-    } else if (info.apiKeySource) {
-      account.label = `API key (${info.apiKeySource})`;
-    } else if (info.tokenSource && Object.keys(account).length === 0) {
-      account.label = `Signed in via ${info.tokenSource}`;
-    }
-  }
+  // The auth path is `status`, never `label`: global-state merges are shallow,
+  // so a prewarm patch carrying only the path must not displace an org name a
+  // live session reported. `tokenSource`/`apiKeySource` are "none" when unused
+  // — the CLI's literal for "no env token", not a sign-in signal.
+  const authPath = describeAuthPath(info);
+  if (authPath) account.status = authPath;
   return Object.keys(account).length > 0 ? account : undefined;
+}
+
+function isRealSource(value: string | undefined): value is string {
+  return !!value && value.trim().toLowerCase() !== "none";
+}
+
+function describeAuthPath(info: AccountInfo): string | undefined {
+  if (info.apiProvider && info.apiProvider !== "firstParty") {
+    return API_PROVIDER_LABELS[info.apiProvider] ?? info.apiProvider;
+  }
+  if (isRealSource(info.apiKeySource)) return `API key (${info.apiKeySource})`;
+  if (isRealSource(info.tokenSource)) return `Auth token (${info.tokenSource})`;
+  return undefined;
+}
+
+/** True when the CLI told us who the account is, not merely how it authenticates. */
+function hasNamedIdentity(account: ProviderAccountStatus | undefined): boolean {
+  return !!(account?.email || account?.label || account?.plan);
+}
+
+/**
+ * The experimental get_usage snapshot as a sign-in signal: it only answers for
+ * an authenticated subscription, and carries the plan. Some logins (enterprise
+ * seats, at least) report no email/org/plan from accountInfo() at startup even
+ * though they are signed in — this is how such a profile still shows as live.
+ */
+async function probeUsageIdentity(handle: QueryHandle): Promise<ProviderAccountStatus | null> {
+  const getUsage = handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+  if (typeof getUsage !== "function") return null;
+  const snapshot = await getUsage.call(handle);
+  const limits = snapshot?.rate_limits;
+  const hasWindows =
+    !!limits && typeof limits === "object" && Object.keys(limits as object).length > 0;
+  if (!hasWindows && !snapshot?.subscription_type) return null;
+  const identity: ProviderAccountStatus = { status: "Signed in" };
+  if (snapshot?.subscription_type) identity.plan = snapshot.subscription_type;
+  return identity;
 }
 
 function publicIdentitySnapshot(
@@ -892,18 +926,39 @@ export function probeClaudeAccountIdentity(
       const promptQueue = new PromptQueue();
       const handle = warm.query(promptQueue);
       try {
-        const raw = await handle.accountInfo();
-        const identity = accountInfoToStatus(raw);
-        if (!identity) {
-          // Surface the raw payload: a signed-in account we fail to map is a
+        // The CLI can populate the account profile a beat after init, so a
+        // nameless first answer gets a couple of short retries before we
+        // trust it.
+        let raw = await handle.accountInfo();
+        let identity = accountInfoToStatus(raw);
+        for (let attempt = 0; attempt < 3 && !hasNamedIdentity(identity); attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          raw = await handle.accountInfo();
+          identity = accountInfoToStatus(raw);
+        }
+        if (!hasNamedIdentity(identity)) {
+          let usage: ProviderAccountStatus | null = null;
+          try {
+            usage = await probeUsageIdentity(handle);
+          } catch (err) {
+            logger.debug(
+              `[SdkSession] account probe for ${configDir}: usage lookup failed: ${err}`,
+            );
+          }
+          // Surface the raw payload: a signed-in account we fail to name is a
           // Relay bug, and this line is the only way to see what the CLI said.
           logger.info(
-            `[SdkSession] account probe for ${configDir}: no identity reported (accountInfo=${JSON.stringify(raw)})`,
+            `[SdkSession] account probe for ${configDir}: no named identity (accountInfo=${JSON.stringify(raw)}, usage=${usage ? "signed in" : "none"})`,
           );
+          if (usage) {
+            identity = { ...usage, ...identity, status: identity?.status ?? usage.status };
+          }
+        }
+        if (!identity) {
           return finish({ probeState: "error", probeError: "Not signed in", identity: undefined });
         }
         logger.info(
-          `[SdkSession] account probe for ${configDir}: ${identity.email ?? identity.label ?? identity.plan}`,
+          `[SdkSession] account probe for ${configDir}: ${identity.email ?? identity.label ?? identity.plan ?? identity.status}`,
         );
         return finish({ probeState: "ok", identity, probeError: undefined });
       } finally {

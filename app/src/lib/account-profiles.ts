@@ -25,6 +25,8 @@ export function formatIdentity(identity: ProviderAccountStatus | undefined): str
     const trimmed = value?.trim();
     if (trimmed && !parts.includes(trimmed)) parts.push(trimmed);
   }
+  // No name at all: say how it authenticates ("Enterprise gateway", "Signed in").
+  if (!parts.length && identity.status?.trim()) parts.push(identity.status.trim());
   return parts.length ? parts.join(" · ") : null;
 }
 

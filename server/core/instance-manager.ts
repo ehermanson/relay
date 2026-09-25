@@ -35,6 +35,7 @@ import {
   resolveQueryFn,
   prewarmSdk,
   accountInfoToStatus,
+  getClaudeAccountIdentitySnapshot,
   getSdkDiscoveredAccountInfo,
   getSdkDiscoveredModels,
   getSdkDiscoveredRateLimits,
@@ -3019,8 +3020,16 @@ export class InstanceManager extends EventEmitter {
           // available — this means the UI sees the user's plan at boot
           // instead of having to wait for the first managed session.
           const accountInfo = getSdkDiscoveredAccountInfo();
-          const accountPatch: import("#core/types.js").ProviderAccountStatus =
-            accountInfoToStatus(accountInfo) ?? {};
+          // A prewarm answer with no name falls back to the default profile's
+          // probe, which also consults the usage snapshot (see claude-sdk.ts).
+          const mapped = accountInfoToStatus(accountInfo);
+          const accountPatch: import("#core/types.js").ProviderAccountStatus = {
+            ...(mapped?.email || mapped?.label || mapped?.plan
+              ? mapped
+              : (getClaudeAccountIdentitySnapshot(this.providerDirs.claude).identity ??
+                mapped ??
+                {})),
+          };
 
           // Rate limits: prefer live `rate_limit_event` data accumulated by
           // active sessions, falling back to the experimental get_usage

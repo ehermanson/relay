@@ -11,38 +11,41 @@ describe("accountInfoToStatus", () => {
         organization: "Acme",
         subscriptionType: "max",
         apiProvider: "firstParty",
+        tokenSource: "none",
+        apiKeySource: "none",
       }),
       { plan: "max", email: "me@example.com", label: "Acme" },
     );
   });
 
-  it("treats an enterprise gateway login as signed in", () => {
+  it("describes an enterprise gateway login as status, never as the label", () => {
     assert.deepEqual(accountInfoToStatus({ apiProvider: "gateway" }), {
-      label: "Enterprise gateway",
+      status: "Enterprise gateway",
+    });
+    assert.deepEqual(accountInfoToStatus({ apiProvider: "gateway", organization: "Acme" }), {
+      label: "Acme",
+      status: "Enterprise gateway",
     });
   });
 
-  it("treats an API key / helper login as signed in", () => {
+  it("describes API key / auth token logins by source", () => {
     assert.deepEqual(
       accountInfoToStatus({ apiProvider: "firstParty", apiKeySource: "apiKeyHelper" }),
-      { label: "API key (apiKeyHelper)" },
+      { status: "API key (apiKeyHelper)" },
     );
-  });
-
-  it("labels third-party backends by name and keeps the org when known", () => {
-    assert.deepEqual(accountInfoToStatus({ apiProvider: "bedrock" }), { label: "Amazon Bedrock" });
-    assert.deepEqual(accountInfoToStatus({ apiProvider: "vertex", organization: "Acme" }), {
-      label: "Acme",
+    assert.deepEqual(accountInfoToStatus({ tokenSource: "ANTHROPIC_AUTH_TOKEN" }), {
+      status: "Auth token (ANTHROPIC_AUTH_TOKEN)",
+    });
+    assert.deepEqual(accountInfoToStatus({ apiProvider: "bedrock" }), {
+      status: "Amazon Bedrock",
     });
   });
 
-  it("falls back to the token source when nothing else is reported", () => {
-    assert.deepEqual(accountInfoToStatus({ tokenSource: "claude.ai" }), {
-      label: "Signed in via claude.ai",
-    });
-  });
-
-  it("reports nothing for a logged-out CLI", () => {
+  it('ignores the CLI\'s literal "none" sources and a logged-out CLI', () => {
+    assert.equal(
+      accountInfoToStatus({ apiProvider: "firstParty", tokenSource: "none", apiKeySource: "none" }),
+      undefined,
+    );
     assert.equal(accountInfoToStatus({ apiProvider: "firstParty" }), undefined);
     assert.equal(accountInfoToStatus({}), undefined);
     assert.equal(accountInfoToStatus(undefined), undefined);
