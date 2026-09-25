@@ -5,7 +5,6 @@ import { ChevronRight, GitBranch, Plus } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ProjectAvatar } from "@/components/ui/project-avatar";
 import { MobileSidebarToggle } from "@/components/ui/view-header";
-import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { AddProjectDialog } from "@/components/layout/sidebar-chrome";
 import { buildInboxProjectOptions, getAttentionLabel, type InboxSourceGroup } from "@/lib/inbox";
@@ -171,8 +170,6 @@ export function MobileHome({
       <header className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-2">
         <MobileSidebarToggle />
         <h1 className="flex-1 text-[0.875rem] font-semibold text-text-bright">Home</h1>
-        {/* Active account (only with two or more) — Home lists that account's chats. */}
-        <AccountSwitcher variant="compact" />
         {options.length > 0 && (
           <NewChatMenu
             projectOptions={options}
