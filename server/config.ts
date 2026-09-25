@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { relayDir, type CoreConfig } from "#core/config.js";
 import { defaultLogger } from "#core/logger.js";
 import type { UpdateManager } from "#server/update-manager.js";
+import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 /**
  * Fully resolved server configuration (all fields required).
@@ -62,7 +63,7 @@ export function resolveConfig(options: RelayOptions): RelayConfig {
     sessionFile: options.sessionFile ?? join(relayDir, "sessions.json"),
     dbPath: options.dbPath ?? join(relayDir, "sessions.db"),
     providerDirs: options.providerDirs ?? {
-      claude: join(home, ".claude"),
+      claude: resolveClaudeConfigDir(),
       codex: join(home, ".codex"),
     },
   };

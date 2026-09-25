@@ -2,8 +2,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { findClaudeBinary } from "#core/providers/claude-cli.js";
+import {
+  buildClaudeSpawnEnv,
+  findClaudeBinary,
+  resolveClaudeConfigDir,
+  resolveClaudeGlobalConfigPath,
+} from "#core/providers/claude-cli.js";
 import { findCodexBinary } from "#core/providers/codex-cli.js";
 import type { ProviderKind } from "#core/types.js";
 
@@ -52,7 +56,7 @@ export interface McpConfigSummary {
 
 export async function listClaudeProjectMcpServers(
   projectDirectory: string,
-  claudeConfigPath = join(homedir(), ".claude.json"),
+  claudeConfigPath = resolveClaudeGlobalConfigPath(resolveClaudeConfigDir()),
 ): Promise<McpConfigSummary[]> {
   const servers = new Map<string, McpConfigSummary>();
   const addServers = (
@@ -140,9 +144,15 @@ function binaryFor(provider: ProviderKind): string {
   return binary;
 }
 
-async function run(binary: string, args: string[], cwd?: string, timeout = 30_000): Promise<void> {
+async function run(
+  binary: string,
+  args: string[],
+  cwd?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  timeout = 30_000,
+): Promise<void> {
   try {
-    await execFileAsync(binary, args, { cwd, timeout, maxBuffer: 1024 * 1024 });
+    await execFileAsync(binary, args, { cwd, env, timeout, maxBuffer: 1024 * 1024 });
   } catch (error) {
     const stderr =
       error && typeof error === "object" && "stderr" in error ? String(error.stderr).trim() : "";
@@ -154,7 +164,10 @@ export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
   await exclusiveMutation(input.provider, async () => {
     const binary = binaryFor(input.provider);
     const invocation = buildAddMcpServerInvocation(input);
-    await run(binary, invocation.args, invocation.cwd);
+    // `claude mcp add` writes into the config dir — pin it to the one Relay indexes.
+    const env =
+      input.provider === "claude" ? buildClaudeSpawnEnv(resolveClaudeConfigDir()) : process.env;
+    await run(binary, invocation.args, invocation.cwd, env);
   });
 }
 

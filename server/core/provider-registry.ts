@@ -512,6 +512,7 @@ function createClaudeSession(
         processTimeout: config.processTimeout,
         allowedTools: options?.allowedTools,
         bootstrapContext: options?.bootstrapContext,
+        configDir: config.providerDirs.claude,
       },
       context.sdkQueryFn as Parameters<typeof createSdkSessionSync>[1],
     );
@@ -550,7 +551,7 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
     async getModels(context) {
       // Kick a background re-probe when the discovery snapshot is stale so a
       // long-running server surfaces newly released models without a restart.
-      void refreshSdkDiscoveredModelsIfStale(context.logger);
+      void refreshSdkDiscoveredModelsIfStale(context.logger, context.providerDirs.claude);
 
       const sdkModels = getSdkDiscoveredModels();
       const builtins = getBuiltinProviderModels("claude");

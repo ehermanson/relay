@@ -246,6 +246,7 @@ import { searchWorkspaceEntries, type WorkspaceEntry } from "#core/workspace-ent
 import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
+import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 // =============================================================================
 // Re-exports
@@ -1469,7 +1470,7 @@ export class InstanceManager extends EventEmitter {
     this.baseConfig = config;
     const home = homedir();
     this.providerDirs = {
-      claude: config.providerDirs.claude ?? join(home, ".claude"),
+      claude: config.providerDirs.claude ?? resolveClaudeConfigDir(),
       codex: config.providerDirs.codex ?? join(home, ".codex"),
     };
     this.db = new SessionDB(config.dbPath, config.logger);
@@ -1838,12 +1839,15 @@ export class InstanceManager extends EventEmitter {
     try {
       this._sdkQueryFn = (await resolveQueryFn()) as typeof this._sdkQueryFn;
       this.baseConfig.logger.info("[InstanceManager] Agent SDK provider initialized");
+      this.baseConfig.logger.info(
+        `[InstanceManager] Claude config dir: ${this.providerDirs.claude}`,
+      );
       // Spawn a short-lived subprocess to discover models + account info from
       // the SDK so both are available immediately (not just after the first
       // session). Fire-and-forget — pre-warm is best-effort; builtins are the
       // fallback for models, and account info remains null until a real
       // session runs if the pre-warm fails.
-      void prewarmSdk(this.baseConfig.logger).then(() => {
+      void prewarmSdk(this.baseConfig.logger, this.providerDirs.claude).then(() => {
         // Promote pre-warmed Claude account info into the provider global
         // state so the UI's global settings page sees plan/email at boot.
         void this.ensureProviderGlobalState("claude");
@@ -4833,7 +4837,7 @@ export class InstanceManager extends EventEmitter {
     }
 
     // Skills
-    const skills = discoverSkills(directory || undefined);
+    const skills = discoverSkills(directory || undefined, { claudeDir: this.providerDirs.claude });
 
     const resolvedProjectId =
       registeredProject?.id ??

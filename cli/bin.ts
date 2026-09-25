@@ -10,6 +10,7 @@ import { createRelay } from "#server/index.js";
 import { startTunnel, stopTunnel } from "#server/tunnel.js";
 import { UpdateManager } from "#server/update-manager.js";
 import { runTasksCommand } from "#cli/tasks.js";
+import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 const CLI_CHILD_MODE_ENV_VAR = "RELAY_CLI_CHILD_MODE";
 const CLI_UPDATE_RESTART_EXIT_CODE = 75;
@@ -170,7 +171,7 @@ async function startServer(cliArgs: string[]): Promise<number> {
     ...(process.env.SESSION_FILE ? { sessionFile: process.env.SESSION_FILE } : {}),
     ...(process.env.DB_PATH ? { dbPath: process.env.DB_PATH } : {}),
     providerDirs: {
-      claude: process.env.CLAUDE_DIR ?? join(home, ".claude"),
+      claude: resolveClaudeConfigDir(),
       codex: process.env.CODEX_DIR ?? join(home, ".codex"),
     },
     updateManager,

@@ -366,6 +366,13 @@ Subagents/teammates are represented through one shared contract in `types.ts`: `
 - Every `codex app-server` spawn must build its environment with `buildCodexSpawnEnv()` (`server/core/providers/codex-cli.ts`), never raw `process.env`. It inherits the process env and, when unset, injects `CODEX_CODE_MODE_HOST_PATH` pointing at the `codex-code-mode-host` binary bundled inside ChatGPT.app. Codex "code mode" shells out to that helper but it isn't on PATH, so without this injection `turn/start` fails with `failed to spawn code-mode host ...: No such file or directory`. A user-provided `CODEX_CODE_MODE_HOST_PATH` always wins.
 - `resolveApprovalPolicy()` maps `full-access` → `never`, `writes-only` → `writes`, and everything else → `on-request`. Codex dropped the old `on-failure` variant; valid values include `untrusted`/`on-request`/`granular`/`never`/`writes` (with `writes` requiring CLI >= 0.144.0).
 
+### Claude Config Dir (Accounts)
+
+- **One resolution, used everywhere.** `resolveClaudeConfigDir()` (`server/core/providers/claude-cli.ts`) is the only source for the Claude config dir: `CLAUDE_DIR` > `CLAUDE_CONFIG_DIR` > `~/.claude`. It feeds `providerDirs.claude` (transcript scan, watchers, plans, external-session pairing, user skills, `.claude.json`) **and** every CLI spawn through `buildClaudeSpawnEnv(configDir)`, which pins `CLAUDE_CONFIG_DIR` in the child env (SDK sessions, prewarm/model probes, the legacy process, `claude mcp add`). Never spawn `claude` with raw `process.env` and never `join(homedir(), ".claude")` directly.
+- Why: Claude Code keeps one login per config dir, so a machine with a personal and an enterprise account switches with `CLAUDE_CONFIG_DIR`. Resolving the dir independently on the read and spawn sides made Relay pair terminal chats from one account while starting new chats under the other.
+- `buildClaudeSpawnEnv` **removes** an inherited `CLAUDE_CONFIG_DIR` when the target is `~/.claude` rather than setting it explicitly — an explicit value changes how the CLI keys its stored credentials, so the default must stay the CLI's own default.
+- Per-project/per-chat account selection in the UI is a tracked follow-up (task `f15d7a97`); today the dir is fixed per server process.
+
 ### Model Discovery
 
 - For **every** provider, the provider-discovered model list is canonical: new models surface in discovery order without a code change. `BUILTIN_PROVIDER_MODELS` (`provider-catalog.ts`) is offline fallback + metadata enrichment only — a new model release must **not** require a catalog bump.

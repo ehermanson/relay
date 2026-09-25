@@ -14,7 +14,11 @@
  */
 
 import { EventEmitter } from "events";
-import { findClaudeBinary } from "#core/providers/claude-cli.js";
+import {
+  buildClaudeSpawnEnv,
+  findClaudeBinary,
+  resolveClaudeConfigDir,
+} from "#core/providers/claude-cli.js";
 import type {
   OutputMessage,
   ExitMessage,
@@ -380,6 +384,12 @@ export interface ClaudeSdkSessionOptions {
   queryFn?: QueryFn;
   /** Structured bootstrap context delivered once when the session is created */
   bootstrapContext?: ProviderSessionBootstrap;
+  /**
+   * Claude config dir the CLI must run against (providerDirs.claude). Pinned
+   * via CLAUDE_CONFIG_DIR so the session writes its transcript where Relay
+   * indexes it, whatever the server process inherited.
+   */
+  configDir?: string;
 }
 
 export interface ClaudeSdkSession extends ProviderSession {
@@ -583,12 +593,18 @@ export async function resolveQueryFn(): Promise<QueryFn> {
  * session is a possible future optimisation but adds complexity around cwd
  * compatibility and canUseTool late-binding.
  */
-export async function prewarmSdk(logger: CoreConfig["logger"]): Promise<void> {
+export async function prewarmSdk(
+  logger: CoreConfig["logger"],
+  configDir: string = resolveClaudeConfigDir(),
+): Promise<void> {
   if (sdkDiscoveredModels && sdkDiscoveredAccountInfo) return; // already discovered
   if (!cachedStartupFn) return;
   try {
     const warm = await cachedStartupFn({
-      options: { pathToClaudeCodeExecutable: resolveClaudeExecutablePath() },
+      options: {
+        pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
+        env: buildClaudeSpawnEnv(configDir) as Record<string, string | undefined>,
+      },
       initializeTimeoutMs: 30_000,
     });
     logger.info("[SdkSession] Pre-warmed Claude Code subprocess via startup()");
@@ -666,14 +682,20 @@ export function getSdkDiscoveredModels(): SdkModelInfo[] | null {
  * server-side (no SDK/CLI update needed), so without this a server running
  * across a release date serves a stale list until restart.
  */
-export function refreshSdkDiscoveredModelsIfStale(logger: CoreConfig["logger"]): Promise<void> {
+export function refreshSdkDiscoveredModelsIfStale(
+  logger: CoreConfig["logger"],
+  configDir: string = resolveClaudeConfigDir(),
+): Promise<void> {
   if (!cachedStartupFn) return Promise.resolve();
   if (Date.now() - sdkModelsProbedAt < SDK_MODELS_REFRESH_INTERVAL_MS) return Promise.resolve();
   if (sdkModelsRefreshInFlight) return sdkModelsRefreshInFlight;
   sdkModelsRefreshInFlight = (async () => {
     try {
       const warm = await cachedStartupFn({
-        options: { pathToClaudeCodeExecutable: resolveClaudeExecutablePath() },
+        options: {
+          pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
+          env: buildClaudeSpawnEnv(configDir) as Record<string, string | undefined>,
+        },
         initializeTimeoutMs: 30_000,
       });
       const promptQueue = new PromptQueue();
@@ -827,7 +849,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       effort: options.reasoningEffort as SDKOptions["effort"],
       includePartialMessages: true,
       forwardSubagentText: true,
-      env: process.env as Record<string, string | undefined>,
+      env: buildClaudeSpawnEnv(options.configDir ?? resolveClaudeConfigDir()) as Record<
+        string,
+        string | undefined
+      >,
       pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
     };
     if (options.fastMode) {
@@ -1482,7 +1507,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   /** Map the SDK's background-task lifecycle events onto agent_update. */
   private handleTaskEvent(subtype: string, msg: Record<string, unknown>): void {
     const taskId = typeof msg.task_id === "string" ? msg.task_id : undefined;
-    const toolUseId = typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
+    const toolUseId =
+      typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
     const agentKey = this.resolveTaskAgentKey(msg);
     if (!agentKey) return;
 
@@ -1532,7 +1558,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             ? msg.last_tool_name
             : undefined;
         if (summary ?? lastTool) patch.lastActivity = summary ?? lastTool;
-        if (typeof msg.description === "string" && msg.description && !this.agents.get(agentKey)?.description) {
+        if (
+          typeof msg.description === "string" &&
+          msg.description &&
+          !this.agents.get(agentKey)?.description
+        ) {
           patch.description = msg.description;
         }
         if (typeof msg.subagent_type === "string" && msg.subagent_type) {
@@ -2222,7 +2252,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     const agentKey = frameAgentKey(msg);
     const content = (message as Record<string, unknown>).content;
     const blocks: unknown[] =
-      typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+      typeof content === "string"
+        ? [{ type: "text", text: content }]
+        : Array.isArray(content)
+          ? content
+          : [];
     const textParts: string[] = [];
     for (const block of blocks) {
       if (!block || typeof block !== "object" || Array.isArray(block)) continue;

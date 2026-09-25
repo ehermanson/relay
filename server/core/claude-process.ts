@@ -37,6 +37,7 @@ import {
   FILE_WRITE_TOOLS,
 } from "#core/tools.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
+import { buildClaudeSpawnEnv, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 // =============================================================================
 // Types
@@ -478,7 +479,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
 
     this.currentProcess = spawn(this.claudePath, args, {
       cwd: this.cwd,
-      env: process.env,
+      env: buildClaudeSpawnEnv(this.config.providerDirs.claude ?? resolveClaudeConfigDir()),
       stdio: ["pipe", "pipe", "pipe"],
     });
 

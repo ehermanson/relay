@@ -12,6 +12,7 @@ import { readdirSync, existsSync, statSync, openSync, readSync, closeSync } from
 import { join } from "path";
 import { homedir } from "os";
 import type { ProviderKind, SkillInfo } from "#core/types.js";
+import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 const SKILL_FILENAME = "SKILL.md";
 const FRONTMATTER_FENCE = "---";
@@ -165,8 +166,13 @@ function scanDirectory(
  * @param projectDir - Optional project directory for project-scoped skills.
  * @returns Deduplicated list of skills with merged provider information.
  */
-export function discoverSkills(projectDir?: string): SkillInfo[] {
+export function discoverSkills(
+  projectDir?: string,
+  options: { claudeDir?: string } = {},
+): SkillInfo[] {
   const home = homedir();
+  // User-level Claude skills live in the config dir, which may not be ~/.claude.
+  const claudeDir = options.claudeDir ?? resolveClaudeConfigDir();
   const seen = new Map<string, RawSkill>();
 
   // Add skills, merging providers when the same name appears in multiple directories.
@@ -195,7 +201,7 @@ export function discoverSkills(projectDir?: string): SkillInfo[] {
   }
 
   // 2. User-level Claude skills
-  addSkills(scanDirectory(join(home, ".claude", "skills"), "user", ["claude"]));
+  addSkills(scanDirectory(join(claudeDir, "skills"), "user", ["claude"]));
 
   // 3. User-level Codex skills (includes .system/ as "system" source)
   addSkills(scanDirectory(join(home, ".codex", "skills"), "user", ["codex"]));
