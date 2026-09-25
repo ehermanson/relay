@@ -108,7 +108,8 @@ interface AccountInfo {
   subscriptionType?: string;
   tokenSource?: string;
   apiKeySource?: string;
-  apiProvider?: "firstParty" | "bedrock" | "vertex" | "foundry";
+  /** Active API backend; OAuth identity fields only apply to "firstParty". */
+  apiProvider?: string;
 }
 
 /**
@@ -772,11 +773,43 @@ function accountIdentityCacheKey(configDir: string): string {
 }
 
 /** Map the SDK's AccountInfo onto Relay's account status (same fields fetchAccountInfo emits). */
-function accountInfoToStatus(info: AccountInfo): ProviderAccountStatus | undefined {
+const API_PROVIDER_LABELS: Record<string, string> = {
+  bedrock: "Amazon Bedrock",
+  vertex: "Google Vertex AI",
+  foundry: "Microsoft Foundry",
+  anthropicAws: "Anthropic on AWS",
+  anthropicGoogleCloud: "Anthropic on Google Cloud",
+  mantle: "Mantle",
+  gateway: "Enterprise gateway",
+};
+
+/**
+ * The one mapping from the SDK's accountInfo() to Relay's account status —
+ * used by prewarm promotion, live sessions and profile probes alike.
+ *
+ * Only a claude.ai OAuth login reports email/organization/subscriptionType.
+ * Enterprise gateways, API keys / apiKeyHelper and third-party backends
+ * report none of those, yet are signed in — treating "no email" as "not
+ * signed in" mislabelled a working enterprise account. So any auth signal
+ * counts, and the label describes the auth path when there is no org name.
+ */
+export function accountInfoToStatus(
+  info: AccountInfo | null | undefined,
+): ProviderAccountStatus | undefined {
+  if (!info) return undefined;
   const account: ProviderAccountStatus = {};
   if (info.subscriptionType) account.plan = info.subscriptionType;
   if (info.email) account.email = info.email;
   if (info.organization) account.label = info.organization;
+  if (!account.label) {
+    if (info.apiProvider && info.apiProvider !== "firstParty") {
+      account.label = API_PROVIDER_LABELS[info.apiProvider] ?? info.apiProvider;
+    } else if (info.apiKeySource) {
+      account.label = `API key (${info.apiKeySource})`;
+    } else if (info.tokenSource && Object.keys(account).length === 0) {
+      account.label = `Signed in via ${info.tokenSource}`;
+    }
+  }
   return Object.keys(account).length > 0 ? account : undefined;
 }
 
@@ -859,9 +892,14 @@ export function probeClaudeAccountIdentity(
       const promptQueue = new PromptQueue();
       const handle = warm.query(promptQueue);
       try {
-        const identity = accountInfoToStatus(await handle.accountInfo());
+        const raw = await handle.accountInfo();
+        const identity = accountInfoToStatus(raw);
         if (!identity) {
-          logger.debug(`[SdkSession] account probe for ${configDir}: no identity reported`);
+          // Surface the raw payload: a signed-in account we fail to map is a
+          // Relay bug, and this line is the only way to see what the CLI said.
+          logger.info(
+            `[SdkSession] account probe for ${configDir}: no identity reported (accountInfo=${JSON.stringify(raw)})`,
+          );
           return finish({ probeState: "error", probeError: "Not signed in", identity: undefined });
         }
         logger.info(
@@ -2081,12 +2119,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         // doesn't go stale (e.g. if plan tier changes mid-day).
         sdkDiscoveredAccountInfo = info;
 
-        const account: Record<string, unknown> = {};
-        if (info.subscriptionType) account.plan = info.subscriptionType;
-        if (info.email) account.email = info.email;
-        if (info.organization) account.label = info.organization;
-
-        if (Object.keys(account).length === 0) return;
+        const account = accountInfoToStatus(info);
+        if (!account) return;
 
         this.emit("systemEvent", {
           type: "system_event",

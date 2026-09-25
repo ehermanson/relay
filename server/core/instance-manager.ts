@@ -34,6 +34,7 @@ import type { ProviderSession } from "#core/provider.js";
 import {
   resolveQueryFn,
   prewarmSdk,
+  accountInfoToStatus,
   getSdkDiscoveredAccountInfo,
   getSdkDiscoveredModels,
   getSdkDiscoveredRateLimits,
@@ -3018,10 +3019,8 @@ export class InstanceManager extends EventEmitter {
           // available — this means the UI sees the user's plan at boot
           // instead of having to wait for the first managed session.
           const accountInfo = getSdkDiscoveredAccountInfo();
-          const accountPatch: import("#core/types.js").ProviderAccountStatus = {};
-          if (accountInfo?.subscriptionType) accountPatch.plan = accountInfo.subscriptionType;
-          if (accountInfo?.email) accountPatch.email = accountInfo.email;
-          if (accountInfo?.organization) accountPatch.label = accountInfo.organization;
+          const accountPatch: import("#core/types.js").ProviderAccountStatus =
+            accountInfoToStatus(accountInfo) ?? {};
 
           // Rate limits: prefer live `rate_limit_event` data accumulated by
           // active sessions, falling back to the experimental get_usage
