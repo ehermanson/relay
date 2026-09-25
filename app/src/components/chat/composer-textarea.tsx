@@ -67,7 +67,10 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
     useLayoutEffect(() => {
       const el = textareaRef.current;
       if (!el) return;
-      el.style.height = "0px";
+      // "auto", not "0px": collapsing a focused textarea to zero height in the
+      // same frame as a programmatic clear is one way to leave WebKit painting
+      // the old text over the placeholder.
+      el.style.height = "auto";
       el.style.height = `${el.scrollHeight}px`;
     }, [value, className]);
 
@@ -76,6 +79,24 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
       if (caret != null) applyCaret(caret);
       if (value !== lastReportedRef.current) {
         lastReportedRef.current = value;
+        const el = textareaRef.current;
+        if (el) {
+          // Programmatic change (reset after send, mention insert, draft
+          // restore). On iOS the send button doesn't blur the field, so the
+          // clear lands on a focused textarea that may still hold marked
+          // autocorrect text; WebKit has been seen leaving the old text
+          // painted over the placeholder. Re-assert the value and caret on the
+          // node to force a text-layer update, and next frame put back the
+          // programmatic value if iOS re-inserted marked text without an input
+          // event (a real keystroke in between updates lastReportedRef).
+          if (el.value !== value) el.value = value;
+          if (caret == null && document.activeElement === el) {
+            el.setSelectionRange(value.length, value.length);
+          }
+          requestAnimationFrame(() => {
+            if (el.value !== lastReportedRef.current) el.value = lastReportedRef.current;
+          });
+        }
         onChangeRef.current(value, caret ?? value.length);
       }
       if (caret != null) onSelectionAppliedRef.current?.();
