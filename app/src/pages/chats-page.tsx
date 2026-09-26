@@ -21,7 +21,7 @@ import {
   formatModel,
   formatTimeAgo,
   formatTokens,
-  getChatRecencyTimestamp,
+  getChatSortTimestamp,
   getDisplaySessionStats,
 } from "@/lib/utils";
 import { StatusDot } from "@/components/ui/status-dot";
@@ -38,7 +38,7 @@ function SessionCard({
   isMobile: boolean;
 }) {
   const route = getInstanceChatRoute(instance);
-  const recencyAt = getChatRecencyTimestamp(instance);
+  const recencyAt = getChatSortTimestamp(instance);
   const displayStats = instance.stats
     ? getDisplaySessionStats(instance.provider, instance.stats)
     : null;

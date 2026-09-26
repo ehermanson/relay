@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareChatListOrder,
   getContextWindowUsage,
   getDisplaySessionStats,
   getDisplayTokenBreakdown,
@@ -68,6 +69,29 @@ describe("isChatDone", () => {
     expect(isChatDone({ lastActivityAt: 9999 }, "completed")).toBe(true);
     expect(isChatDone({ lastActivityAt: 9999 }, "archived")).toBe(true);
     expect(isChatDone({ lastActivityAt: 9999 }, "active")).toBe(false);
+  });
+});
+
+describe("compareChatListOrder", () => {
+  it("orders by last message, ignoring newer tool/thinking activity", () => {
+    const toolBusy = {
+      lastActivityAt: 5000,
+      lastMessage: { text: "a", from: "assistant" as const, timestamp: 1000 },
+    };
+    const messaged = {
+      lastActivityAt: 2000,
+      lastMessage: { text: "b", from: "user" as const, timestamp: 2000 },
+    };
+    expect([toolBusy, messaged].sort(compareChatListOrder)).toEqual([messaged, toolBusy]);
+  });
+
+  it("falls back to lastActivityAt for chats with no message yet", () => {
+    const fresh = { lastActivityAt: 3000 };
+    const old = {
+      lastActivityAt: 2000,
+      lastMessage: { text: "b", from: "user" as const, timestamp: 2000 },
+    };
+    expect([old, fresh].sort(compareChatListOrder)).toEqual([fresh, old]);
   });
 });
 

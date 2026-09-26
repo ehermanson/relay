@@ -8,7 +8,7 @@
  */
 
 import { isAttachedReviewInstance } from "@/lib/review-session";
-import { getChatRecencyTimestamp, isChatDone } from "@/lib/utils";
+import { getChatRecencyTimestamp, getChatSortTimestamp, isChatDone } from "@/lib/utils";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
 
 interface InboxEntryBase {
@@ -124,7 +124,7 @@ export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEnt
         instancesBySpace.set(space.id, members);
         continue;
       }
-      const recencyAt = getChatRecencyTimestamp(instance);
+      const recencyAt = getChatSortTimestamp(instance);
       entries.push({
         id: `chat:${instance.id}`,
         kind: "chat",
@@ -149,7 +149,7 @@ export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEnt
         (instance) => instance.status === "processing" && !attentionIds.has(instance.id),
       ).length;
       const memberRecency = instances.reduce(
-        (latest, instance) => Math.max(latest, getChatRecencyTimestamp(instance)),
+        (latest, instance) => Math.max(latest, getChatSortTimestamp(instance)),
         0,
       );
       entries.push({

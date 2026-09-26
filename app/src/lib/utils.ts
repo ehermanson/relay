@@ -126,14 +126,27 @@ export function getChatRecencyTimestamp(
   return Math.max(instance.lastMessage?.timestamp ?? 0, instance.lastActivityAt ?? 0);
 }
 
-/** Canonical chat-list order: pinned chats first, then most recent activity. */
+/**
+ * Sort key for chat lists: the last user/assistant message, falling back to
+ * `lastActivityAt` only for chats with no message yet. Tool calls and thinking
+ * bump `lastActivityAt`, and letting them reorder the list made working chats
+ * jump to the top on every step — lists move on messages, not activity.
+ * Done/stale logic still uses `getChatRecencyTimestamp`.
+ */
+export function getChatSortTimestamp(
+  instance: Pick<InstanceInfo, "lastMessage" | "lastActivityAt">,
+): number {
+  return instance.lastMessage?.timestamp ?? instance.lastActivityAt ?? 0;
+}
+
+/** Canonical chat-list order: pinned chats first, then most recent message. */
 export function compareChatListOrder(
   a: Pick<InstanceInfo, "pinned" | "lastMessage" | "lastActivityAt">,
   b: Pick<InstanceInfo, "pinned" | "lastMessage" | "lastActivityAt">,
 ): number {
   const pinnedDelta = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
   if (pinnedDelta !== 0) return pinnedDelta;
-  return getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a);
+  return getChatSortTimestamp(b) - getChatSortTimestamp(a);
 }
 
 /**

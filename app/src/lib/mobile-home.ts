@@ -1,5 +1,5 @@
 import { buildInboxEntries, type InboxEntry, type InboxSourceGroup } from "@/lib/inbox";
-import { getChatRecencyTimestamp } from "@/lib/utils";
+import { getChatSortTimestamp } from "@/lib/utils";
 import { isAttachedReviewInstance } from "@/lib/review-session";
 import type { InstanceInfo } from "@shared/types";
 
@@ -25,10 +25,7 @@ export function homeActivity(instances: readonly InstanceInfo[]): HomeActivity {
     (chat) => chat.status === "processing" && !attention.includes(chat),
   );
   return {
-    recencyAt: eligible.reduce(
-      (latest, chat) => Math.max(latest, getChatRecencyTimestamp(chat)),
-      0,
-    ),
+    recencyAt: eligible.reduce((latest, chat) => Math.max(latest, getChatSortTimestamp(chat)), 0),
     attention: attention.length,
     running: running.length,
   };
@@ -46,7 +43,7 @@ export function homeEntryChat(
   if (entry.kind === "chat") return entry.instance;
   return (
     entry.instances.find((instance) => instance.id === destinationChatId) ??
-    [...entry.instances].sort((a, b) => getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a))[0]
+    [...entry.instances].sort((a, b) => getChatSortTimestamp(b) - getChatSortTimestamp(a))[0]
   );
 }
 

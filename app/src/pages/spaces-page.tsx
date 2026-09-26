@@ -19,7 +19,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { fetchProjectChats, fetchAllSpaces } from "@/lib/api";
 import { getInstanceChatRoute, instanceMatchesProject } from "@/lib/project-route";
 import { getResolvedSpaceId } from "@/lib/space-membership";
-import { formatTimeAgo, getChatRecencyTimestamp, instanceStatusVariant } from "@/lib/utils";
+import { formatTimeAgo, getChatSortTimestamp, instanceStatusVariant } from "@/lib/utils";
 import { PageShell } from "@/components/ui/page-shell";
 import { StatusDot } from "@/components/ui/status-dot";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
@@ -40,7 +40,7 @@ function SpaceCard({
   const isClosed = space.status === "completed" || space.status === "archived";
   const lastActivity = Math.max(
     space.lastActivityAt || 0,
-    ...chats.map((chat) => getChatRecencyTimestamp(chat)),
+    ...chats.map((chat) => getChatSortTimestamp(chat)),
   );
 
   return (
@@ -135,9 +135,9 @@ function SpaceCard({
                   )}
                 </div>
 
-                {!isMobile && getChatRecencyTimestamp(chat) > 0 && (
+                {!isMobile && getChatSortTimestamp(chat) > 0 && (
                   <div className="shrink-0 text-[0.6875rem] text-muted">
-                    {formatTimeAgo(getChatRecencyTimestamp(chat))}
+                    {formatTimeAgo(getChatSortTimestamp(chat))}
                   </div>
                 )}
               </Link>
@@ -257,7 +257,7 @@ export function SpacesPage() {
     projectInstancesMap.set(inst.id, inst);
   }
   const projectInstances = Array.from(projectInstancesMap.values()).sort(
-    (a, b) => getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a),
+    (a, b) => getChatSortTimestamp(b) - getChatSortTimestamp(a),
   );
 
   // Group chats by space
@@ -270,7 +270,7 @@ export function SpacesPage() {
     chatsBySpace.set(resolvedSpaceId, chats);
   }
   for (const chats of chatsBySpace.values()) {
-    chats.sort((a, b) => getChatRecencyTimestamp(b) - getChatRecencyTimestamp(a));
+    chats.sort((a, b) => getChatSortTimestamp(b) - getChatSortTimestamp(a));
   }
 
   const enrichSpace = (space: SpaceInfo): EnrichedSpace => ({
@@ -278,7 +278,7 @@ export function SpacesPage() {
     chats: chatsBySpace.get(space.id) ?? [],
     lastActivity: Math.max(
       space.lastActivityAt || 0,
-      ...(chatsBySpace.get(space.id) ?? []).map((chat) => getChatRecencyTimestamp(chat)),
+      ...(chatsBySpace.get(space.id) ?? []).map((chat) => getChatSortTimestamp(chat)),
     ),
   });
 

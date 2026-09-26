@@ -9,7 +9,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import type { TerminalScope } from "@shared/types";
 import { useSidebarActions } from "../../context/sidebar-actions-context";
 import { getInstanceProjectRouteId } from "@/lib/project-route";
-import { formatTimeAgo, getChatRecencyTimestamp } from "@/lib/utils";
+import { formatTimeAgo, getChatSortTimestamp } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
@@ -82,7 +82,7 @@ export function SidebarItem({
   };
 
   const unread = useUnreadStore((s) => selectHasUnread(s, instance.id, instance.lastActivityAt));
-  const recencyAt = getChatRecencyTimestamp(instance);
+  const recencyAt = getChatSortTimestamp(instance);
 
   // For non-external sessions the indicator mounts/unmounts; fade it out gracefully.
   const showIndicator = unread || !!instance.external;

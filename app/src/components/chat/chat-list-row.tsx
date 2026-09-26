@@ -6,7 +6,7 @@ import {
   deriveInstanceStatusPresentation,
   formatModel,
   formatTimeAgo,
-  getChatRecencyTimestamp,
+  getChatSortTimestamp,
 } from "@/lib/utils";
 import type { InstanceInfo } from "@shared/types";
 
@@ -25,7 +25,7 @@ export function ChatListRow({
   spaceLabel?: string;
 }) {
   const route = getInstanceChatRoute(instance);
-  const recencyAt = getChatRecencyTimestamp(instance);
+  const recencyAt = getChatSortTimestamp(instance);
   const model = instance.stats?.model;
   const showSecondRow = !!spaceLabel || (showModel && !!model);
 
