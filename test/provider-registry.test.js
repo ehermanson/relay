@@ -2,7 +2,7 @@
 import "./test-env.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -161,6 +161,45 @@ describe("provider registry", () => {
       workingDirectory: "/tmp/project",
     });
     assert.equal(claudePath, join("/tmp/.claude", "projects", "-tmp-project", "session-123.jsonl"));
+  });
+
+  it("never pairs a new Claude session with another chat's transcript", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "relay-provider-registry-"));
+    const claudeDir = join(tempDir, ".claude");
+    const projectDir = join(claudeDir, "projects", "-tmp-project");
+    mkdirSync(projectDir, { recursive: true });
+    // A concurrent chat's transcript is the newest file; ours isn't flushed yet.
+    writeFileSync(join(projectDir, "other-session.jsonl"), "{}\n");
+
+    const captured = getProviderDriver("claude").captureManagedSession({
+      proc: { getRuntimeBinding: () => ({ providerSessionId: "new-session" }) },
+      workingDirectory: "/tmp/project",
+      providerDirs: { claude: claudeDir, codex: join(tempDir, ".codex") },
+    });
+
+    assert.deepEqual(captured, {
+      sessionId: "new-session",
+      transcriptPath: join(projectDir, "new-session.jsonl"),
+    });
+  });
+
+  it("ignores a stored Claude transcript path that names a different session", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "relay-provider-registry-"));
+    const claudeDir = join(tempDir, ".claude");
+    const projectDir = join(claudeDir, "projects", "-tmp-project");
+    mkdirSync(projectDir, { recursive: true });
+    const foreign = join(projectDir, "other-session.jsonl");
+    writeFileSync(foreign, "{}\n");
+    writeFileSync(join(projectDir, "my-session.jsonl"), "{}\n");
+
+    const resolved = getProviderDriver("claude").resolveManagedTranscriptPath({
+      providerDirs: { claude: claudeDir, codex: join(tempDir, ".codex") },
+      sessionId: "my-session",
+      transcriptPath: foreign,
+      workingDirectory: "/tmp/project",
+    });
+
+    assert.equal(resolved, join(projectDir, "my-session.jsonl"));
   });
 
   it("finds Claude transcript paths for dotted relay worktree directories", () => {

@@ -726,17 +726,25 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       return path ? readAgentModelFromTranscript(path, "claude") : undefined;
     },
     resolveManagedTranscriptPath(options) {
+      const derivedPath =
+        options.sessionId && options.workingDirectory
+          ? join(
+              resolveClaudeProjectDir(options.providerDirs.claude, options.workingDirectory),
+              `${options.sessionId}.jsonl`,
+            )
+          : undefined;
       if (options.transcriptPath && existsSync(options.transcriptPath)) {
-        return options.transcriptPath;
+        // A Claude transcript is named `<sessionId>.jsonl`. A stored path naming
+        // another session while this session's own file exists is a mispairing
+        // (see captureManagedSession) — repair it instead of reading another
+        // chat's transcript.
+        const namesOtherSession =
+          options.sessionId && basename(options.transcriptPath) !== `${options.sessionId}.jsonl`;
+        if (!namesOtherSession || !derivedPath || !existsSync(derivedPath)) {
+          return options.transcriptPath;
+        }
       }
-      if (!options.sessionId || !options.workingDirectory) {
-        return options.transcriptPath;
-      }
-      const projectDir = resolveClaudeProjectDir(
-        options.providerDirs.claude,
-        options.workingDirectory,
-      );
-      return join(projectDir, `${options.sessionId}.jsonl`);
+      return derivedPath ?? options.transcriptPath;
     },
     captureManagedSession(context) {
       const binding = context.binding ?? context.proc.getRuntimeBinding();
@@ -749,11 +757,15 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
         return runtimeSessionId ? { sessionId: runtimeSessionId } : null;
       }
 
+      // With a known session id the transcript path is determined, even if
+      // the CLI hasn't flushed the file yet. Never fall through to the
+      // newest-file guess: with concurrent chats in one project that is
+      // another chat's transcript.
       if (runtimeSessionId) {
-        const jsonlPath = join(projectDir, `${runtimeSessionId}.jsonl`);
-        if (existsSync(jsonlPath)) {
-          return { sessionId: runtimeSessionId, transcriptPath: jsonlPath };
-        }
+        return {
+          sessionId: runtimeSessionId,
+          transcriptPath: join(projectDir, `${runtimeSessionId}.jsonl`),
+        };
       }
 
       const files = readdirSync(projectDir)
