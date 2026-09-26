@@ -4,6 +4,8 @@ const NEAR_BOTTOM_PX = 64;
 const SHOW_SCROLL_TO_BOTTOM_PX = 500;
 const FORCE_SCROLL_MAX_FRAMES = 48;
 const FORCE_SCROLL_STABLE_FRAMES = 3;
+/** After a programmatic jump, ignore "near bottom" for this long (see detachFromBottom). */
+const NAVIGATION_HOLD_MS = 600;
 
 export function useAutoScroll<T extends HTMLElement>(options?: { onUserScroll?: () => void }) {
   const ref = useRef<T>(null);
@@ -13,6 +15,7 @@ export function useAutoScroll<T extends HTMLElement>(options?: { onUserScroll?: 
   const stickToBottom = useRef(true);
   const forceScrollRunId = useRef(0);
   const forceScrollUntil = useRef(0);
+  const navigationHoldUntil = useRef(0);
   // "Framed" = we've parked a specific turn near the top of the viewport and
   // want the answer to stream into the space below WITHOUT auto-following the
   // live edge. Stays on until the reader actually interacts (wheel/touch/etc).
@@ -110,7 +113,7 @@ export function useAutoScroll<T extends HTMLElement>(options?: { onUserScroll?: 
       const nearBottom = remainingDistance <= NEAR_BOTTOM_PX;
       const forcingBottom = performance.now() < forceScrollUntil.current;
 
-      if (nearBottom && !framed.current) {
+      if (nearBottom && !framed.current && performance.now() >= navigationHoldUntil.current) {
         stickToBottom.current = true;
       } else if (!forcingBottom && userInteracting.current && scrollTop < lastScrollTop - 1) {
         // Only detach when the user actually scrolled (wheel / touch / pointer).
@@ -129,6 +132,7 @@ export function useAutoScroll<T extends HTMLElement>(options?: { onUserScroll?: 
 
     const onUserIntent = () => {
       cancelForcedScroll();
+      navigationHoldUntil.current = 0;
       // Real interaction ends framing — normal stick-to-bottom logic resumes,
       // so scrolling back to the live edge re-engages following.
       if (framed.current) {
@@ -180,8 +184,12 @@ export function useAutoScroll<T extends HTMLElement>(options?: { onUserScroll?: 
   // Let programmatic navigation (timeline scrub, TOC jump) detach from
   // auto-scroll without faking a user interaction.  The user can re-engage
   // by scrolling near the bottom or clicking "Jump to latest".
+  // A jump that starts at the live edge fires its first scroll events inside
+  // the near-bottom zone; without the hold those re-engage following and the
+  // next virtualizer remeasure yanks the reader straight back down.
   const detachFromBottom = useCallback(() => {
     stickToBottom.current = false;
+    navigationHoldUntil.current = performance.now() + NAVIGATION_HOLD_MS;
     cancelForcedScroll();
   }, [cancelForcedScroll]);
 

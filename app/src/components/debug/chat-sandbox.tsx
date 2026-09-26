@@ -782,11 +782,69 @@ interface Scene {
   build: () => ChatItem[];
 }
 
+// Long conversations for the chat rail (left-gutter minimap). Turn lengths vary
+// so the segments do too; the rail only renders on desktop widths.
+const RAIL_PROMPTS = [
+  "Add a health endpoint to the server",
+  "Why does the sidebar flicker on reconnect?",
+  "Rename Space → Workspace everywhere in the UI copy",
+  "Write tests for the outbox drain",
+  "[Image: source: /tmp/screenshot.png]\nWhat's wrong with this layout?",
+  "Make the diff drawer remember its width",
+  "ok",
+  "Refactor buildRows so tool containers can nest",
+  "Explain the compaction boundary logic",
+  "Ship it",
+];
+
+function buildLongConversation(
+  turns: number,
+  opts: { compactionAt?: number; modelSwitchAt?: number } = {},
+): ChatItem[] {
+  const out: ChatItem[] = [];
+  const start = Date.now() - turns * 7 * 60_000;
+  for (let i = 0; i < turns; i++) {
+    const ts = start + i * 7 * 60_000;
+    if (opts.compactionAt === i) out.push({ kind: "compact-boundary", timestamp: ts - 1000 });
+    if (opts.modelSwitchAt === i) {
+      out.push({
+        kind: "model-switch",
+        fromModelLabel: "Sonnet 5",
+        toModelLabel: "Opus 5.5",
+        timestamp: ts - 500,
+      });
+    }
+    out.push({ kind: "user", text: RAIL_PROMPTS[i % RAIL_PROMPTS.length], timestamp: ts });
+    // Every third turn is a long answer, so segment heights differ visibly.
+    const paragraphs = i % 3 === 0 ? 6 : 1;
+    out.push({
+      kind: "assistant",
+      text: Array.from(
+        { length: paragraphs },
+        (_, p) =>
+          `Turn ${i + 1}, paragraph ${p + 1}. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.`,
+      ).join("\n\n"),
+      timestamp: ts + 30_000,
+    });
+  }
+  return out;
+}
+
 const SCENES: Scene[] = [
   {
     label: "Empty chat",
     description: "Clear all messages and reset to blank state",
     build: () => [],
+  },
+  {
+    label: "Long conversation (40 turns)",
+    description: "Chat rail: hover the left gutter, drag to scrub, click a label",
+    build: () => buildLongConversation(40),
+  },
+  {
+    label: "Long conversation · compaction + model switch",
+    description: "Chat rail ticks. Apply the Processing preset to see the live sweep",
+    build: () => buildLongConversation(24, { compactionAt: 10, modelSwitchAt: 17 }),
   },
   {
     label: "Simple conversation",

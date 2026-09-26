@@ -5,8 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AgentCard } from "@/components/chat/agent-card";
 import { AgentCardsProvider } from "@/components/chat/agent-card-context";
 import { AgentNote } from "@/components/chat/agent-note";
-import { ChatTimeline } from "@/components/chat/chat-timeline";
-import { ChatTOC } from "@/components/chat/chat-toc";
+import { ChatRail } from "@/components/chat/chat-rail";
 import { AgentMessage } from "@/components/chat/agent-message";
 import { CompactBoundary } from "@/components/chat/compact-boundary";
 import { ModelSwitchDivider } from "@/components/chat/model-switch-divider";
@@ -390,19 +389,58 @@ export function MessageList({
       // scrolling near the bottom or clicking "Jump to latest".
       detachFromBottom();
 
+      // Instant, not smooth: a smooth scroll from the live edge spends its
+      // first frames inside the near-bottom zone, and rail scrubbing needs the
+      // viewport to track the pointer without lag.
       if (rowIndex < virtualizedRowCount) {
-        rowVirtualizer.scrollToIndex(rowIndex, { align: "start", behavior: "smooth" });
+        rowVirtualizer.scrollToIndex(rowIndex, { align: "start", behavior: "auto" });
       } else {
         const row = rows[rowIndex];
         if (row) {
           const el = scrollRef.current?.querySelector(`[data-row-id="${row.id}"]`);
           if (el) {
-            el.scrollIntoView({ behavior: "smooth", block: "start" });
+            el.scrollIntoView({ behavior: "auto", block: "start" });
           }
         }
       }
     },
     [detachFromBottom, virtualizedRowCount, rowVirtualizer, rows, scrollRef],
+  );
+
+  // ── Rail geometry ──────────────────────────────────────────────
+  // Content offsets for the rail's minimap: rendered rows (virtual overscan
+  // and the non-virtualized tail) are read from the DOM; virtualized rows
+  // outside the overscan come from the virtualizer's measurement cache
+  // (measured or estimated — consistent with the scrollHeight it produces).
+  const virtualContainerRef = useRef<HTMLDivElement>(null);
+  const getRowOffsets = useCallback(
+    (rowIndexes: number[]): Array<number | null> => {
+      const scrollEl = scrollRef.current;
+      if (!scrollEl) return rowIndexes.map(() => null);
+      const scrollTop = scrollEl.scrollTop;
+      const scrollRectTop = scrollEl.getBoundingClientRect().top;
+      const byId = new Map<string, Element>();
+      for (const el of scrollEl.querySelectorAll("[data-row-id]")) {
+        const id = el.getAttribute("data-row-id");
+        // First match wins: the main-stream row, not a same-id row inside a
+        // nested agent transcript.
+        if (id && !byId.has(id)) byId.set(id, el);
+      }
+      const vc = virtualContainerRef.current;
+      const virtualBase = vc ? vc.getBoundingClientRect().top - scrollRectTop + scrollTop : null;
+      return rowIndexes.map((i) => {
+        const row = rows[i];
+        if (!row) return null;
+        const el = byId.get(row.id);
+        if (el) return el.getBoundingClientRect().top - scrollRectTop + scrollTop;
+        if (i < virtualizedRowCount && virtualBase != null) {
+          const m = rowVirtualizer.measurementsCache[i];
+          return m && m.index === i ? virtualBase + m.start : null;
+        }
+        return null;
+      });
+    },
+    [rows, virtualizedRowCount, rowVirtualizer, scrollRef],
   );
 
   useEffect(() => {
@@ -496,7 +534,14 @@ export function MessageList({
         return <AgentCard agent={agent} />;
       }
       case "agent-note":
-        return <AgentNote text={row.text} name={row.name} agentId={row.agentId} timestamp={row.timestamp} />;
+        return (
+          <AgentNote
+            text={row.text}
+            name={row.name}
+            agentId={row.agentId}
+            timestamp={row.timestamp}
+          />
+        );
       case "response-divider":
         return <ResponseDivider durationLabel={row.durationLabel} />;
       case "tool-container":
@@ -525,125 +570,134 @@ export function MessageList({
 
   return (
     <AgentCardsProvider value={agentCardsValue}>
-    <div className="flex min-h-0 flex-1 flex-col">
-      {!isMobile && (
-        <ChatTimeline
-          rows={rows}
-          onScrollToRow={handleScrollToRow}
-          isLive={!!isProcessing}
-          agents={agents}
-        />
-      )}
-      <div className="relative flex min-h-0 flex-1">
-        <ChatTOC rows={rows} onScrollToRow={handleScrollToRow} />
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div
-            ref={containerRef}
-            className="mx-auto max-w-3xl px-6 py-6 max-[768px]:px-3 max-[768px]:py-3"
-          >
-            {/* Virtualized section — absolute-positioned items in a sized container */}
-            {hasVirtual && (
-              <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
-                {virtualRows.map((virtualRow) => (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto">
+            {/* Single wrapper child: useAutoScroll observes the scroll element's
+              first child for content growth, and the rail must not be it. */}
+            <div className="relative">
+              {!isMobile && (
+                <ChatRail
+                  rows={rows}
+                  scrollRef={scrollRef}
+                  getRowOffsets={getRowOffsets}
+                  onScrollToRow={handleScrollToRow}
+                  isLive={!!isProcessing}
+                />
+              )}
+              <div
+                ref={containerRef}
+                data-chat-content=""
+                className="mx-auto max-w-3xl px-6 py-6 max-[768px]:px-3 max-[768px]:py-3"
+              >
+                {/* Virtualized section — absolute-positioned items in a sized container */}
+                {hasVirtual && (
                   <div
-                    key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    data-row-id={rows[virtualRow.index]?.id}
-                    ref={rowVirtualizer.measureElement}
-                    className={`absolute left-0 top-0 flex w-full flex-col rounded-xl transition-colors duration-700 ${
-                      rows[virtualRow.index]?.id === activeSearchRowId
-                        ? "bg-accent/10 ring-1 ring-accent/30"
-                        : ""
-                    }`}
-                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    ref={virtualContainerRef}
+                    className="relative w-full"
+                    style={{ height: rowVirtualizer.getTotalSize() }}
                   >
-                    {renderRow(rows[virtualRow.index], virtualRow.index)}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Non-virtualized section — current turn during processing */}
-            {hasNonVirtual && (
-              <div className={`flex flex-col gap-4${hasVirtual ? " mt-4" : ""}`}>
-                {nonVirtualizedRows.map((row, i) => (
-                  <div
-                    key={row.id}
-                    data-row-id={row.id}
-                    className={`flex animate-fade-in flex-col rounded-xl transition-colors duration-700 ${
-                      row.id === activeSearchRowId ? "bg-accent/10 ring-1 ring-accent/30" : ""
-                    }`}
-                  >
-                    {renderRow(row, virtualizedRowCount + i)}
-                  </div>
-                ))}
-                {showThinking && (
-                  <LiveStatusStrip
-                    activity={lastActivity ?? null}
-                    processingStartedAt={processingStartedAt ?? null}
-                    isProcessing={!!isProcessing}
-                    instanceStatus={instanceStatus}
-                    isCompacting={isCompactingTurn}
-                  />
-                )}
-                {queuedRows.length > 0 && (
-                  <div className="mt-2 flex flex-col gap-3 border-t border-dashed border-border/30 pt-3">
-                    <div className="px-1 text-[0.625rem] uppercase tracking-wider text-muted/50">
-                      Queued
-                      {queuedRows.length > 1 ? ` · ${queuedRows.length}` : ""}
-                    </div>
-                    {queuedRows.map((row) => (
+                    {virtualRows.map((virtualRow) => (
                       <div
-                        key={row.id}
-                        data-row-id={row.id}
-                        className="flex animate-fade-in flex-col"
+                        key={virtualRow.key}
+                        data-index={virtualRow.index}
+                        data-row-id={rows[virtualRow.index]?.id}
+                        ref={rowVirtualizer.measureElement}
+                        className={`absolute left-0 top-0 flex w-full flex-col rounded-xl transition-colors duration-700 ${
+                          rows[virtualRow.index]?.id === activeSearchRowId
+                            ? "bg-accent/10 ring-1 ring-accent/30"
+                            : ""
+                        }`}
+                        style={{ transform: `translateY(${virtualRow.start}px)` }}
                       >
-                        {renderRow(row)}
+                        {renderRow(rows[virtualRow.index], virtualRow.index)}
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Framing spacer — lets the newest turn sit near the top while its
+                {/* Non-virtualized section — current turn during processing */}
+                {hasNonVirtual && (
+                  <div className={`flex flex-col gap-4${hasVirtual ? " mt-4" : ""}`}>
+                    {nonVirtualizedRows.map((row, i) => (
+                      <div
+                        key={row.id}
+                        data-row-id={row.id}
+                        className={`flex animate-fade-in flex-col rounded-xl transition-colors duration-700 ${
+                          row.id === activeSearchRowId ? "bg-accent/10 ring-1 ring-accent/30" : ""
+                        }`}
+                      >
+                        {renderRow(row, virtualizedRowCount + i)}
+                      </div>
+                    ))}
+                    {showThinking && (
+                      <LiveStatusStrip
+                        activity={lastActivity ?? null}
+                        processingStartedAt={processingStartedAt ?? null}
+                        isProcessing={!!isProcessing}
+                        instanceStatus={instanceStatus}
+                        isCompacting={isCompactingTurn}
+                      />
+                    )}
+                    {queuedRows.length > 0 && (
+                      <div className="mt-2 flex flex-col gap-3 border-t border-dashed border-border/30 pt-3">
+                        <div className="px-1 text-[0.625rem] uppercase tracking-wider text-muted/50">
+                          Queued
+                          {queuedRows.length > 1 ? ` · ${queuedRows.length}` : ""}
+                        </div>
+                        {queuedRows.map((row) => (
+                          <div
+                            key={row.id}
+                            data-row-id={row.id}
+                            className="flex animate-fade-in flex-col"
+                          >
+                            {renderRow(row)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Framing spacer — lets the newest turn sit near the top while its
                 answer streams into the gap below. Collapses as the answer grows. */}
-            {spacerHeight > 0 && (
-              <div aria-hidden="true" style={{ height: spacerHeight }} className="shrink-0" />
-            )}
+                {spacerHeight > 0 && (
+                  <div aria-hidden="true" style={{ height: spacerHeight }} className="shrink-0" />
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="pointer-events-none absolute inset-x-[1px] bottom-0 h-10 bg-gradient-to-t from-bg to-transparent" />
+
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-6">
+            <AnimatePresence>
+              {showScrollToBottom && (
+                <motion.button
+                  type="button"
+                  onClick={() => {
+                    // Drop any framing spacer first so we land on the live edge,
+                    // not in the reserved empty space below it.
+                    spacerHeightRef.current = 0;
+                    setSpacerHeight(0);
+                    setFramedTurnId(null);
+                    forceStickToBottom(true);
+                  }}
+                  aria-label="Scroll to bottom"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 12 }}
+                  transition={{ type: "spring", duration: 0.5, bounce: 0.3 }}
+                  className="glass pointer-events-auto inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[0.75rem] font-medium text-text-bright hover:brightness-110 active:scale-[0.97]"
+                >
+                  <ArrowDown size={13} strokeWidth={2.5} />
+                  Jump to latest
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
         </div>
-
-        <div className="pointer-events-none absolute inset-x-[1px] bottom-0 h-10 bg-gradient-to-t from-bg to-transparent" />
-
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-6">
-          <AnimatePresence>
-            {showScrollToBottom && (
-              <motion.button
-                type="button"
-                onClick={() => {
-                  // Drop any framing spacer first so we land on the live edge,
-                  // not in the reserved empty space below it.
-                  spacerHeightRef.current = 0;
-                  setSpacerHeight(0);
-                  setFramedTurnId(null);
-                  forceStickToBottom(true);
-                }}
-                aria-label="Scroll to bottom"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 12 }}
-                transition={{ type: "spring", duration: 0.5, bounce: 0.3 }}
-                className="glass pointer-events-auto inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[0.75rem] font-medium text-text-bright hover:brightness-110 active:scale-[0.97]"
-              >
-                <ArrowDown size={13} strokeWidth={2.5} />
-                Jump to latest
-              </motion.button>
-            )}
-          </AnimatePresence>
-        </div>
       </div>
-    </div>
     </AgentCardsProvider>
   );
 }
