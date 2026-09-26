@@ -27,9 +27,11 @@ export function AttachmentStrip({
               type="button"
               aria-label={`Remove ${entry.file.name}`}
               onClick={() => onRemove(index)}
-              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-error text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:h-10 [@media(pointer:coarse)]:w-10 [@media(pointer:coarse)]:opacity-100"
+              // Touch: the visible circle stays small; an invisible ::after grows
+              // the hit area to ~40px instead.
+              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-error text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 after:absolute after:-inset-2 after:content-[''] [@media(pointer:coarse)]:h-6 [@media(pointer:coarse)]:w-6 [@media(pointer:coarse)]:opacity-100"
             >
-              <X size={10} strokeWidth={3} />
+              <X size={12} strokeWidth={3} />
             </button>
           </Tooltip>
         );
