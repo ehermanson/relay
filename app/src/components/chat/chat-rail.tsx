@@ -340,7 +340,7 @@ function Tick({ entry, top, width, active, hovered, live }: TickProps) {
     return (
       <div
         className={`absolute h-px -translate-y-1/2 transition-[width] duration-150 ${
-          entry.tick.kind === "boundary" ? "bg-warning/70" : "bg-accent/80"
+          entry.tick.kind === "boundary" ? "bg-warning/45" : "bg-accent/50"
         }`}
         style={{ left: TICK_LEFT, top, width }}
       />
@@ -349,8 +349,8 @@ function Tick({ entry, top, width, active, hovered, live }: TickProps) {
   const tone = live
     ? "bg-accent animate-pulse-dot"
     : active || hovered
-      ? "bg-text-bright"
-      : "bg-muted/75";
+      ? "bg-text/70"
+      : "bg-muted/40";
   return (
     <div
       className={`absolute -translate-y-1/2 rounded-full transition-[width,background-color] duration-150 ${tone}`}
