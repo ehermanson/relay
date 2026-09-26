@@ -1471,6 +1471,11 @@ export type UpdateStatus =
  */
 export type UpdateStage = "pulling" | "installing" | "building" | "restarting";
 
+export interface UpdateCommit {
+  commit: string;
+  subject: string;
+}
+
 export interface UpdateSnapshot {
   enabled: boolean;
   installAction: "restart";
@@ -1479,6 +1484,13 @@ export interface UpdateSnapshot {
   currentVersion: string;
   currentCommit: string | null;
   latestCommit: string | null;
+  /**
+   * Commits between `currentCommit` and `latestCommit`, newest first, capped at
+   * `MAX_INCOMING_COMMITS`. Empty when up to date or when the log can't be read.
+   */
+  incomingCommits: UpdateCommit[];
+  /** Total commits behind — may exceed `incomingCommits.length`. */
+  incomingCommitCount: number;
   updateAvailable: boolean;
   checkedAt: number | null;
   error: string | null;

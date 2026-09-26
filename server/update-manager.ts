@@ -1,10 +1,16 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Logger } from "#core/logger.js";
-import type { UpdateInstallResult, UpdateSnapshot, UpdateStage } from "#core/types.js";
+import type {
+  UpdateCommit,
+  UpdateInstallResult,
+  UpdateSnapshot,
+  UpdateStage,
+} from "#core/types.js";
 
 const execFileAsync = promisify(execFile);
 const CHECK_TTL_MS = 5 * 60 * 1000;
+const MAX_INCOMING_COMMITS = 20;
 
 export interface UpdateManagerOptions {
   installDir: string;
@@ -44,6 +50,8 @@ export class UpdateManager {
       currentVersion: options.currentVersion,
       currentCommit: null,
       latestCommit: null,
+      incomingCommits: [],
+      incomingCommitCount: 0,
       updateAvailable: false,
       checkedAt: null,
       error: null,
@@ -174,10 +182,16 @@ export class UpdateManager {
         currentCommit.trim() !== latestCommit.trim() &&
         (await this.isCommitAncestor(currentCommit.trim(), latestCommit.trim()));
       const updateAvailable = this.forceAvailable || isBehind;
+      const incoming =
+        isBehind && currentCommit && latestCommit
+          ? await this.resolveIncomingCommits(currentCommit.trim(), latestCommit.trim())
+          : { commits: [], count: 0 };
       this.snapshot = {
         ...this.snapshot,
         currentCommit,
         latestCommit: latestCommit ?? currentCommit,
+        incomingCommits: incoming.commits,
+        incomingCommitCount: incoming.count,
         updateAvailable,
         status: updateAvailable ? "available" : "up_to_date",
         stage: null,
@@ -224,6 +238,8 @@ export class UpdateManager {
         ...this.snapshot,
         currentCommit,
         latestCommit: currentCommit,
+        incomingCommits: [],
+        incomingCommitCount: 0,
         updateAvailable: false,
         checkedAt: Date.now(),
         status: "restart_pending",
@@ -343,6 +359,36 @@ export class UpdateManager {
       throw new Error("Failed to resolve the latest Relay commit from GitHub.");
     }
     return match[1];
+  }
+
+  /**
+   * Subjects of the commits an update would pull in. Best effort: the check
+   * already fetched `targetCommit`, but a failed fetch just means no list.
+   */
+  private async resolveIncomingCommits(
+    localCommit: string,
+    targetCommit: string,
+  ): Promise<{ commits: UpdateCommit[]; count: number }> {
+    try {
+      const range = `${localCommit}..${targetCommit}`;
+      const [countOutput, logOutput] = await Promise.all([
+        this.execGit(["rev-list", "--count", range]),
+        this.execGit(["log", `--max-count=${MAX_INCOMING_COMMITS}`, "--format=%H%x1f%s", range]),
+      ]);
+      const commits = logOutput
+        .split("\n")
+        .map((line) => line.split("\x1f"))
+        .filter(([commit, subject]) => commit && subject !== undefined)
+        .map(([commit, subject]) => ({ commit, subject }));
+      const count = Number.parseInt(countOutput, 10);
+      return { commits, count: Number.isFinite(count) ? count : commits.length };
+    } catch (error) {
+      this.logger.debug(
+        "[Relay] update check could not read incoming commits:",
+        error instanceof Error ? error.message : String(error),
+      );
+      return { commits: [], count: 0 };
+    }
   }
 
   private async isCommitAncestor(localCommit: string, targetCommit: string): Promise<boolean> {

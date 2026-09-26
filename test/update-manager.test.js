@@ -59,6 +59,8 @@ describe("UpdateManager", () => {
       currentVersion: "3.0.0",
       currentCommit: null,
       latestCommit: null,
+      incomingCommits: [],
+      incomingCommitCount: 0,
       updateAvailable: false,
       checkedAt: null,
       error: "Updates are only available in production installs.",
@@ -84,6 +86,8 @@ describe("UpdateManager", () => {
       currentVersion: "3.0.0",
       currentCommit: null,
       latestCommit: null,
+      incomingCommits: [],
+      incomingCommitCount: 0,
       updateAvailable: false,
       checkedAt: null,
       error: "Updates are only available when Relay is launched via the CLI.",
@@ -109,6 +113,32 @@ describe("UpdateManager", () => {
     assert.equal(snapshot.updateAvailable, true);
     assert.equal(snapshot.currentCommit, "1111111");
     assert.equal(snapshot.latestCommit, "2222222");
+  });
+
+  it("lists the commits an update would pull in", async () => {
+    const manager = createManager();
+    manager.resolveGitTarget = async () => ({
+      pullSource: "origin",
+      checkSource: "origin",
+      branch: "main",
+    });
+    manager.resolveCurrentCommit = async () => "1111111";
+    manager.resolveRemoteCommit = async () => "3333333";
+    manager.isCommitAncestor = async () => true;
+    manager.execGit = async (args) => {
+      if (args[0] === "rev-list") return "2";
+      if (args[0] === "log") return "3333333\x1fNewest change\n2222222\x1fOlder change";
+      return "";
+    };
+
+    await manager.init();
+    const snapshot = await manager.checkForUpdates({ force: true });
+
+    assert.equal(snapshot.incomingCommitCount, 2);
+    assert.deepEqual(snapshot.incomingCommits, [
+      { commit: "3333333", subject: "Newest change" },
+      { commit: "2222222", subject: "Older change" },
+    ]);
   });
 
   it("reports up_to_date when local matches remote", async () => {

@@ -62,6 +62,7 @@ import type {
   ProviderMcpServerStatus,
   ProviderVersionAdvisory,
   SidebarLayout,
+  UpdateCommit,
   UpdateSnapshot,
 } from "@shared/types";
 
@@ -185,6 +186,47 @@ function formatShortCommit(commit: string | null | undefined): string | null {
   return commit ? commit.slice(0, 7) : null;
 }
 
+/** How many incoming commit subjects to show before "Show N more". */
+const INCOMING_COMMITS_PREVIEW = 3;
+
+function IncomingCommits({ commits, total }: { commits: UpdateCommit[]; total: number }) {
+  const [expanded, setExpanded] = useState(false);
+  if (commits.length === 0) return null;
+  const visible = expanded ? commits : commits.slice(0, INCOMING_COMMITS_PREVIEW);
+  const hiddenCount = commits.length - visible.length;
+  // The server caps the list; anything past it is summarized, not fetched.
+  const uncappedCount = Math.max(0, total - commits.length);
+
+  return (
+    <div className="mt-2.5 flex flex-col gap-1">
+      <ul className="flex flex-col gap-1">
+        {visible.map(({ commit, subject }) => (
+          <li key={commit} className="flex min-w-0 items-baseline gap-2 text-[0.75rem]">
+            <span className="shrink-0 font-mono text-muted">{formatShortCommit(commit)}</span>
+            <span className="min-w-0 truncate text-text" title={subject}>
+              {subject}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {(hiddenCount > 0 || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="self-start text-[0.75rem] text-muted transition-colors hover:text-text"
+        >
+          {expanded ? "Show less" : `Show ${hiddenCount} more`}
+        </button>
+      )}
+      {expanded && uncappedCount > 0 && (
+        <span className="text-[0.75rem] text-muted">
+          …and {uncappedCount} older {uncappedCount === 1 ? "commit" : "commits"}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function formatCheckedAt(checkedAt: number | null | undefined): string | null {
   if (!checkedAt) return null;
   const diffMs = Date.now() - checkedAt;
@@ -297,6 +339,9 @@ function UpdateSettingsRow() {
   const StatusIcon = status.icon;
   const checkedLabel = formatCheckedAt(snapshot?.checkedAt);
   const showCommitDiff = snapshot?.updateAvailable && latestCommit && currentCommit;
+  // Optional chaining: an older server (mid-update) doesn't send these fields.
+  const incomingCommits = snapshot?.updateAvailable ? (snapshot.incomingCommits ?? []) : [];
+  const incomingCommitCount = Math.max(snapshot?.incomingCommitCount ?? 0, incomingCommits.length);
   const isUnavailable = Boolean(!isLoading && snapshot && !snapshot.enabled);
   const installButtonLabel = isInstalling
     ? (describeUpdateStage(snapshot?.status, snapshot?.stage) ?? "Installing…")
@@ -341,6 +386,7 @@ function UpdateSettingsRow() {
                   <span className="font-mono text-muted">{currentCommit}</span>
                   <span className="text-border">→</span>
                   <span className="font-mono text-text">{latestCommit}</span>
+                  {incomingCommitCount > 1 && <span>({incomingCommitCount} commits)</span>}
                 </>
               ) : currentCommit ? (
                 <span className="font-mono">{currentCommit}</span>
@@ -352,6 +398,7 @@ function UpdateSettingsRow() {
                 </>
               )}
             </div>
+            <IncomingCommits commits={incomingCommits} total={incomingCommitCount} />
           </div>
         </div>
 
