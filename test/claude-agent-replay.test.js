@@ -528,6 +528,34 @@ describe("Claude delegated-agent replay", () => {
     assert.ok(!users.some((m) => m.text.includes("Another Claude session sent a message")));
   });
 
+  it("never renders harness meta entries (image-resize notes) as user bubbles", () => {
+    // After a Read of a large image, Claude Code appends an isMeta user entry
+    // describing the resize. It is not human-authored.
+    const t = (s) => `2026-09-17T10:20:${String(s).padStart(2, "0")}.000Z`;
+    const note =
+      "[Image: original 1206x2622, displayed at 920x2000. Multiply coordinates by 1.31 to map to original image.]";
+    const transcript = [
+      line({ type: "system", subtype: "init", cwd, timestamp: t(0), sessionId: SESSION_ID }),
+      line({
+        type: "user",
+        message: { role: "user", content: "Look at the screenshot." },
+        timestamp: t(1),
+      }),
+      line({
+        type: "user",
+        isMeta: true,
+        turnCompanion: true,
+        message: { role: "user", content: note },
+        timestamp: t(2),
+      }),
+    ].join("\n");
+    writeFileSync(parentPath, transcript);
+
+    const { history } = manager["parseJsonl"](parentPath);
+    const userTexts = history.filter((e) => e.message.type === "user").map((e) => e.message.text);
+    assert.deepEqual(userTexts, ["Look at the screenshot."]);
+  });
+
   it("folds agent state from history and reads attributed child history without booting", async () => {
     const db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
     db.upsertProject({

@@ -2593,6 +2593,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       // belong to the child's transcript, never the main stream.
       const classified = classifyUserEnvelope(text, msg.origin as UserMessageOrigin | undefined);
       if (classified.kind === "internal" || classified.kind === "task-notification") return;
+      // Harness-injected meta frames (e.g. the image-resize note after a Read).
+      if (classified.kind !== "agent" && msg.isMeta === true) return;
       const userMessage: UserMessage = {
         type: "user",
         text: classified.kind === "agent" ? classified.body : text,

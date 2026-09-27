@@ -935,7 +935,7 @@ function readFirstUserMessage(jsonlPath: string): string | null {
         if (!line.trim()) continue;
         try {
           const parsed = JSON.parse(line);
-          if (parsed.type === "user" && parsed.message?.content) {
+          if (parsed.type === "user" && !parsed.isMeta && parsed.message?.content) {
             // User message content is an array of blocks
             for (const block of parsed.message.content) {
               if (block.type === "text" && typeof block.text === "string") {
@@ -985,7 +985,7 @@ function readLastMessage(
           const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
 
           // User message
-          if (parsed.type === "user" && parsed.message?.content) {
+          if (parsed.type === "user" && !parsed.isMeta && parsed.message?.content) {
             for (const block of parsed.message.content) {
               if (block.type === "text" && typeof block.text === "string") {
                 const cleaned = stripInternalTags(block.text);
@@ -6623,6 +6623,9 @@ export class InstanceManager extends EventEmitter {
       return results;
     }
     if (classified?.kind === "internal") return results;
+    // Harness-injected meta entries (image-resize notes after a Read, skill
+    // bodies, command caveats) are user-role but never human-authored.
+    if (entry.isMeta) return results;
 
     // Strip internal CLI tags; skip if nothing meaningful remains
     text = stripInternalTags(text);
