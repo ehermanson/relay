@@ -941,7 +941,57 @@ describe("ClaudeSdkSession", () => {
       const lastStats = statsEvents[statsEvents.length - 1][0];
       assert.equal(lastStats.inputTokens, 100);
       assert.equal(lastStats.outputTokens, 50);
-      assert.equal(lastStats.model, "claude-sonnet-4-6");
+      // modelUsage never names the chat's model — see the next test.
+      assert.equal(lastStats.model, undefined);
+      session.close();
+    });
+
+    it("takes the chat model from root assistant frames, not background modelUsage", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const statsEvents = collectEvents(session, "stats");
+      const assistant = (model, extra = {}) => ({
+        type: "assistant",
+        session_id: "sess-1",
+        ...extra,
+        message: {
+          model,
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      });
+
+      harness.fakeQuery.emit(assistant("claude-opus-5-5"));
+      // A subagent on another model must not change the chat model.
+      harness.fakeQuery.emit(assistant("claude-sonnet-5", { parent_tool_use_id: "toolu_1" }));
+      harness.fakeQuery.emit(assistant("<synthetic>"));
+      harness.fakeQuery.emit({
+        type: "result",
+        subtype: "success",
+        session_id: "sess-1",
+        is_error: false,
+        modelUsage: {
+          "claude-haiku-4-5-20251001": {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+          "claude-opus-5-5": {
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+        },
+      });
+      await tick();
+      assert.equal(statsEvents.at(-1)[0].model, "claude-opus-5-5");
+
+      // A mid-session model switch is reflected by the next root frame.
+      harness.fakeQuery.emit(assistant("claude-fable-5-1"));
+      await tick();
+      assert.equal(statsEvents.at(-1)[0].model, "claude-fable-5-1");
       session.close();
     });
 

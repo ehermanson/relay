@@ -2111,18 +2111,17 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       | undefined;
 
     if (modelUsage) {
-      for (const [model, usage] of Object.entries(modelUsage)) {
+      // Never derive the chat's model from modelUsage: it also bills Claude
+      // Code's background Haiku calls (session titling, summaries) and
+      // subagents, so its first key is often not the model the chat runs on.
+      // The chat model comes from root assistant frames (accumulateUsage).
+      for (const usage of Object.values(modelUsage)) {
         this._stats.inputTokens += usage.inputTokens || 0;
         this._stats.outputTokens += usage.outputTokens || 0;
         this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
         this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
-        if (!this._stats.model) {
-          // Prefer canonicalModel (the billing-level id) over the map key, which
-          // may be a provider-specific alias that differs from the canonical id.
-          this._stats.model = usage.canonicalModel ?? model;
-        }
-        this.emit("stats", { ...this._stats });
       }
+      this.emit("stats", { ...this._stats });
     }
 
     // Surface fast mode availability from the turn result (SDK >= 0.3.219)
@@ -2796,7 +2795,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     this._stats.outputTokens += u.output_tokens;
     this._stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
     this._stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
-    if (!this._stats.model) {
+    // Latest root frame wins, so a mid-session model switch is reflected
+    // (matching transcript replay). CLI-generated frames use "<synthetic>".
+    if (model !== "<synthetic>") {
       this._stats.model = model;
     }
     this.emit("stats", { ...this._stats });
