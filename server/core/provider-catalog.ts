@@ -16,6 +16,12 @@ const REASONING_LEVEL_DEFS: Record<ReasoningEffort, { label: string; description
   high: { label: "High", description: "More reasoning for harder tasks" },
   xhigh: { label: "Extra High", description: "Extended reasoning for complex tasks" },
   max: { label: "Max", description: "Deepest reasoning, usually slower" },
+  // Claude-only tier above max: standing multi-agent workflow orchestration.
+  // The SDK driver maps it onto the `ultracode` flag setting.
+  ultracode: {
+    label: "Ultracode",
+    description: "Beyond max: orchestrates multi-agent workflows, uses far more tokens",
+  },
 };
 
 type ReasoningLevel = {
@@ -37,7 +43,15 @@ function reasoningLevels(
 }
 
 const STANDARD_EFFORTS = reasoningLevels("medium", "low", "medium", "high", "max");
-const EXTENDED_EFFORTS = reasoningLevels("xhigh", "low", "medium", "high", "xhigh", "max");
+const EXTENDED_EFFORTS = reasoningLevels(
+  "xhigh",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultracode",
+);
 
 function toTitleCaseToken(token: string): string {
   return token

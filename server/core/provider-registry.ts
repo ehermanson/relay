@@ -635,6 +635,8 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
           }
           if (sdkMatch.supportedEffortLevels && sdkMatch.supportedEffortLevels.length > 0) {
             const allowed = new Set<string>(sdkMatch.supportedEffortLevels);
+            // Ultracode isn't an SDK effort level; it needs an xhigh-capable model.
+            if (allowed.has("xhigh")) allowed.add("ultracode");
             // Use per-model levels as filter base (preserves per-model isDefault),
             // falling back to provider-level levels for SDK-only extras.
             const baseLevels = override.reasoningEffortLevels ?? builtinEffortLevels;

@@ -174,6 +174,31 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
 
+    it("maps ultracode to the ultracode flag setting, not an effort level", async () => {
+      let capturedOptions;
+      const fakeQuery = new FakeQuery();
+      const flagCalls = [];
+      fakeQuery.applyFlagSettings = async (settings) => {
+        flagCalls.push(settings);
+      };
+      const session = await createSdkSession({
+        cwd: "/test",
+        reasoningEffort: "ultracode",
+        logger: noopLogger,
+        queryFn: ({ _prompt, options }) => {
+          capturedOptions = options;
+          return fakeQuery;
+        },
+      });
+      assert.equal(capturedOptions.effort, undefined);
+      assert.deepEqual(capturedOptions.settings, { ultracode: true });
+
+      session.setModelOptions({ reasoningEffort: "high" });
+      session.setModelOptions({ reasoningEffort: "ultracode" });
+      assert.deepEqual(flagCalls, [{ ultracode: null, effortLevel: "high" }, { ultracode: true }]);
+      session.close();
+    });
+
     it("passes resume option when resumeSessionId is set", async () => {
       let capturedOptions;
       const fakeQuery = new FakeQuery();

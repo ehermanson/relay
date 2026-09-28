@@ -364,6 +364,18 @@ function frameAgentKey(msg: Record<string, unknown>): string | undefined {
 /** Max auto-continue attempts per user message to prevent runaway loops */
 const MAX_AUTO_CONTINUES = 25;
 
+/**
+ * Relay effort value for Claude Code's `ultracode` session mode (the tier above
+ * max). It is a flag setting, not an SDK effort level: the CLI owns the effort
+ * that goes with it, so Relay sends no `effort` alongside.
+ */
+const ULTRACODE_EFFORT = "ultracode";
+
+function toSdkEffort(effort: string | undefined): SDKOptions["effort"] {
+  if (effort === ULTRACODE_EFFORT) return undefined;
+  return effort as SDKOptions["effort"];
+}
+
 // =============================================================================
 // ClaudeSdkSession
 // =============================================================================
@@ -1154,7 +1166,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     const sdkOptions: SDKOptions = {
       cwd: options.cwd,
       model: options.model,
-      effort: options.reasoningEffort as SDKOptions["effort"],
+      effort: toSdkEffort(options.reasoningEffort),
       includePartialMessages: true,
       forwardSubagentText: true,
       env: buildClaudeSpawnEnv(options.configDir ?? resolveClaudeConfigDir()) as Record<
@@ -1163,9 +1175,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       >,
       pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
     };
-    if (options.fastMode) {
-      sdkOptions.settings = { fastMode: true };
-    }
+    const flagSettings: Record<string, unknown> = {};
+    if (options.fastMode) flagSettings.fastMode = true;
+    if (options.reasoningEffort === ULTRACODE_EFFORT) flagSettings.ultracode = true;
+    if (Object.keys(flagSettings).length > 0) sdkOptions.settings = flagSettings;
     const appendedBootstrap = [
       options.bootstrapContext?.baseInstructions,
       options.bootstrapContext?.developerInstructions,
@@ -1352,7 +1365,14 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // forwarded to the SDK as resets, not silently skipped.
     const flagUpdates: Record<string, unknown> = {};
     if ("reasoningEffort" in modelOptions) {
-      flagUpdates.effortLevel = modelOptions.reasoningEffort || undefined;
+      if (modelOptions.reasoningEffort === ULTRACODE_EFFORT) {
+        // Ultracode carries its own effort; don't pin one alongside it.
+        flagUpdates.ultracode = true;
+      } else {
+        // `null` turns ultracode off; the effort below then replaces its own.
+        flagUpdates.ultracode = null;
+        flagUpdates.effortLevel = modelOptions.reasoningEffort || undefined;
+      }
     }
     if ("fastMode" in modelOptions) {
       flagUpdates.fastMode = modelOptions.fastMode ?? false;
