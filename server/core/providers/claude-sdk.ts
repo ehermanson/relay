@@ -1786,7 +1786,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
    */
   private emitAgentUpdate(
     patch: AgentInfo,
-    raw?: { tool?: string; toolUseId?: string; subtype?: string },
+    raw?: { tool?: string; toolUseId?: string; subtype?: string; fireReason?: string },
   ): void {
     this.agents.set(patch.agentId, mergeAgentInfo(this.agents.get(patch.agentId), patch));
     const update: AgentUpdateMessage = { type: "agent_update", agent: patch };
@@ -1841,6 +1841,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (!agentKey) return;
 
     if (subtype === "task_notification") {
+      const fireReason = typeof msg.fire_reason === "string" ? msg.fire_reason : undefined;
+      const raw: { subtype: string; fireReason?: string } = { subtype };
+      if (fireReason) raw.fireReason = fireReason;
       this.emitAgentUpdate(
         buildTaskNotificationInfo(
           agentKey,
@@ -1851,10 +1854,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             summary: typeof msg.summary === "string" && msg.summary ? msg.summary : undefined,
             outputFile: typeof msg.output_file === "string" ? msg.output_file : undefined,
             usage: this.readTaskUsage(msg.usage),
+            fireReason,
           },
           { endedAt: Date.now() },
         ),
-        { subtype },
+        raw,
       );
       return;
     }
@@ -2647,9 +2651,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         tool_use_id: classified.toolUseId,
       });
       if (!agentKeyForTask) return;
+      const tnRaw: { subtype: string; fireReason?: string } = { subtype: "task_notification" };
+      if (classified.fireReason) tnRaw.fireReason = classified.fireReason;
       this.emitAgentUpdate(
         buildTaskNotificationInfo(agentKeyForTask, classified, { endedAt: Date.now() }),
-        { subtype: "task_notification" },
+        tnRaw,
       );
     }
   }
