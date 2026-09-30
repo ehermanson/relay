@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, ListChecks } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -7,6 +7,7 @@ import hljs from "../../lib/markdown";
 import { openNativePath } from "../../lib/api";
 import { FileIcon } from "@/components/ui/file-icon";
 import { TASK_ID_PATTERN_SOURCE } from "@/lib/task-links";
+import { isBareLink, matchLinkSource, type LinkSource } from "@/lib/link-sources";
 import { videoContentType } from "@shared/video-attachments";
 
 interface MarkdownContentProps {
@@ -339,6 +340,30 @@ function MentionChip({ children }: { children: React.ReactNode }) {
   );
 }
 
+function textOf(node: React.ReactNode): string {
+  return Children.toArray(node)
+    .map((child) => {
+      if (typeof child === "string" || typeof child === "number") return String(child);
+      if (isValidElement<{ children?: React.ReactNode }>(child))
+        return textOf(child.props.children);
+      return "";
+    })
+    .join("");
+}
+
+function LinkSourceIcon({ source, className }: { source: LinkSource; className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={`shrink-0 fill-current ${source.color ? "" : "text-muted"} ${className}`}
+      style={source.color ? { color: source.color } : undefined}
+    >
+      <path d={source.iconPath} />
+    </svg>
+  );
+}
+
 function MarkdownLink({
   href = "",
   children,
@@ -464,6 +489,42 @@ function MarkdownLink({
 
   const external = /^https?:\/\//i.test(href);
   const isAnchor = href.startsWith("#");
+
+  // Links to known services (GitHub PRs, Jira tickets, …): a pasted URL becomes
+  // a logo + identifier chip; an author-labelled link keeps its text and gains the logo.
+  const sourceMatch = external ? matchLinkSource(href) : null;
+  if (sourceMatch) {
+    const { source, identifier } = sourceMatch;
+    if (isBareLink(textOf(children), href)) {
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          title={`${source.name}: ${href}`}
+          className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-surface-hover/40 px-1.5 py-px align-middle text-[0.8125rem] font-medium leading-snug text-text no-underline hover:border-border hover:bg-surface-hover"
+        >
+          <LinkSourceIcon source={source} className="h-3.5 w-3.5" />
+          <span className="max-w-[20rem] truncate">{identifier}</span>
+        </a>
+      );
+    }
+    return (
+      <a
+        href={href}
+        {...props}
+        target="_blank"
+        rel="noreferrer"
+        title={`${source.name}: ${identifier}`}
+      >
+        <LinkSourceIcon
+          source={source}
+          className="mr-1 inline-block h-[0.9em] w-[0.9em] -translate-y-px align-middle"
+        />
+        {children}
+      </a>
+    );
+  }
   return (
     <a
       href={href}

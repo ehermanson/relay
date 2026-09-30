@@ -171,6 +171,10 @@ Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight i
 - Claude SDK tool results normally arrive in `user.message.content`, including array-of-text-block content; process them even when `tool_result_meta` is absent. Assistant-envelope results remain supported.
 - The chat reducer matches results by ID across activity groups; legacy events without IDs use unmatched calls in emission order. Read previews show captured result text with file-language highlighting. Read/ViewImage image previews retain their thumbnail even when the result includes text; errors show the result instead.
 
+### Link Source Chips
+
+Links in chat markdown (user and agent) to known services render with the service's logo: a pasted/autolinked URL becomes a logo + identifier chip (`relay#482`, `PROJ-123`), an author-labelled link keeps its label with the logo prepended. Sources live in one registry, `LINK_SOURCES` in `app/src/lib/link-sources.ts` (tested in `link-sources.test.ts`); `MarkdownLink` in `markdown-content.tsx` consumes it generically. To add a service, append a `LinkSource` (simple-icons path, optional brand `color` only if legible in both themes, and a `match(url)` returning the identifier or null) — no rendering changes. Matchers must be conservative: return null for anything that isn't clearly an item from that service.
+
 ### Delegated Agent Cards & Agents Sidecar
 
 Collapsed cards and Agents sidecar rows resolve missing models through `useAgentModelLabel` → `GET /api/instances/:id/agents/:agentId/model`. Provider drivers read a bounded transcript head (1MB, cached by mtime/size) for Claude assistant-model records or Codex turn-context metadata; full child history remains expansion-only. The shared query retries missing active-agent metadata every 15s and refreshes on completion/re-completion. Expanded history also seeds that model cache, so metadata discovered there reaches collapsed surfaces. Live `AgentInfo.model` takes precedence; no parent/default model is guessed.
