@@ -45,7 +45,12 @@ const persistOptions = {
   // refetch corrects it — clearing them lets first paint use the new default.
   // v4: Task records gained revision, archive, and closure metadata. Old
   // Project artifact caches must not seed edits without an expected revision.
-  buster: "v4",
+  // v5: Projects gained `accountIds` (account membership). A cache without it
+  // would file every project under the default account until the refetch.
+  // v6: Accounts became bundles of per-provider logins; chat summaries carry
+  // `accountId` and project membership holds account ids. A cache from the
+  // login-profile shape would scope chats to the wrong account until refetch.
+  buster: "v6",
   dehydrateOptions: {
     // Structurally typed (not `Query`) to avoid nominal-type clashes between
     // the query-core copies hoisted by react-query vs the persist packages.

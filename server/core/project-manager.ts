@@ -13,8 +13,11 @@ import { EventEmitter } from "events";
 
 import { SessionDB } from "#core/db.js";
 import type { ProjectRow } from "#core/db.js";
-import type { Project, SuggestionsConfig } from "#core/types.js";
+import type { Account, Project, SuggestionsConfig } from "#core/types.js";
+import { DEFAULT_ACCOUNT_ID } from "#core/types.js";
 import type { Logger } from "#core/logger.js";
+import { normalizeAccountIds } from "#core/accounts.js";
+import { AccountStore } from "#core/account-store.js";
 import {
   gitInit,
   isGitRepo,
@@ -87,6 +90,22 @@ function parseJson<T>(raw: string | null): T | null {
   }
 }
 
+/** Stored membership, normalized: an empty/invalid list means the default account only. */
+function parseAccountIds(raw: string | null | undefined): string[] {
+  const parsed = parseJson<unknown>(raw ?? null);
+  return normalizeAccountIds(Array.isArray(parsed) ? parsed : null);
+}
+
+/**
+ * Membership as stored: `null` when it is exactly the default account, so a
+ * single-account install never grows data it doesn't use.
+ */
+function serializeAccountIds(ids: string[]): string | null {
+  const normalized = normalizeAccountIds(ids);
+  if (normalized.length === 1 && normalized[0] === DEFAULT_ACCOUNT_ID) return null;
+  return JSON.stringify(normalized);
+}
+
 function rowToProject(row: ProjectRow): Project {
   return {
     id: row.id,
@@ -101,21 +120,36 @@ function rowToProject(row: ProjectRow): Project {
     spaceBranchSource: (row.space_branch_source as "local" | "remote") ?? null,
     defaultProvider: row.default_provider,
     defaultModel: row.default_model,
-    defaultProfileId: row.default_profile_id ?? null,
+    // Deprecated: the column stays for old rows but is never read again.
+    accountIds: parseAccountIds(row.account_ids_json),
     createdAt: row.created_at,
     lastActivityAt: row.last_activity_at,
     suggestions: parseJson<SuggestionsConfig>(row.suggestions_json),
   };
 }
 
+/**
+ * The accounts a project may belong to — `AccountStore` in production
+ * (`InstanceManager.accounts`), a stub in tests.
+ */
+export interface ProjectAccountsSource {
+  list(): Pick<Account, "id">[];
+}
+
 export class ProjectManager extends EventEmitter {
   private db: SessionDB;
   private logger: Logger;
+  /** Where the known account ids come from (see `ProjectAccountsSource`). */
+  private accounts: ProjectAccountsSource;
 
-  constructor(db: SessionDB, logger: Logger) {
+  constructor(db: SessionDB, logger: Logger, options: { accounts?: ProjectAccountsSource } = {}) {
     super();
     this.db = db;
     this.logger = logger;
+    // Account ids don't depend on the default account's logins, so a store
+    // over the same DB with no default logins lists exactly the same ids as
+    // the manager's — membership validation works with or without injection.
+    this.accounts = options.accounts ?? new AccountStore(db, () => ({}));
     this.backfillSlugs();
     this.normalizeRegisteredProjects();
   }
@@ -269,7 +303,6 @@ export class ProjectManager extends EventEmitter {
           space_branch_source: null,
           default_provider: null,
           default_model: null,
-          default_profile_id: null,
           created_at: now,
           last_activity_at: null,
           suggestions_json: null,
@@ -319,8 +352,16 @@ export class ProjectManager extends EventEmitter {
   /**
    * Register a new project. Directory must be a git repository.
    * Returns the created project, or the existing one if already registered.
+   *
+   * `accountId` is the account registering it (the browser's active account;
+   * absent/`default` = the default account). A directory that is already
+   * registered under another account gains membership in this one — the
+   * same repo may belong to several accounts, never to two project rows.
    */
-  addProject(directory: string, opts?: { name?: string; targetBranch?: string }): Project {
+  addProject(
+    directory: string,
+    opts?: { name?: string; targetBranch?: string; accountId?: string | null },
+  ): Project {
     if (!existsSync(directory)) {
       throw new Error(`Directory does not exist: ${directory}`);
     }
@@ -342,10 +383,25 @@ export class ProjectManager extends EventEmitter {
     // Explicit registration always clears a prior removal tombstone
     this.db.clearRemovedProjectDirectory(canonicalDirectory);
 
-    // Check for existing registration
+    const accountId = this.requireKnownAccountId(opts?.accountId);
+
+    // Check for existing registration — adding under another account is a
+    // membership change, not a duplicate.
     const existing = this.db.getProjectByDirectory(canonicalDirectory);
     if (existing) {
-      return rowToProject(existing);
+      const current = parseAccountIds(existing.account_ids_json);
+      if (current.includes(accountId)) return rowToProject(existing);
+      const row: ProjectRow = {
+        ...existing,
+        account_ids_json: serializeAccountIds([...current, accountId]),
+      };
+      this.db.upsertProject(row);
+      const project = rowToProject(row);
+      this.logger.info(
+        `[ProjectManager] Added project ${project.name} to account ${accountId} (${canonicalDirectory})`,
+      );
+      this.emit("project:updated", project);
+      return project;
     }
 
     // The remote URL needs git; it's filled in asynchronously right after
@@ -368,7 +424,7 @@ export class ProjectManager extends EventEmitter {
       space_branch_source: null,
       default_provider: null,
       default_model: null,
-      default_profile_id: null,
+      account_ids_json: serializeAccountIds([accountId]),
       created_at: now,
       last_activity_at: null,
       suggestions_json: null,
@@ -401,7 +457,11 @@ export class ProjectManager extends EventEmitter {
   /**
    * Create a new project directory, initialize a git repo, and register it.
    */
-  async initProject(parentDirectory: string, name: string): Promise<Project> {
+  async initProject(
+    parentDirectory: string,
+    name: string,
+    options: { accountId?: string | null } = {},
+  ): Promise<Project> {
     if (!existsSync(parentDirectory)) {
       throw new Error(`Parent directory does not exist: ${parentDirectory}`);
     }
@@ -419,7 +479,7 @@ export class ProjectManager extends EventEmitter {
     mkdirSync(targetDir, { recursive: true });
     await gitInit(targetDir);
 
-    return this.addProject(targetDir, { name });
+    return this.addProject(targetDir, { name, accountId: options.accountId });
   }
 
   /** Remove a project and dissociate its sessions. */
@@ -494,12 +554,30 @@ export class ProjectManager extends EventEmitter {
       spaceBranchSource?: "local" | "remote" | null;
       defaultProvider?: string | null;
       defaultModel?: string | null;
-      defaultProfileId?: string | null;
+      /**
+       * Account membership. Validated against the known account ids (throws
+       * on an unknown id), deduped; empty ⇒ the default account only.
+       */
+      accountIds?: string[] | null;
       suggestions?: SuggestionsConfig | null;
     },
   ): Project | undefined {
     const existing = this.db.getProject(id);
     if (!existing) return undefined;
+
+    let accountIdsJson = existing.account_ids_json ?? null;
+    if (updates.accountIds !== undefined) {
+      if (updates.accountIds !== null && !Array.isArray(updates.accountIds)) {
+        throw new Error("accountIds must be a list of account ids");
+      }
+      const normalized = normalizeAccountIds(updates.accountIds);
+      const known = this.knownAccountIds();
+      const unknown = normalized.filter((accountId) => !known.has(accountId));
+      if (unknown.length) {
+        throw new Error(`Unknown account${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
+      }
+      accountIdsJson = serializeAccountIds(normalized);
+    }
 
     const row: ProjectRow = {
       ...existing,
@@ -522,10 +600,7 @@ export class ProjectManager extends EventEmitter {
         updates.defaultProvider !== undefined ? updates.defaultProvider : existing.default_provider,
       default_model:
         updates.defaultModel !== undefined ? updates.defaultModel : existing.default_model,
-      default_profile_id:
-        updates.defaultProfileId !== undefined
-          ? updates.defaultProfileId
-          : (existing.default_profile_id ?? null),
+      account_ids_json: accountIdsJson,
       suggestions_json:
         "suggestions" in updates
           ? updates.suggestions
@@ -538,6 +613,52 @@ export class ProjectManager extends EventEmitter {
     const project = rowToProject(row);
     this.emit("project:updated", project);
     return project;
+  }
+
+  /**
+   * Drop a removed account from every project's membership. A project left
+   * with no accounts falls back to the default account. Returns the number of
+   * projects changed. Chats already bound to the account's config dir are
+   * untouched — they still work, they just aren't under a named account.
+   */
+  removeAccountFromProjects(accountId: string): number {
+    if (!accountId || accountId === DEFAULT_ACCOUNT_ID) return 0;
+    let changed = 0;
+    for (const existing of this.db.getAllProjects()) {
+      const current = parseAccountIds(existing.account_ids_json);
+      if (!current.includes(accountId)) continue;
+      const row: ProjectRow = {
+        ...existing,
+        account_ids_json: serializeAccountIds(current.filter((id) => id !== accountId)),
+      };
+      this.db.upsertProject(row);
+      changed++;
+      this.emit("project:updated", rowToProject(row));
+    }
+    if (changed > 0) {
+      this.logger.info(`[ProjectManager] Removed account ${accountId} from ${changed} project(s)`);
+    }
+    return changed;
+  }
+
+  /** Inject the shared account store (the manager's), replacing the built-in one. */
+  setAccountsSource(accounts: ProjectAccountsSource): void {
+    this.accounts = accounts;
+  }
+
+  /** Every account id a project may belong to: the default plus stored accounts. */
+  private knownAccountIds(): Set<string> {
+    const ids = new Set<string>([DEFAULT_ACCOUNT_ID]);
+    for (const account of this.accounts.list()) ids.add(account.id);
+    return ids;
+  }
+
+  /** Validate the account a project is being registered under; absent ⇒ default. */
+  private requireKnownAccountId(accountId: string | null | undefined): string {
+    const trimmed = typeof accountId === "string" ? accountId.trim() : "";
+    if (!trimmed) return DEFAULT_ACCOUNT_ID;
+    if (!this.knownAccountIds().has(trimmed)) throw new Error(`Unknown account: ${trimmed}`);
+    return trimmed;
   }
 
   /**

@@ -9,7 +9,7 @@ import {
   gitPush,
   isWorktreeDirty,
 } from "#core/git.js";
-import { MaxProcessesError } from "#core/instance-manager.js";
+import { MaxProcessesError, ProviderUnavailableInAccountError } from "#core/instance-manager.js";
 import type { ProviderKind, ProviderModelOptions, ProviderRuntimeMode } from "#core/types.js";
 import { readJsonBody } from "#server/hono-utils.js";
 import { gitErrorResponse, gitResultStatus } from "#server/git-http.js";
@@ -35,7 +35,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         modelOptions?: ProviderModelOptions;
         parentSessionId?: string;
         review?: import("#core/types.js").ReviewSessionInfo;
-        profileId?: string;
+        accountId?: string;
       }>(c);
       const info = instanceManager.createInstance({
         provider: body.provider,
@@ -48,12 +48,18 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         modelOptions: body.modelOptions,
         parentSessionId: body.parentSessionId,
         review: body.review,
-        profileId: body.profileId,
+        accountId: body.accountId,
       });
       return c.json(info, 201);
     } catch (err) {
       if (err instanceof MaxProcessesError) {
         return c.json({ error: err.message, code: "max_processes", limit: err.limit }, 400);
+      }
+      if (err instanceof ProviderUnavailableInAccountError) {
+        return c.json(
+          { error: err.message, code: err.code, provider: err.provider, accountId: err.accountId },
+          409,
+        );
       }
       return c.json(
         { error: err instanceof Error ? err.message : "Failed to create instance" },

@@ -1018,4 +1018,109 @@ describe("HTTP Routes — Additional Coverage", () => {
       assert.equal(artifacts.body.tasks, null);
     });
   });
+
+  describe("GET /api/search account scoping", () => {
+    const managedRow = (overrides) => ({
+      instance_id: "m-x",
+      provider_name: "claude",
+      provider_session_id: null,
+      name: "chat",
+      working_directory: "/tmp/repo",
+      created_at: Date.now(),
+      last_activity_at: Date.now(),
+      archived: 0,
+      custom_title: 0,
+      pinned: 0,
+      done_at: null,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      git_branch: null,
+      worktree_path: null,
+      original_directory: null,
+      parent_session_id: null,
+      preferred_model: null,
+      reasoning_budget: null,
+      runtime_mode: "approval-required",
+      resume_cursor_json: null,
+      runtime_payload_json: null,
+      transcript_path: null,
+      last_message_text: null,
+      last_message_from: null,
+      last_message_at: null,
+      git_info_branch: null,
+      git_info_is_worktree: null,
+      space_id: null,
+      project_id: null,
+      model: null,
+      model_options_json: null,
+      original_git_branch: null,
+      config_dir: null,
+      account_id: null,
+      ...overrides,
+    });
+
+    it("filters by the account's logins before the limit; absent/unknown ids apply no filter", async () => {
+      const workRoot = join(tempDir, ".claude-work");
+      manager.sessionDb.updateGlobalSettings({
+        accounts_json: JSON.stringify([
+          { id: "work", label: "Work", logins: { claude: { configDir: workRoot } } },
+        ]),
+      });
+      const now = Date.now();
+      for (let i = 0; i < 5; i++) {
+        manager.sessionDb.upsertManaged(
+          managedRow({
+            instance_id: `m-personal-${i}`,
+            name: `personal zebra notes ${i}`,
+            last_activity_at: now - i,
+          }),
+        );
+        manager.sessionDb.syncSearchIndexForInstance(`m-personal-${i}`);
+      }
+      manager.sessionDb.upsertManaged(
+        managedRow({
+          instance_id: "m-work",
+          name: "work zebra notes",
+          config_dir: workRoot,
+          // Legacy row: bound login, no stored id.
+          account_id: null,
+          last_activity_at: now - 90 * 24 * 60 * 60 * 1000,
+        }),
+      );
+      manager.sessionDb.syncSearchIndexForInstance("m-work");
+
+      const headers = { Cookie: `session=${auth.createSession().id}` };
+      const ids = (res) => res.body.results.map((r) => r.instanceId);
+
+      // limit=5 without a filter: the five fresher personal chats fill it.
+      const unscoped = await request(server, "GET", "/api/search?q=zebra&limit=5", { headers });
+      assert.equal(unscoped.status, 200);
+      assert.equal(ids(unscoped).length, 5);
+      assert.ok(!ids(unscoped).includes("m-work"));
+
+      const work = await request(server, "GET", "/api/search?q=zebra&limit=5&accountId=work", {
+        headers,
+      });
+      assert.deepEqual(ids(work), ["m-work"]);
+      assert.equal(work.body.results[0].accountId, "work", "derived from the bound login");
+
+      const dflt = await request(server, "GET", "/api/search?q=zebra&limit=5&accountId=default", {
+        headers,
+      });
+      assert.equal(ids(dflt).length, 5);
+      assert.ok(ids(dflt).every((id) => id.startsWith("m-personal-")));
+
+      // Unknown account: no filter, identical to the unscoped request.
+      const unknown = await request(server, "GET", "/api/search?q=zebra&limit=5&accountId=nope", {
+        headers,
+      });
+      assert.deepEqual(ids(unknown), ids(unscoped));
+
+      // Recent chats (empty query) scope the same way.
+      const recentWork = await request(server, "GET", "/api/search?q=&accountId=work", { headers });
+      assert.deepEqual(ids(recentWork), ["m-work"]);
+    });
+  });
 });

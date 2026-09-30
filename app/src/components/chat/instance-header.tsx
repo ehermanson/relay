@@ -18,7 +18,6 @@ import {
   Pencil,
   ScrollText,
   Trash2,
-  UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
@@ -47,9 +46,6 @@ import {
 } from "../../lib/api";
 import { deriveInstanceStatusPresentation } from "../../lib/utils";
 import { useRepoStatus } from "@/hooks/use-repo-status";
-import { useProviderModels } from "@/hooks/use-provider-models";
-import { useProviderProfiles } from "@/hooks/use-provider-profiles";
-import { resolveChatAccountLabel } from "@/lib/account-profiles";
 import type { InstanceInfo, ProviderKind, ProviderNotice, SessionStats } from "@shared/types";
 import type { SidecarTab } from "./sidecar";
 
@@ -72,6 +68,8 @@ interface SidecarTogglesProps {
   hasStats: boolean;
   stats?: SessionStats;
   provider?: ProviderKind;
+  /** The chat's account (config dir); provider state such as rate limits is per login. */
+  configDir?: string;
   sidecarContentCount: number;
   onSelectTab: (panel: SidecarTab) => void;
   onOpenMobileSidecar: () => void;
@@ -99,6 +97,7 @@ function SidecarToggles({
   hasStats,
   stats,
   provider,
+  configDir,
   sidecarContentCount,
   onSelectTab,
   onOpenMobileSidecar,
@@ -198,6 +197,7 @@ function SidecarToggles({
                 tooltip={isShowing("context") ? "Hide context" : "Show context"}
                 onClick={() => onSelectTab("context")}
                 provider={provider}
+                configDir={configDir}
               />
             )}
           </>
@@ -254,22 +254,6 @@ interface InstanceHeaderProps {
   onToggleTerminal?: () => void;
   /** Whether the terminal panel is currently open. */
   terminalOpen?: boolean;
-}
-
-/**
- * Which account this chat runs under — shown only when the provider keeps
- * several logins (capability-gated) and more than one profile is registered,
- * so a single-account install never grows an extra chip.
- */
-function useChatAccountChip(instance: InstanceInfo): { label: string; detail: string } | null {
-  const { capabilities } = useProviderModels(instance.provider);
-  const supportsAccountProfiles = !!capabilities.supportsAccountProfiles;
-  const { data: profiles } = useProviderProfiles(instance.provider, {
-    enabled: supportsAccountProfiles,
-  });
-  if (!supportsAccountProfiles || !profiles || profiles.length < 2) return null;
-  const resolved = resolveChatAccountLabel(profiles, instance.configDir);
-  return { label: resolved.label, detail: resolved.detail ?? resolved.label };
 }
 
 function shouldPromoteProviderNotice(notice: ProviderNotice | undefined): boolean {
@@ -411,7 +395,6 @@ export function InstanceHeader({
     : null;
   const reroutedModel = instance.providerStatus?.effectiveModel;
   const rerouteSource = instance.providerStatus?.reroutedFromModel;
-  const accountChip = useChatAccountChip(instance);
 
   const queryClient = useQueryClient();
   const invalidateGitStatus = useCallback(
@@ -626,6 +609,7 @@ export function InstanceHeader({
             hasStats={hasStats}
             stats={instance.stats}
             provider={instance.provider}
+            configDir={instance.configDir}
             sidecarContentCount={sidecarContentCount}
             onSelectTab={onSelectTab}
             onOpenMobileSidecar={onOpenMobileSidecar}
@@ -702,14 +686,6 @@ export function InstanceHeader({
               </span>
             </Tooltip>
           ) : null}
-          {accountChip ? (
-            <Tooltip content={accountChip.detail}>
-              <span className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-panel px-2 py-0.5 text-[0.6875rem] font-medium text-muted">
-                <UserRound size={11} />
-                {accountChip.label}
-              </span>
-            </Tooltip>
-          ) : null}
         </span>
         {moreMenu}
       </ViewHeaderTitle>
@@ -762,6 +738,7 @@ export function InstanceHeader({
           hasStats={hasStats}
           stats={instance.stats}
           provider={instance.provider}
+          configDir={instance.configDir}
           sidecarContentCount={sidecarContentCount}
           onSelectTab={onSelectTab}
           onOpenMobileSidecar={onOpenMobileSidecar}

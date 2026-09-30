@@ -5,6 +5,7 @@ import { useActionToasts } from "@/context/action-toast-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { fetchProjectIcons } from "@/lib/api";
 import { getInstanceProjectRouteId, getProjectName } from "@/lib/project-route";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useProjectNavigationModel } from "@/hooks/use-project-navigation-model";
 import type { InstanceInfo, Project, SpaceInfo } from "@shared/types";
 
@@ -26,6 +27,7 @@ export function useSidebarNavigationController() {
   const { send } = useWSMethods();
   const { instances } = useWSState();
   const { trackInstanceCreate } = useActionToasts();
+  const { accountIdParam } = useActiveAccount();
   const navigation = useProjectNavigationModel();
   const {
     chatId: currentChatId,
@@ -86,7 +88,8 @@ export function useSidebarNavigationController() {
   const createNewChat = (dir: string) => {
     pendingCreate.current = true;
     trackInstanceCreate(dir);
-    send({ type: "create_instance", workingDirectory: dir });
+    // New chats bind to the active account (undefined below two accounts).
+    send({ type: "create_instance", workingDirectory: dir, accountId: accountIdParam });
   };
 
   return {

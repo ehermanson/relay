@@ -3,7 +3,7 @@ import type { ProviderKind, SessionStats } from "@shared/types";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 import { ContextRing } from "@/components/ui/context-ring";
-import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { useProviderGlobalState } from "@/stores/provider-runtime-store";
 import { worstRateLimitStatus } from "@/lib/utils";
 
 export function HeaderIconSkeleton({ className = "" }: { className?: string }) {
@@ -31,15 +31,18 @@ export function HeaderContextToggle({
   onClick,
   tooltip,
   provider,
+  configDir,
 }: {
   stats?: SessionStats | null;
   active?: boolean;
   onClick?: () => void;
   tooltip?: string;
   provider?: ProviderKind;
+  /** The chat's account (config dir); rate limits are per login. */
+  configDir?: string;
 }) {
-  const providerGlobalState = useProviderRuntimeStore((s) => s.providerGlobalState);
-  const rateLimits = provider ? (providerGlobalState[provider]?.account?.rateLimits ?? []) : [];
+  const providerGlobalState = useProviderGlobalState(provider, configDir);
+  const rateLimits = providerGlobalState?.account?.rateLimits ?? [];
   const rateLimitStatus = worstRateLimitStatus(rateLimits);
 
   if (stats?.contextTokens) {

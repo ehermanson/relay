@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { stateKeyFor } from "@/lib/account-scope";
 import { formatTimeUntil } from "@/lib/utils";
 import type { ProviderKind } from "@shared/types";
 
@@ -16,7 +17,12 @@ const lastSeenStatuses = new Map<string, RateLimitStatus>();
  * "allowed_warning" or "rejected". Re-fires if the status later resets and
  * re-enters the warning/rejected state.
  */
-export function useRateLimitWarning(provider: ProviderKind | undefined, onOpenContext: () => void) {
+export function useRateLimitWarning(
+  provider: ProviderKind | undefined,
+  onOpenContext: () => void,
+  /** The chat's account (config dir); absent = the default account. */
+  configDir?: string,
+) {
   const providerGlobalState = useProviderRuntimeStore((s) => s.providerGlobalState);
   // Keep the latest callback without making it an effect dependency.
   const onOpenContextRef = useRef(onOpenContext);
@@ -24,13 +30,14 @@ export function useRateLimitWarning(provider: ProviderKind | undefined, onOpenCo
 
   useEffect(() => {
     if (!provider) return;
-    const rateLimits = providerGlobalState[provider]?.account?.rateLimits ?? [];
+    const stateKey = stateKeyFor(provider, configDir);
+    const rateLimits = providerGlobalState[stateKey]?.account?.rateLimits ?? [];
 
     for (const limit of rateLimits) {
       const windows = limit.windows ?? [];
       for (let i = 0; i < windows.length; i++) {
         const window = windows[i];
-        const key = `${provider}/${limit.scope ?? limit.name ?? "unknown"}/${i}`;
+        const key = `${stateKey}/${limit.scope ?? limit.name ?? "unknown"}/${i}`;
         const currentStatus = (window.status ?? "allowed") as RateLimitStatus;
         const prevStatus = lastSeenStatuses.get(key) ?? "allowed";
         if (currentStatus === prevStatus) continue;
@@ -58,7 +65,7 @@ export function useRateLimitWarning(provider: ProviderKind | undefined, onOpenCo
         }
       }
     }
-  }, [provider, providerGlobalState]);
+  }, [provider, configDir, providerGlobalState]);
 }
 
 /** Test-only reset for module-scoped transition memory. */

@@ -9,7 +9,7 @@ import { ProviderUpdateNotification } from "@/components/provider-update-notific
 import { SearchDialog, useSearchDialog } from "@/components/search-dialog";
 import { RelayLogo } from "@/components/ui/relay-logo";
 import { SwipeableDrawer } from "@/components/ui/swipeable-drawer";
-import { useAvailableProviders } from "@/hooks/use-available-providers";
+import { useInstalledProviders } from "@/hooks/use-available-providers";
 import { useSidebarLayout } from "@/hooks/use-global-settings";
 import { useTheme } from "@/stores/theme-store";
 import { useLayoutStore } from "@/stores/layout-store";
@@ -19,7 +19,7 @@ import { useWSState } from "@/context/websocket-context";
 
 export function AppLayout() {
   const search = useSearchDialog();
-  const { providers, isLoading: providersLoading } = useAvailableProviders();
+  const { providers, isLoading: providersLoading } = useInstalledProviders();
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const sidebarLayout = useSidebarLayout();

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
+import { ChatAccountMismatchBanner } from "@/components/chat/account-mismatch-banner";
 import { BranchChangeBanner } from "@/components/chat/branch-change-banner";
 import { ConnectionStatusBanner } from "@/components/chat/connection-status-banner";
 import { ChatDebug } from "@/components/chat/chat-debug";
@@ -26,7 +27,9 @@ import { Textarea } from "@/components/ui/input";
 import { RelayLogo } from "@/components/ui/relay-logo";
 import { useInstanceViewContext } from "@/components/chat/instance-view-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
-import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { useProviderGlobalState } from "@/stores/provider-runtime-store";
+import { useActiveAccount } from "@/hooks/use-active-account";
+import { chatBelongsToAccount } from "@/lib/account-scope";
 import { createSpinOff, createInstance, markSpinOffSent } from "@/lib/api";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { toast } from "sonner";
@@ -332,7 +335,23 @@ function SpinOffPrepDialog({
 export function InstanceViewContent() {
   const { shared, actions } = useInstanceViewContext();
   const { instances: allInstances } = useWSState();
-  const providerGlobalState = useProviderRuntimeStore((s) => s.providerGlobalState);
+  // Space siblings ("send to chat") are scoped to the active account, like the
+  // space's tabs; with a single account every chat is a sibling.
+  const account = useActiveAccount();
+  const siblingCandidates = useMemo(
+    () =>
+      account.isMulti
+        ? allInstances.filter((inst) =>
+            chatBelongsToAccount(inst, account.activeId, account.accounts),
+          )
+        : allInstances,
+    [allInstances, account.isMulti, account.activeId, account.accounts],
+  );
+  // Provider state is per login: read the state of the login this chat is bound to.
+  const currentProviderGlobalState = useProviderGlobalState(
+    shared.instance.provider,
+    shared.instance.configDir,
+  );
   const { send, reconnectNow } = useWSMethods();
   const navigate = useNavigate();
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
@@ -428,6 +447,7 @@ export function InstanceViewContent() {
     [instanceId],
   );
 
+  const sourceAccountId = shared.instance.accountId;
   const handleSpinOff = useCallback(async () => {
     const anchorIndex = spinOffDialogState?.anchorIndex;
     const selectedText = spinOffDialogState?.selectedText;
@@ -458,7 +478,8 @@ export function InstanceViewContent() {
         );
       } else {
         // Standalone chat: create a new instance, prefill draft, navigate
-        const created = await createInstance({ workingDirectory });
+        // The spin-off stays in the source chat's account.
+        const created = await createInstance({ workingDirectory, accountId: sourceAccountId });
         // Store source metadata for the styled bar
         storeSpinOffMeta(created.id, { sourceName, spinOffId: draft.id });
         // Seed the composer draft so the user can review/edit before sending
@@ -504,6 +525,7 @@ export function InstanceViewContent() {
     spinOffEdits,
     spinOffIncludeTouchedFiles,
     workingDirectory,
+    sourceAccountId,
   ]);
 
   // Fetch resolved suggestions for this project
@@ -535,7 +557,7 @@ export function InstanceViewContent() {
   });
 
   // Filter suggestions by conditions the client can evaluate
-  const isInSpace = !!spaceId && allInstances.filter((i) => i.spaceId === spaceId).length > 1;
+  const isInSpace = !!spaceId && siblingCandidates.filter((i) => i.spaceId === spaceId).length > 1;
   const hasChanges = instanceGitStatus?.dirty ?? false;
   // Fall back to `dirty` if server didn't populate `reviewableDiff` (older builds).
   const hasReviewableDiff = instanceGitStatus?.reviewableDiff ?? instanceGitStatus?.dirty ?? false;
@@ -568,7 +590,7 @@ export function InstanceViewContent() {
       isReviewMode || embeddedSourceChat
         ? []
         : spaceId
-          ? allInstances
+          ? siblingCandidates
               .filter((inst) => inst.spaceId === spaceId && inst.id !== instanceId)
               .map((inst) => ({ id: inst.id, name: inst.name, status: inst.status }))
           : [];
@@ -629,6 +651,7 @@ export function InstanceViewContent() {
     spaceId,
     instanceId,
     allInstances,
+    siblingCandidates,
     isReviewMode,
     reviewSource,
     send,
@@ -658,6 +681,9 @@ export function InstanceViewContent() {
 
   return (
     <>
+      {/* Account guard first: a deep link or a tab left open across an account
+          switch must name the account its sends go through. */}
+      <ChatAccountMismatchBanner instance={shared.instance} />
       {shared.isLoadingSession || (!shared.hasLoadedHistory && shared.items.length === 0) ? (
         loadingContent
       ) : !hasMessagesSent && !shared.isActive && !shared.showThinkingIndicator ? (
@@ -720,7 +746,7 @@ export function InstanceViewContent() {
           items={shared.items}
           rawHistory={shared.rawHistory}
           isProcessing={shared.isActive}
-          providerGlobalState={providerGlobalState[shared.instance.provider]}
+          providerGlobalState={currentProviderGlobalState}
           onClose={() => actions.setShowDebugPaste(false)}
         />
       )}

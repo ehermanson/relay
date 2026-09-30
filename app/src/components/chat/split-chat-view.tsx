@@ -3,6 +3,8 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { Columns2, Plus, Search, X } from "lucide-react";
 import { Group, Panel } from "react-resizable-panels";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { useActiveAccount } from "@/hooks/use-active-account";
+import { chatBelongsToAccount } from "@/lib/account-scope";
 import { InstanceView } from "@/components/chat/instance-view";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -185,6 +187,13 @@ export function SplitChatView({ splitId }: SplitChatViewProps) {
   };
   const navigate = useNavigate({ from: "/projects/$projectId/chats/$chatId" });
   const { instances } = useWSState();
+  // New chats bind to the active account (undefined below two accounts), and
+  // the picker lists only the active account's chats (every chat with one).
+  const account = useActiveAccount();
+  const { accountIdParam } = account;
+  const pickableInstances = account.isMulti
+    ? instances.filter((i) => chatBelongsToAccount(i, account.activeId, account.accounts))
+    : instances;
 
   const primaryInstance = instances.find((i) => i.id === primaryId);
   const resolvedSplitId = splitId && splitId !== "pick" ? splitId : null;
@@ -214,6 +223,7 @@ export function SplitChatView({ splitId }: SplitChatViewProps) {
     try {
       const inst = await createInstance({
         workingDirectory: dir,
+        accountId: accountIdParam,
       });
       selectSplit(inst.id);
     } catch (e) {
@@ -241,7 +251,7 @@ export function SplitChatView({ splitId }: SplitChatViewProps) {
             </div>
           ) : (
             <SessionPicker
-              instances={instances}
+              instances={pickableInstances}
               excludeId={primaryId}
               onSelect={selectSplit}
               onNewChat={handleNewChat}

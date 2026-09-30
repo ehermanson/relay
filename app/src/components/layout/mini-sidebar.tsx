@@ -10,6 +10,7 @@ import { ChatActionsMenuContent } from "@/components/layout/chat-actions-menu";
 import { InboxSpaceItem } from "@/components/layout/inbox-space-item";
 import { capInboxEntries, isInboxEntryCurrent, type InboxChatEntry } from "@/lib/inbox";
 import { InboxAvatar, InboxChatSummary } from "@/components/layout/inbox-item";
+import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { SidebarItem } from "@/components/layout/sidebar-item";
 import { useAuthContext } from "@/context/auth-context";
@@ -498,6 +499,9 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
               <PanelLeftOpen size={15} strokeWidth={2} />
             </Button>
           </Tooltip>
+
+          {/* Avatar-style account button (only with two or more accounts). */}
+          <AccountSwitcher variant="rail" className="mb-2" />
 
           <div className="mx-auto mb-2 h-px w-6 bg-border/60" />
 

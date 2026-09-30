@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS: GlobalSettings = {
   suggestions: null,
   maxProcesses: null,
   sidebarLayout: "inbox",
-  providerProfiles: [],
+  accounts: [],
 };
 
 export function useGlobalSettings() {

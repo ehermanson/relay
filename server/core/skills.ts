@@ -168,11 +168,13 @@ function scanDirectory(
  */
 export function discoverSkills(
   projectDir?: string,
-  options: { claudeDir?: string } = {},
+  options: { claudeDir?: string | null } = {},
 ): SkillInfo[] {
   const home = homedir();
-  // User-level Claude skills live in the config dir, which may not be ~/.claude.
-  const claudeDir = options.claudeDir ?? resolveClaudeConfigDir();
+  // User-level Claude skills live in the config dir, which may not be ~/.claude;
+  // `null` means the caller's account has no Claude login, so none apply.
+  const claudeDir =
+    options.claudeDir === null ? null : (options.claudeDir ?? resolveClaudeConfigDir());
   const seen = new Map<string, RawSkill>();
 
   // Add skills, merging providers when the same name appears in multiple directories.
@@ -201,7 +203,7 @@ export function discoverSkills(
   }
 
   // 2. User-level Claude skills
-  addSkills(scanDirectory(join(claudeDir, "skills"), "user", ["claude"]));
+  if (claudeDir) addSkills(scanDirectory(join(claudeDir, "skills"), "user", ["claude"]));
 
   // 3. User-level Codex skills (includes .system/ as "system" source)
   addSkills(scanDirectory(join(home, ".codex", "skills"), "user", ["codex"]));

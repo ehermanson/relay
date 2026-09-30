@@ -2,8 +2,6 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { createRelay } from "#server/index.js";
@@ -11,6 +9,7 @@ import { startTunnel, stopTunnel } from "#server/tunnel.js";
 import { UpdateManager } from "#server/update-manager.js";
 import { runTasksCommand } from "#cli/tasks.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
+import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 
 const CLI_CHILD_MODE_ENV_VAR = "RELAY_CLI_CHILD_MODE";
 const CLI_UPDATE_RESTART_EXIT_CODE = 75;
@@ -135,7 +134,6 @@ async function startServer(cliArgs: string[]): Promise<number> {
   const password = parseFlag(cliArgs, "--password") || process.env.RELAY_PASSWORD || undefined;
   const port = parseInt(parseFlag(cliArgs, "--port") || process.env.PORT || "7777");
   const enableTunnel = hasFlag(cliArgs, "--tunnel") || process.env.TUNNEL === "true";
-  const home = homedir();
 
   if (enableTunnel && !password) {
     console.warn(
@@ -172,7 +170,7 @@ async function startServer(cliArgs: string[]): Promise<number> {
     ...(process.env.DB_PATH ? { dbPath: process.env.DB_PATH } : {}),
     providerDirs: {
       claude: resolveClaudeConfigDir(),
-      codex: process.env.CODEX_DIR ?? join(home, ".codex"),
+      codex: resolveCodexHomeDir(),
     },
     updateManager,
   });

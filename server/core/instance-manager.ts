@@ -22,11 +22,12 @@ import {
   openSync,
   readSync,
   closeSync,
+  mkdtempSync,
   watch as watchFs,
 } from "fs";
 import type { FSWatcher } from "fs";
 import { basename, join } from "path";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { findProjectIcon } from "#core/favicon-scanner.js";
@@ -35,7 +36,6 @@ import {
   resolveQueryFn,
   prewarmSdk,
   accountInfoToStatus,
-  getClaudeAccountIdentitySnapshot,
   getSdkDiscoveredAccountInfo,
   getSdkDiscoveredModels,
   getSdkDiscoveredRateLimits,
@@ -58,6 +58,7 @@ import { SessionDB } from "#core/db.js";
 import type { SessionRow, ManagedInstanceRow, SessionEventRow } from "#core/db.js";
 import {
   BUILTIN_PROVIDER_MODELS,
+  getProviderDisplayName,
   resolveProviderDefaultModelOption,
 } from "#core/provider-catalog.js";
 import { overlayManagedMcpConfiguration } from "#core/mcp.js";
@@ -165,11 +166,14 @@ import {
   captureManagedSessionForProvider,
   createManagedProviderSession,
   discoverLiveExternalSessions,
+  getProviderAccountIdentitySnapshot,
   getProviderCapabilities,
   getProviderModels,
+  getRegisteredProviders,
   isProviderAvailable,
   listAvailableProviders,
   parseTranscriptForProvider,
+  probeProviderAccountIdentity,
   readAgentHistoryForProvider,
   readAgentModelForProvider,
   resolveManagedTranscriptPathForProvider,
@@ -249,13 +253,9 @@ import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { findClaudeBinary, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
-import {
-  accountProfileRoots,
-  listAccountProfiles,
-  normalizeConfigDir,
-  resolveAccountProfile,
-} from "#core/account-profiles.js";
-import type { ProviderAccountProfile, ProviderDefaults } from "#core/types.js";
+import { normalizeConfigDir, type DefaultLogins } from "#core/accounts.js";
+import { AccountStore } from "#core/account-store.js";
+import { DEFAULT_ACCOUNT_ID, type Account, type ProviderDefaults } from "#core/types.js";
 
 // =============================================================================
 // Re-exports
@@ -479,6 +479,28 @@ export function rlSeverity(status?: string): number {
  * passed. This prevents a new session's opening "allowed" event from
  * wiping out a "rejected" status that is still active.
  */
+/**
+ * Map key for one provider login's global state. The default account (no
+ * config dir) keys as `<provider>:` so a single-account install has exactly
+ * the keys it had before accounts existed.
+ */
+export function providerStateKey(provider: ProviderKind, configDir?: string): string {
+  return `${provider}:${configDir ? normalizeConfigDir(configDir) : ""}`;
+}
+
+let testProviderStateDir: string | null = null;
+
+/**
+ * Where `provider-state.json` lives: the relay home — except under the test
+ * runner, where a manager must never read or write the user's real file (the
+ * same backstop `getWorktreeBase()` applies). One temp dir per process.
+ */
+function resolveProviderStateDir(): string {
+  if (!process.env.NODE_TEST_CONTEXT) return relayDir;
+  testProviderStateDir ??= mkdtempSync(join(tmpdir(), "relay-test-provider-state-"));
+  return testProviderStateDir;
+}
+
 export function mergeRateLimitWindows(
   prevWindows: import("#core/types.js").ProviderRateLimitWindow[] | undefined,
   patchWindows: import("#core/types.js").ProviderRateLimitWindow[] | undefined,
@@ -1403,13 +1425,34 @@ export class MaxProcessesError extends Error {
   }
 }
 
+/**
+ * Thrown by createInstance when the requested account has no login for the
+ * chat's provider. A provider without a login in an account is unavailable
+ * there — Relay never falls back to another account's login.
+ */
+export class ProviderUnavailableInAccountError extends Error {
+  readonly code = "provider_unavailable_in_account";
+  readonly provider: ProviderKind;
+  readonly accountId: string;
+
+  constructor(provider: ProviderKind, account: Pick<Account, "id" | "label">) {
+    super(`${getProviderDisplayName(provider)} has no login in the "${account.label}" account`);
+    this.name = "ProviderUnavailableInAccountError";
+    this.provider = provider;
+    this.accountId = account.id;
+  }
+}
+
 export class InstanceManager extends EventEmitter {
-  private providerGlobalState = new Map<
-    import("#core/types.js").ProviderKind,
-    import("#core/types.js").ProviderGlobalState
-  >();
-  private providerGlobalHydrationInFlight = new Map<ProviderKind, Promise<void>>();
-  private _providerStateFilePath = providerStateFilePath(relayDir);
+  /**
+   * Provider global state (account identity, rate limits, MCP servers,
+   * notices) keyed by `providerStateKey(provider, configDir)`: one entry per
+   * provider login. The default account's entry carries no `configDir`, so
+   * the single-account wire shape is unchanged.
+   */
+  private providerGlobalState = new Map<string, import("#core/types.js").ProviderGlobalState>();
+  private providerGlobalHydrationInFlight = new Map<string, Promise<void>>();
+  private _providerStateFilePath = providerStateFilePath(resolveProviderStateDir());
   private _persistStateTimeout: ReturnType<typeof setTimeout> | null = null;
   private instances = new Map<string, Instance>();
   private instanceMutationChains = new Map<string, Promise<void>>();
@@ -1448,8 +1491,13 @@ export class InstanceManager extends EventEmitter {
   /** Timestamp of the last git branch refresh pass (throttled to GIT_REFRESH_INTERVAL) */
   private lastGitRefreshAt = 0;
   private providerDirs: Record<ProviderKind, string>;
-  /** Claude transcript roots (default + account profiles), memoized on the stored profiles JSON. */
-  private claudeRootsCache: { key: string; roots: string[] } | null = null;
+  /**
+   * The account list (default + stored): which login (config dir) each account
+   * has per provider. The one source for creation, discovery, and Settings.
+   */
+  readonly accounts: AccountStore;
+  /** Transcript roots seen at the last account change — a new one triggers a rescan. */
+  private knownProviderRoots = new Set<string>();
   /** Pre-resolved SDK query function — null if SDK not available (falls back to CLI) */
   private _sdkQueryFn: ((params: { prompt: unknown; options?: unknown }) => unknown) | null = null;
   /** Cached project icon paths: dir → absolute file path (null = scanned, not found) */
@@ -1484,7 +1532,14 @@ export class InstanceManager extends EventEmitter {
       claude: config.providerDirs.claude ?? resolveClaudeConfigDir(),
       codex: config.providerDirs.codex ?? join(home, ".codex"),
     };
-    this.db = new SessionDB(config.dbPath, config.logger);
+    // The search index files each chat under its login root; unbound rows go
+    // under the server's own dir for their provider (the default account).
+    this.db = new SessionDB(config.dbPath, config.logger, {
+      defaultLoginRoots: this.providerDirs,
+    });
+    this.accounts = new AccountStore(this.db, () => this.defaultLogins());
+    this.knownProviderRoots = this.collectProviderRootKeys();
+    this.accounts.onChange(() => this.handleAccountsChanged());
     this.spaceManager = new SpaceManager(this.db, config.logger);
     // Complete/Archive stop (never delete) the space's chats before removing its worktree.
     this.spaceManager.setSpaceChatStopper((spaceId) => this.stopSpaceChats(spaceId));
@@ -1515,13 +1570,29 @@ export class InstanceManager extends EventEmitter {
     // Restore persisted provider global state (rate limits, account info, etc.)
     // from the previous run. Treated as stale-but-valid: shown immediately while
     // live sessions push fresh updates.
-    const persisted = loadPersistedProviderState(this._providerStateFilePath);
+    this.restorePersistedProviderState(this._providerStateFilePath);
+  }
+
+  /**
+   * Load `provider-state.json` into the per-account map. Older files carry
+   * no `configDir` (= default account); a dir equal to the server's own
+   * collapses onto the default key as well, so the default account's state
+   * never grows a `configDir` field. Public for tests; the constructor is
+   * the only production caller.
+   */
+  restorePersistedProviderState(filePath: string): void {
+    const persisted = loadPersistedProviderState(filePath);
     for (const state of persisted) {
-      this.providerGlobalState.set(state.provider, state);
+      const configDir = this.scopeConfigDir(state.provider, state.configDir);
+      const { configDir: _dropped, ...rest } = state;
+      const normalized: import("#core/types.js").ProviderGlobalState = configDir
+        ? { ...rest, configDir }
+        : rest;
+      this.providerGlobalState.set(providerStateKey(state.provider, configDir), normalized);
     }
     if (persisted.length > 0) {
       this.baseConfig.logger.debug(
-        `[InstanceManager] Restored provider state for: ${persisted.map((s) => s.provider).join(", ")}`,
+        `[InstanceManager] Restored provider state for: ${Array.from(this.providerGlobalState.keys()).join(", ")}`,
       );
     }
   }
@@ -1537,145 +1608,219 @@ export class InstanceManager extends EventEmitter {
     return this.providerDirs;
   }
 
-  /** User-added account profiles from global settings (never the implicit default). */
-  private storedAccountProfiles(): ProviderAccountProfile[] {
-    const raw = this.db.getGlobalSettings().provider_profiles_json;
-    if (!raw) return [];
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as ProviderAccountProfile[]) : [];
-    } catch {
-      return [];
+  /**
+   * The default account's logins: the server's own dir for every provider
+   * whose driver is available on this machine.
+   */
+  private defaultLogins(): DefaultLogins {
+    const context = {
+      providerDirs: this.providerDirs,
+      logger: this.baseConfig.logger,
+      sdkQueryFn: this._sdkQueryFn,
+    };
+    const logins: DefaultLogins = {};
+    for (const provider of getRegisteredProviders()) {
+      if (isProviderAvailable(provider, context)) logins[provider] = this.providerDirs[provider];
     }
+    return logins;
   }
 
   /**
-   * Every Claude config dir whose transcripts Relay indexes — the server
-   * default first, then each account profile's dir, deduped. Memoized on the
-   * stored profiles JSON so discovery polls and summary builders don't
-   * re-parse settings on every call.
+   * Every config dir whose transcripts Relay indexes for a provider — the
+   * server's own first, then each account login's dir, deduped. The server's
+   * dir is always included: transcripts on disk are indexed whether or not the
+   * provider binary is currently installed.
    */
-  getClaudeRoots(): string[] {
-    const key = this.db.getGlobalSettings().provider_profiles_json ?? "";
-    if (this.claudeRootsCache?.key === key) return this.claudeRootsCache.roots;
-    const roots = accountProfileRoots(
-      listAccountProfiles(this.storedAccountProfiles(), "claude", this.providerDirs.claude),
-    );
-    this.claudeRootsCache = { key, roots };
-    return roots;
+  getProviderRoots(provider: ProviderKind): string[] {
+    const roots = [this.providerDirs[provider], ...this.accounts.roots(provider)];
+    const seen = new Set<string>();
+    return roots.filter((root) => {
+      const key = normalizeConfigDir(root);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private collectProviderRootKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const provider of getRegisteredProviders()) {
+      for (const root of this.getProviderRoots(provider)) {
+        keys.add(providerStateKey(provider, root));
+      }
+    }
+    return keys;
   }
 
   /**
-   * Account profiles changed (added/removed in Settings): re-derive the set of
-   * Claude transcript roots and pick up sessions under any newly added root.
-   * `scanAllSessions()` is idempotent (known paths are refreshed, not
-   * duplicated), so a full re-scan is safe; it only runs once a root is new.
+   * Accounts changed (added/edited/removed in Settings): pick up sessions
+   * under any newly added login root. `scanAllSessions()` is idempotent (known
+   * paths are refreshed, not duplicated), so a full re-scan is safe; it only
+   * runs once a root is new.
    */
-  refreshAccountProfileRoots(): void {
-    const previous = new Set(this.claudeRootsCache?.roots ?? [this.providerDirs.claude]);
-    this.claudeRootsCache = null;
-    const roots = this.getClaudeRoots();
-    const added = roots.filter((root) => !previous.has(root));
+  private handleAccountsChanged(): void {
+    const previous = this.knownProviderRoots;
+    const next = this.collectProviderRootKeys();
+    this.knownProviderRoots = next;
+    const added = [...next].filter((key) => !previous.has(key));
     this.baseConfig.logger.info(
-      `[InstanceManager] Claude transcript roots: ${roots.join(", ")}${added.length ? ` (new: ${added.join(", ")})` : ""}`,
+      `[InstanceManager] Account login roots: ${[...next].join(", ")}${added.length ? ` (new: ${added.join(", ")})` : ""}`,
     );
     if (added.length === 0 || !this.scanComplete || this.shuttingDown) return;
     try {
       this.scanAndRestoreNew();
     } catch (err) {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Re-scan after account profile change failed: ${err}`,
-      );
+      this.baseConfig.logger.warn(`[InstanceManager] Re-scan after account change failed: ${err}`);
     }
   }
 
   /**
-   * Provider data roots for one chat: the shared dirs with Claude's replaced
-   * by the chat's bound config dir. Every per-instance driver context/config
-   * (session spawn, capture, transcript path, child history) goes through here.
+   * Provider data roots for one chat: the shared dirs with the chat's own
+   * provider's replaced by its bound login (`InstanceInfo.configDir`). Every
+   * per-instance driver context/config (session spawn, capture, transcript
+   * path, child history, plans) goes through here.
    */
   private providerDirsFor(instance: Pick<Instance, "info">): Record<ProviderKind, string> {
-    return this.providerDirsForConfigDir(instance.info.configDir);
+    return this.providerDirsForLogin(instance.info.provider, instance.info.configDir);
   }
 
-  private providerDirsForConfigDir(configDir: string | undefined): Record<ProviderKind, string> {
-    if (
-      !configDir ||
-      normalizeConfigDir(configDir) === normalizeConfigDir(this.providerDirs.claude)
-    )
-      return this.providerDirs;
-    return { ...this.providerDirs, claude: configDir };
+  private providerDirsForLogin(
+    provider: ProviderKind,
+    configDir: string | undefined,
+  ): Record<ProviderKind, string> {
+    const scoped = this.scopeConfigDir(provider, configDir);
+    if (!scoped) return this.providerDirs;
+    return { ...this.providerDirs, [provider]: scoped };
   }
 
   /**
-   * The non-default Claude root a transcript lives under, if any — the
-   * ancestor of its `/projects/` segment. Undefined for the default root and
-   * for other providers. Derived, never stored: `sessions` rows keep only the
-   * JSONL path.
+   * The login a config dir names for provider-global purposes: `undefined`
+   * for the default account (absent, or the server's own dir), else the
+   * normalized dir.
    */
-  private claudeConfigDirForTranscript(
+  private scopeConfigDir(
     provider: ProviderKind,
-    jsonlPath: string | null | undefined,
+    configDir: string | undefined,
   ): string | undefined {
-    if (provider !== "claude" || !jsonlPath) return undefined;
-    const defaultRoot = normalizeConfigDir(this.providerDirs.claude);
-    for (const root of this.getClaudeRoots()) {
-      if (normalizeConfigDir(root) === defaultRoot) continue;
-      if (jsonlPath.startsWith(`${normalizeConfigDir(root)}/projects/`)) return root;
-    }
-    return undefined;
+    if (!configDir) return undefined;
+    const dir = normalizeConfigDir(configDir);
+    const own = this.providerDirs[provider];
+    return own && dir === normalizeConfigDir(own) ? undefined : dir;
   }
 
-  /** External summary with the account root stamped from the transcript path. */
+  /**
+   * The account binding of a transcript: the non-default login root it lives
+   * under (longest match), and the account owning that login. Empty for the
+   * server's own root and for roots no account registers — those belong to the
+   * default account. Derived, never stored: `sessions` rows keep only the path.
+   */
+  private accountBindingForTranscript(
+    provider: ProviderKind,
+    jsonlPath: string | null | undefined,
+  ): { accountId?: string; configDir?: string } {
+    if (!jsonlPath) return {};
+    let match: string | undefined;
+    for (const root of this.getProviderRoots(provider)) {
+      const dir = normalizeConfigDir(root);
+      if (!jsonlPath.startsWith(`${dir}/`)) continue;
+      if (!match || dir.length > match.length) match = dir;
+    }
+    const configDir = this.scopeConfigDir(provider, match);
+    if (!configDir) return {};
+    const account = this.accounts.findForLogin(provider, configDir);
+    if (!account || account.id === DEFAULT_ACCOUNT_ID) return {};
+    return { accountId: account.id, configDir };
+  }
+
+  /** Stamp an external chat's derived account binding onto its info. */
+  private applyTranscriptAccount(info: InstanceInfo, jsonlPath: string | null | undefined): void {
+    const binding = this.accountBindingForTranscript(info.provider, jsonlPath);
+    if (binding.accountId) info.accountId = binding.accountId;
+    if (binding.configDir) info.configDir = binding.configDir;
+  }
+
+  /** External summary with the account stamped from the transcript's login root. */
   private externalSummaryFromRow(row: SessionRow, slugs?: Map<string, string>): InstanceInfo {
     const summary = summaryFromSessionRow(row, slugs);
-    const configDir = this.claudeConfigDirForTranscript(summary.provider, row.jsonl_path);
-    if (configDir) summary.configDir = configDir;
+    this.applyTranscriptAccount(summary, row.jsonl_path);
     return summary;
   }
 
-  /**
-   * Bind a new chat to an account: explicit profile > project default > global
-   * provider default > server default. Only providers that advertise
-   * `supportsAccountProfiles` are bound; the result is undefined for the
-   * default profile so `InstanceInfo.configDir` stays absent.
-   */
-  private resolveCreateConfigDir(options: {
-    provider: ProviderKind;
-    profileId?: string;
-    project?: Project;
-    providerDefaults: Record<string, ProviderDefaults>;
-  }): string | undefined {
-    if (!getProviderCapabilities(options.provider).supportsAccountProfiles) return undefined;
-    const profiles = listAccountProfiles(
-      this.storedAccountProfiles(),
-      options.provider,
-      this.providerDirs[options.provider],
-    );
-    return resolveAccountProfile({
-      provider: options.provider,
-      profileId: options.profileId,
-      projectDefaultProfileId: options.project?.defaultProfileId,
-      providerDefaults: options.providerDefaults,
-      profiles,
-    }).configDir;
+  /** The binding for a known login dir: its owning account, default when unregistered. */
+  private accountBindingForLogin(
+    provider: ProviderKind,
+    configDir: string | undefined,
+  ): { accountId?: string; configDir?: string } {
+    const scoped = this.scopeConfigDir(provider, configDir);
+    if (!scoped) return {};
+    const account = this.accounts.findForLogin(provider, scoped);
+    return {
+      accountId: account && account.id !== DEFAULT_ACCOUNT_ID ? account.id : undefined,
+      configDir: scoped,
+    };
   }
 
   /**
-   * For a resume: the root whose project dir already holds `<sessionId>.jsonl`,
-   * so `--resume` runs under the account that owns the transcript. Returns the
-   * non-default root, `null` when it lives under the default root, and
-   * `undefined` when no root has it (caller falls back to profile resolution).
+   * Bind a new chat to the login its account has for `provider`. Absent or
+   * unknown ids are the default account, whose binding is empty
+   * (`InstanceInfo.accountId`/`configDir` stay absent). A non-default account
+   * with no login for the provider throws — never another account's login. A
+   * provider missing from the default account is simply not installed; session
+   * creation reports that itself.
    */
-  private findClaudeTranscriptRoot(
+  private resolveCreateLogin(
+    provider: ProviderKind,
+    accountId: string | undefined,
+  ): { accountId?: string; configDir?: string } {
+    const resolved = this.accounts.resolveLogin(accountId, provider);
+    if (resolved.account.id === DEFAULT_ACCOUNT_ID) return {};
+    if (!resolved.available) {
+      throw new ProviderUnavailableInAccountError(provider, resolved.account);
+    }
+    return {
+      accountId: resolved.account.id,
+      configDir: this.scopeConfigDir(provider, resolved.configDir),
+    };
+  }
+
+  /**
+   * Provider for a chat created without an explicit one: the first preference
+   * (project default, then global default), then any registered provider, that
+   * the account has a login for. With no usable login at all the first
+   * preference is returned and creation reports the failure.
+   */
+  private resolveDefaultProviderForAccount(
+    accountId: string | undefined,
+    preferences: Array<ProviderKind | null | undefined>,
+  ): ProviderKind {
+    const preferred = preferences.filter((provider): provider is ProviderKind => !!provider);
+    const candidates = [...new Set([...preferred, ...getRegisteredProviders()])];
+    return (
+      candidates.find((provider) => this.accounts.resolveLogin(accountId, provider).available) ??
+      preferred[0] ??
+      "claude"
+    );
+  }
+
+  /**
+   * For a resume: the login root that already holds the session's transcript,
+   * so the resume runs under the login that owns it. Returns the non-default
+   * root, `null` when it lives under the server's own root, and `undefined`
+   * when no root has it (caller falls back to the requested account).
+   */
+  private findTranscriptRoot(
+    provider: ProviderKind,
     sessionId: string,
     workingDirectory: string,
   ): string | null | undefined {
-    const encoded = workingDirectory.replace(/[^A-Za-z0-9_-]/g, "-");
-    const defaultRoot = normalizeConfigDir(this.providerDirs.claude);
-    for (const root of this.getClaudeRoots()) {
-      if (!existsSync(join(root, "projects", encoded, `${sessionId}.jsonl`))) continue;
-      return normalizeConfigDir(root) === defaultRoot ? null : root;
+    for (const root of this.getProviderRoots(provider)) {
+      const path = resolveManagedTranscriptPathForProvider(provider, {
+        providerDirs: this.providerDirsForLogin(provider, root),
+        sessionId,
+        workingDirectory,
+      });
+      if (!path || !existsSync(path)) continue;
+      return this.scopeConfigDir(provider, root) ?? null;
     }
     return undefined;
   }
@@ -2034,7 +2179,10 @@ export class InstanceManager extends EventEmitter {
     }
     // Model discovery → populates module-level cache in codex-models.ts,
     // consumed by the codex provider driver's getModels() on next call.
-    void prewarmCodexModels({ logger: this.baseConfig.logger });
+    void prewarmCodexModels({
+      logger: this.baseConfig.logger,
+      codexHome: this.providerDirs.codex,
+    });
     // Account info + MCP + apps → populates providerGlobalState, served to
     // the UI on connect. Rate limits come from live sessions (the cold
     // app-server probe can't read them without a prior turn snapshot).
@@ -2043,9 +2191,9 @@ export class InstanceManager extends EventEmitter {
 
   /**
    * Driver context for shared (non-chat-specific) work: discovery, model
-   * lists, availability. Pass `configDir` to scope it to one chat's account.
+   * lists, availability. Pass a login to scope it to one chat's account.
    */
-  private getProviderContext(configDir?: string) {
+  private getProviderContext(login?: { provider: ProviderKind; configDir?: string }) {
     const registeredDirectories = new Set(
       this.getKnownDirectories().map((directoryInfo) => directoryInfo.path),
     );
@@ -2056,12 +2204,24 @@ export class InstanceManager extends EventEmitter {
         }
       }
     }
+    const providerDirs = login
+      ? this.providerDirsForLogin(login.provider, login.configDir)
+      : this.providerDirs;
+    const providerRoots: Partial<Record<ProviderKind, string[]>> = {};
+    for (const provider of getRegisteredProviders()) {
+      providerRoots[provider] = this.getProviderRoots(provider);
+    }
     return {
-      providerDirs: this.providerDirsForConfigDir(configDir),
-      claudeRoots: this.getClaudeRoots(),
+      providerDirs,
+      providerRoots,
       logger: this.baseConfig.logger,
       sdkQueryFn: this._sdkQueryFn,
       registeredDirectories,
+      // Only a non-default login rebinds the dirs; the flag tells drivers
+      // they may await a cold discovery probe for it.
+      ...(login && providerDirs !== this.providerDirs
+        ? { accountConfigDir: providerDirs[login.provider] }
+        : {}),
     };
   }
 
@@ -2078,22 +2238,22 @@ export class InstanceManager extends EventEmitter {
       allowedTools?: string[];
       modelOptions?: ProviderModelOptions;
       bootstrapContext?: ProviderSessionBootstrap;
-      /** The chat's bound account (`InstanceInfo.configDir`); absent = server default. */
+      /** The chat's bound login (`InstanceInfo.configDir`); absent = server default. */
       configDir?: string;
     },
   ): ProviderSession {
     const provider = options?.provider ?? "claude";
-    // A bound chat's config and driver context both point at its account dir,
-    // so the SDK spawn, the legacy process, and any path the driver derives
-    // from `providerDirs` agree on where the transcript lives.
-    const providerDirs = this.providerDirsForConfigDir(options?.configDir);
+    // A bound chat's config and driver context both point at its login dir,
+    // so the spawn and any path the driver derives from `providerDirs` agree
+    // on where the transcript lives.
+    const providerDirs = this.providerDirsForLogin(provider, options?.configDir);
     const sessionConfig: CoreConfig =
       providerDirs === this.providerDirs ? config : { ...config, providerDirs };
     return createManagedProviderSession(
       provider,
       sessionConfig,
       options,
-      this.getProviderContext(options?.configDir),
+      this.getProviderContext({ provider, configDir: options?.configDir }),
     );
   }
 
@@ -2312,8 +2472,8 @@ export class InstanceManager extends EventEmitter {
     modelOptions?: ProviderModelOptions;
     parentSessionId?: string;
     review?: import("#core/types.js").ReviewSessionInfo;
-    /** Account profile to bind the chat to (explicit > project > global default). */
-    profileId?: string;
+    /** Account the chat is created in (`Account.id`); absent/unknown = the default account. */
+    accountId?: string;
   }): InstanceInfo {
     const activeCount = [...this.instances.values()].filter(
       (i) => i.process && !i.info.external,
@@ -2368,10 +2528,14 @@ export class InstanceManager extends EventEmitter {
 
     // Resolve provider and model: explicit options > project defaults > global defaults > system defaults
     const globalSettings = this.db.getGlobalSettings();
-    const provider: ProviderKind = options?.provider
-      ? options.provider
-      : (((project?.defaultProvider ?? globalSettings.default_provider) as ProviderKind) ??
-        "claude");
+    // A defaulted provider must be one the account has a login for — a
+    // provider with no login in an account is unavailable there.
+    const provider: ProviderKind =
+      options?.provider ??
+      this.resolveDefaultProviderForAccount(options?.accountId, [
+        project?.defaultProvider as ProviderKind | undefined,
+        globalSettings.default_provider as ProviderKind | undefined,
+      ]);
 
     // Parse per-provider defaults from global settings
     let providerDefaults: Record<string, ProviderDefaults> = {};
@@ -2383,21 +2547,16 @@ export class InstanceManager extends EventEmitter {
     const perProvider = providerDefaults[provider];
 
     // Account binding — fixed for the chat's whole life, like the provider.
-    // A resume follows its transcript: `--resume` must run under the config
-    // dir the JSONL lives in, whatever profile the defaults would pick.
-    const transcriptRoot =
-      resumeId && provider === "claude"
-        ? this.findClaudeTranscriptRoot(resumeId, workingDirectory)
-        : undefined;
-    const configDir =
+    // A resume follows its transcript: it must run under the login whose dir
+    // the transcript lives in (and takes that login's account), whatever
+    // account the caller asked for.
+    const transcriptRoot = resumeId
+      ? this.findTranscriptRoot(provider, resumeId, workingDirectory)
+      : undefined;
+    const { accountId, configDir } =
       transcriptRoot !== undefined
-        ? (transcriptRoot ?? undefined)
-        : this.resolveCreateConfigDir({
-            provider,
-            profileId: options?.profileId,
-            project,
-            providerDefaults,
-          });
+        ? this.accountBindingForLogin(provider, transcriptRoot ?? undefined)
+        : this.resolveCreateLogin(provider, options?.accountId);
 
     // Resolve model: explicit > project default > per-provider default.
     // `isExplicitModel` tracks whether this came from a user choice (vs. being
@@ -2460,7 +2619,9 @@ export class InstanceManager extends EventEmitter {
         ? undefined
         : resolveProviderDefaultModelOption(
             provider,
-            provider === "codex" ? (getCachedCodexModels() ?? undefined) : undefined,
+            provider === "codex"
+              ? (getCachedCodexModels(configDir ?? this.providerDirs.codex) ?? undefined)
+              : undefined,
           )?.id);
     const bootstrapContext = resumeId
       ? this.buildBootstrapContext(project, {
@@ -2527,6 +2688,7 @@ export class InstanceManager extends EventEmitter {
       parentSessionId: options?.parentSessionId,
       preferredModel: isExplicitModel ? model : undefined,
       modelOptions,
+      accountId,
       configDir,
       runtimeMode: resolvedRuntimeMode,
       originalDirectory: spaceOriginalDirectory,
@@ -3005,37 +3167,72 @@ export class InstanceManager extends EventEmitter {
     );
   }
 
-  async ensureProviderGlobalState(provider: ProviderKind, force = false): Promise<void> {
-    const existing = this.providerGlobalState.get(provider);
+  /** One account's global state (`configDir` absent = the default account), if known. */
+  getProviderGlobalState(
+    provider: ProviderKind,
+    configDir?: string,
+  ): import("#core/types.js").ProviderGlobalState | undefined {
+    const state = this.providerGlobalState.get(
+      providerStateKey(provider, this.scopeConfigDir(provider, configDir)),
+    );
+    return state ? this.cloneProviderGlobalState(state) : undefined;
+  }
+
+  /**
+   * Hydrate one login's global state. `configDir` scopes it to a non-default
+   * account's login for the provider (absent = the server's own). Concurrent
+   * calls for the same key share one run; a fresh entry (< 5 min) is left
+   * alone unless `force`.
+   */
+  async ensureProviderGlobalState(
+    provider: ProviderKind,
+    force = false,
+    configDir?: string,
+  ): Promise<void> {
+    const scopedDir = this.scopeConfigDir(provider, configDir);
+    const key = providerStateKey(provider, scopedDir);
+    const existing = this.providerGlobalState.get(key);
     if (!force && existing && Date.now() - existing.updatedAt < 5 * 60_000) {
       return;
     }
-    const inFlight = this.providerGlobalHydrationInFlight.get(provider);
+    const inFlight = this.providerGlobalHydrationInFlight.get(key);
     if (inFlight) return inFlight;
 
     const run = (async () => {
       try {
         if (provider === "claude") {
-          // Plan/email/org come from the pre-warmed SDK account info if
-          // available — this means the UI sees the user's plan at boot
-          // instead of having to wait for the first managed session.
-          const accountInfo = getSdkDiscoveredAccountInfo();
-          // A prewarm answer with no name falls back to the default profile's
-          // probe, which also consults the usage snapshot (see claude-sdk.ts).
+          const dir = scopedDir ?? this.providerDirs.claude;
+          // Plan/email/org come from the SDK account info cached for this
+          // dir if available — the pre-warm fills the default account's at
+          // boot, a session or identity probe fills another account's — so
+          // the UI sees the plan without waiting for a managed session.
+          const accountInfo = getSdkDiscoveredAccountInfo(dir);
+          // An answer with no name falls back to the dir's identity probe,
+          // which also consults the usage snapshot (see claude-sdk.ts). A
+          // non-default account nobody has probed yet gets probed now; the
+          // driver dedupes in-flight probes and honours its own TTL.
           const mapped = accountInfoToStatus(accountInfo);
+          let identity = getProviderAccountIdentitySnapshot("claude", dir);
+          if (scopedDir && identity.probeState === "unknown" && this._sdkQueryFn) {
+            identity = await probeProviderAccountIdentity(
+              "claude",
+              dir,
+              this.baseConfig.logger,
+            ).catch(() => identity);
+          }
           const accountPatch: import("#core/types.js").ProviderAccountStatus = {
             ...(mapped?.email || mapped?.label || mapped?.plan
               ? mapped
-              : (getClaudeAccountIdentitySnapshot(this.providerDirs.claude).identity ??
-                mapped ??
-                {})),
+              : (identity.identity ?? mapped ?? {})),
           };
 
           // Rate limits: prefer live `rate_limit_event` data accumulated by
-          // active sessions, falling back to the experimental get_usage
-          // snapshot cached at prewarm / session start (SDK >= 0.3.169).
+          // this account's active sessions, falling back to the experimental
+          // get_usage snapshot cached for the dir at prewarm / probe / session
+          // start (SDK >= 0.3.169).
           for (const instance of this.instances.values()) {
             if (instance.info.provider !== "claude" || !instance.process) continue;
+            if (this.scopeConfigDir("claude", instance.info.configDir) !== scopedDir) continue;
             const session =
               instance.process as import("#core/providers/claude-sdk.js").ClaudeSdkSession;
             if (typeof session.getRateLimitSnapshot !== "function") continue;
@@ -3046,12 +3243,12 @@ export class InstanceManager extends EventEmitter {
             }
           }
           if (!accountPatch.rateLimits) {
-            const snapshot = getSdkDiscoveredRateLimits();
+            const snapshot = getSdkDiscoveredRateLimits(dir);
             if (snapshot?.length) accountPatch.rateLimits = snapshot;
           }
 
           if (Object.keys(accountPatch).length > 0) {
-            this.updateProviderGlobalState("claude", { account: accountPatch });
+            this.updateProviderGlobalState("claude", { account: accountPatch }, scopedDir);
           }
           return;
         }
@@ -3068,38 +3265,62 @@ export class InstanceManager extends EventEmitter {
         const snapshot = await fetchCodexProviderGlobalStateSnapshot({
           cwd,
           logger: this.baseConfig.logger,
+          // A non-default login reads its own CODEX_HOME.
+          ...(scopedDir ? { codexHome: scopedDir } : {}),
         });
-        this.updateProviderGlobalState(provider, snapshot);
+        this.updateProviderGlobalState(provider, snapshot, scopedDir);
       } catch (err) {
         this.baseConfig.logger.debug(
-          `[InstanceManager] Failed to hydrate provider global state for ${provider}: ${err}`,
+          `[InstanceManager] Failed to hydrate provider global state for ${key}: ${err}`,
         );
       } finally {
-        this.providerGlobalHydrationInFlight.delete(provider);
+        this.providerGlobalHydrationInFlight.delete(key);
       }
     })();
 
-    this.providerGlobalHydrationInFlight.set(provider, run);
+    this.providerGlobalHydrationInFlight.set(key, run);
     return run;
   }
 
-  recordManagedMcpConfiguration(provider: ProviderKind, name: string): void {
-    const existing = this.providerGlobalState.get(provider)?.mcpServers ?? [];
-    this.updateProviderGlobalState(provider, {
-      mcpServers: overlayManagedMcpConfiguration(existing, provider, name),
-    });
+  /** Every non-default login of a provider whose global state should be hydrated alongside the default. */
+  listAccountConfigDirs(provider: ProviderKind): string[] {
+    return this.accounts
+      .roots(provider)
+      .map((dir) => this.scopeConfigDir(provider, dir))
+      .filter((dir): dir is string => !!dir);
   }
 
+  recordManagedMcpConfiguration(provider: ProviderKind, name: string, configDir?: string): void {
+    const scopedDir = this.scopeConfigDir(provider, configDir);
+    const existing =
+      this.providerGlobalState.get(providerStateKey(provider, scopedDir))?.mcpServers ?? [];
+    this.updateProviderGlobalState(
+      provider,
+      { mcpServers: overlayManagedMcpConfiguration(existing, provider, name) },
+      scopedDir,
+    );
+  }
+
+  /**
+   * Merge a patch into one account's global state and broadcast it.
+   * `configDir` is the account (already scoped by the caller or scoped here);
+   * the default account's state never carries the field.
+   */
   private updateProviderGlobalState(
     provider: import("#core/types.js").ProviderKind,
     patch: Partial<import("#core/types.js").ProviderGlobalState>,
+    configDir?: string,
   ): void {
-    const prev = this.providerGlobalState.get(provider);
+    const scopedDir = this.scopeConfigDir(provider, configDir);
+    const key = providerStateKey(provider, scopedDir);
+    const prev = this.providerGlobalState.get(key);
+    const { configDir: _patchDir, ...patchFields } = patch;
     const next: import("#core/types.js").ProviderGlobalState = {
       provider,
       updatedAt: Date.now(),
       ...prev,
-      ...patch,
+      ...patchFields,
+      ...(scopedDir ? { configDir: scopedDir } : {}),
       account: patch.account
         ? {
             ...prev?.account,
@@ -3122,7 +3343,7 @@ export class InstanceManager extends EventEmitter {
         ? patch.notices.map((notice) => ({ ...notice }))
         : prev?.notices?.map((notice) => ({ ...notice })),
     };
-    this.providerGlobalState.set(provider, next);
+    this.providerGlobalState.set(key, next);
     this.emit("provider_global_state:updated", provider, this.cloneProviderGlobalState(next));
 
     // Debounced persistence: write all provider state to disk ~500 ms after the
@@ -3236,7 +3457,7 @@ export class InstanceManager extends EventEmitter {
 
     const managed = this.db.getManagedByInstanceId(id);
     if (managed) {
-      return summaryFromManagedRow(managed, slugs);
+      return summaryFromManagedRow(managed, slugs, this.accounts);
     }
 
     return null;
@@ -3283,7 +3504,7 @@ export class InstanceManager extends EventEmitter {
 
     for (const row of this.db.getManagedByProjectId(projectId)) {
       if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, summaryFromManagedRow(row, slugs));
+        chats.set(row.instance_id, summaryFromManagedRow(row, slugs, this.accounts));
       }
     }
 
@@ -3343,7 +3564,7 @@ export class InstanceManager extends EventEmitter {
 
     for (const row of this.db.getManagedBySpaceId(spaceId)) {
       if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, summaryFromManagedRow(row, slugs));
+        chats.set(row.instance_id, summaryFromManagedRow(row, slugs, this.accounts));
       }
     }
 
@@ -3381,11 +3602,22 @@ export class InstanceManager extends EventEmitter {
     return getProviderCapabilities(provider);
   }
 
-  async getProviderModels(provider: ProviderKind): Promise<ProviderModelOption[]> {
+  /**
+   * Model list for a provider, optionally scoped to one account's config dir
+   * (`configDir` absent or equal to the server's own = the default account,
+   * exactly today's path).
+   */
+  async getProviderModels(
+    provider: ProviderKind,
+    configDir?: string,
+  ): Promise<ProviderModelOption[]> {
     if (!this.isProviderAvailable(provider)) {
       throw new Error(`Provider '${provider}' is not available`);
     }
-    return getProviderModels(provider, this.getProviderContext());
+    return getProviderModels(
+      provider,
+      this.getProviderContext({ provider, configDir: this.scopeConfigDir(provider, configDir) }),
+    );
   }
 
   async getInstanceDiff(id: string, filePath?: string): Promise<string | null> {
@@ -4734,7 +4966,7 @@ export class InstanceManager extends EventEmitter {
    */
   resolveProjectId(slug: string): string | null {
     // Default root first: the first account root that has the dir wins.
-    for (const root of this.getClaudeRoots()) {
+    for (const root of this.getProviderRoots("claude")) {
       const resolved = this.resolveProjectIdInRoot(join(root, "projects"), slug);
       if (resolved) return resolved;
     }
@@ -4811,15 +5043,26 @@ export class InstanceManager extends EventEmitter {
     return this.db.getGlobalStats();
   }
 
-  getProjectArtifacts(projectId: string): ProjectArtifacts | null {
+  /**
+   * Project artifacts (memory, plans, skills, stats). `options.claudeRoots`
+   * scopes the Claude-side reads (memory, plans, user skills): one account's
+   * login root (the default account's server dir included), or `[]` for an
+   * account with no Claude login. Absent = the union across every account
+   * root, default first — the single-account/legacy read.
+   */
+  getProjectArtifacts(
+    projectId: string,
+    options: { claudeRoots?: string[] } = {},
+  ): ProjectArtifacts | null {
     const registeredProject = this._projectManager.getProject(projectId);
     const resolvedId = registeredProject ? null : this.resolveProjectId(projectId);
+    const claudeRoots = options.claudeRoots ?? this.getProviderRoots("claude");
 
     // One Claude metadata dir per account root (`<root>/projects/<encoded>`),
     // default root first, keeping only the ones that exist. Empty for projects
     // whose sessions all come from other providers (e.g. Codex-only).
     const projectDirsByRoot: Array<{ root: string; projectDir: string }> = [];
-    for (const root of this.getClaudeRoots()) {
+    for (const root of claudeRoots) {
       const claudeProjectsDir = join(root, "projects");
       const candidate = registeredProject
         ? this.cwdToProjectDir(registeredProject.directory, claudeProjectsDir)
@@ -5054,7 +5297,12 @@ export class InstanceManager extends EventEmitter {
     }
 
     // Skills
-    const skills = discoverSkills(directory || undefined, { claudeDir: this.providerDirs.claude });
+    // User-level Claude skills come from the scoped login (the first root;
+    // the default account's dir in the aggregate case) — none for an account
+    // without a Claude login.
+    const skills = discoverSkills(directory || undefined, {
+      claudeDir: claudeRoots.length ? claudeRoots[0] : null,
+    });
 
     const resolvedProjectId =
       registeredProject?.id ??
@@ -5220,6 +5468,17 @@ export class InstanceManager extends EventEmitter {
   stopAll(): void {
     this.shuttingDown = true;
     this.fileStatsDebouncer.cancelAll();
+    // Flush a pending (debounced) provider-state write now rather than
+    // losing the last half-second of account/rate-limit state — or letting
+    // the timer fire after the caller has torn the environment down.
+    if (this._persistStateTimeout !== null) {
+      clearTimeout(this._persistStateTimeout);
+      this._persistStateTimeout = null;
+      persistProviderState(
+        this._providerStateFilePath,
+        Array.from(this.providerGlobalState.values()),
+      );
+    }
     const processingIds: string[] = [];
     for (const instance of this.instances.values()) {
       const wasProcessing = instance.process?.isProcessing ?? false;
@@ -5903,9 +6162,9 @@ export class InstanceManager extends EventEmitter {
       gitBranch,
       originalDirectory,
       parentSessionId,
-      // Terminal chats under a non-default account root are labelled by it;
+      // Terminal chats under a non-default login root carry its account;
       // derived from the transcript path, never stored in `sessions`.
-      configDir: this.claudeConfigDirForTranscript(provider, jsonlPath),
+      ...this.accountBindingForTranscript(provider, jsonlPath),
       spaceId:
         originalDirectory && (worktreePath || gitBranch)
           ? explicitOrInferredSpaceIdForPersistenceRow(
@@ -6278,7 +6537,7 @@ export class InstanceManager extends EventEmitter {
     const { configDir, ...rest } = options;
     return resolveManagedTranscriptPathForProvider(provider, {
       ...rest,
-      providerDirs: this.providerDirsForConfigDir(configDir),
+      providerDirs: this.providerDirsForLogin(provider, configDir),
     });
   }
 
@@ -7654,9 +7913,11 @@ export class InstanceManager extends EventEmitter {
    */
   private scanAllSessions(): void {
     const scanStart = performance.now();
-    // Every account root is scanned (default first); a chat whose transcript
-    // lives under a profile's dir is indexed exactly like a default-root one.
-    const claudeProjectsDirs = this.getClaudeRoots().map((root) => join(root, "projects"));
+    // Every login root is scanned (default first); a chat whose transcript
+    // lives under another account's dir is indexed exactly like a default-root one.
+    const claudeProjectsDirs = this.getProviderRoots("claude").map((root) =>
+      join(root, "projects"),
+    );
     const existingProjectsDirs = claudeProjectsDirs.filter((dir) => existsSync(dir));
 
     const knownPaths = this.db.getJsonlPaths();
@@ -7951,13 +8212,24 @@ export class InstanceManager extends EventEmitter {
     );
   }
 
-  /** Recursively scan ~/.codex/sessions/ for Codex JSONL transcripts. */
+  /** Scan every Codex login root (`<CODEX_HOME>/sessions`, default first) for transcripts. */
   private scanCodexSessions(
     knownPaths: Set<string>,
     diskPaths: Set<string>,
     managedKeys: { providerSessionIds: Set<string>; transcriptPaths: Set<string> },
   ): void {
-    const sessionsDir = join(this.providerDirs.codex, "sessions");
+    for (const root of this.getProviderRoots("codex")) {
+      this.scanCodexSessionsDir(join(root, "sessions"), knownPaths, diskPaths, managedKeys);
+    }
+  }
+
+  /** Recursively scan one `sessions/` dir for Codex JSONL transcripts. */
+  private scanCodexSessionsDir(
+    sessionsDir: string,
+    knownPaths: Set<string>,
+    diskPaths: Set<string>,
+    managedKeys: { providerSessionIds: Set<string>; transcriptPaths: Set<string> },
+  ): void {
     if (!existsSync(sessionsDir)) return;
 
     const rows: SessionRow[] = [];
@@ -8266,8 +8538,7 @@ export class InstanceManager extends EventEmitter {
         restoredState.info.projectId,
       )?.slug;
     }
-    const externalConfigDir = this.claudeConfigDirForTranscript(provider, entry.jsonl_path);
-    if (externalConfigDir) restoredState.info.configDir = externalConfigDir;
+    this.applyTranscriptAccount(restoredState.info, entry.jsonl_path);
 
     const instance: Instance = {
       info: restoredState.info,
@@ -8394,6 +8665,17 @@ export class InstanceManager extends EventEmitter {
         builtRestore.info.projectId,
       )?.slug;
     }
+    // Rows written before accounts carried an id: the bound login names it.
+    // The derived id is persisted below (the normal save path) so summaries
+    // and search read it directly on the next run instead of re-deriving.
+    let backfilledAccountId = false;
+    if (builtRestore.info.configDir && !builtRestore.info.accountId) {
+      builtRestore.info.accountId = this.accountBindingForLogin(
+        provider,
+        builtRestore.info.configDir,
+      ).accountId;
+      backfilledAccountId = !!builtRestore.info.accountId;
+    }
 
     const instance: Instance = {
       info: builtRestore.info,
@@ -8424,7 +8706,8 @@ export class InstanceManager extends EventEmitter {
     }
     if (
       transcriptPath !== (entry.transcript_path ?? undefined) ||
-      restoredPaths.repairedStaleWorktree
+      restoredPaths.repairedStaleWorktree ||
+      backfilledAccountId
     ) {
       this.dbSave(instance);
     }
@@ -8968,7 +9251,9 @@ export class InstanceManager extends EventEmitter {
               );
             }
             if (globalPatch.account || globalPatch.mcpServers || globalPatch.apps) {
-              this.updateProviderGlobalState(live.info.provider, globalPatch);
+              // Account/rate-limit/MCP state belongs to the login this chat
+              // runs under, never to the default account by assumption.
+              this.updateProviderGlobalState(live.info.provider, globalPatch, live.info.configDir);
             }
             live.info.providerStatus = {
               ...live.info.providerStatus,
@@ -9109,10 +9394,19 @@ export class InstanceManager extends EventEmitter {
               } satisfies import("./types.js").ProviderNotice;
 
               if (notice.scope === "global") {
-                const existing = this.providerGlobalState.get(live.info.provider);
+                const existing = this.providerGlobalState.get(
+                  providerStateKey(
+                    live.info.provider,
+                    this.scopeConfigDir(live.info.provider, live.info.configDir),
+                  ),
+                );
                 const notices = existing?.notices ? [...existing.notices] : [];
                 notices.push(notice);
-                this.updateProviderGlobalState(live.info.provider, { notices: notices.slice(-5) });
+                this.updateProviderGlobalState(
+                  live.info.provider,
+                  { notices: notices.slice(-5) },
+                  live.info.configDir,
+                );
               } else {
                 const notices = live.info.providerStatus?.notices
                   ? [...live.info.providerStatus.notices]
@@ -9772,6 +10066,15 @@ export class InstanceManager extends EventEmitter {
       if (!this.isProviderAvailable(provider)) return false;
       if (instance.sessionId || instance.info.sessionId) return false;
       if (instance.info.provider === provider) return true;
+      // The chat stays in its account: the new provider runs under that
+      // account's login for it, and is refused when the account has none.
+      let login: { accountId?: string; configDir?: string };
+      try {
+        login = this.resolveCreateLogin(provider, instance.info.accountId);
+      } catch (err) {
+        if (err instanceof ProviderUnavailableInAccountError) return false;
+        throw err;
+      }
 
       const globalSettings = this.db.getGlobalSettings();
       let providerDefaults: Record<
@@ -9805,6 +10108,8 @@ export class InstanceManager extends EventEmitter {
       instance.info.preferredModel = preferredModel;
       instance.info.modelOptions = modelOptions;
       instance.info.provider = provider;
+      instance.info.accountId = login.accountId;
+      instance.info.configDir = login.configDir;
 
       const instanceConfig: CoreConfig = {
         ...this.baseConfig,
@@ -9822,7 +10127,9 @@ export class InstanceManager extends EventEmitter {
             ? undefined
             : resolveProviderDefaultModelOption(
                 provider,
-                provider === "codex" ? (getCachedCodexModels() ?? undefined) : undefined,
+                provider === "codex"
+                  ? (getCachedCodexModels(login.configDir ?? this.providerDirs.codex) ?? undefined)
+                  : undefined,
               )?.id),
         modelOptions,
       });

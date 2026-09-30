@@ -32,6 +32,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { PageShell } from "@/components/ui/page-shell";
 import { useProjectContext } from "@/context/project-context";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useScopedTasks } from "@/hooks/use-scoped-tasks";
 import type { SpaceInfo, Task, TaskComment, TaskStatus, TaskType } from "@shared/types";
@@ -1005,6 +1006,8 @@ function CreateTaskForm({
 
 export function TasksPage() {
   const { artifacts } = useProjectContext();
+  // New chats bind to the active account (undefined below two accounts).
+  const { accountIdParam } = useActiveAccount();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const {
     task: selectedId,
@@ -1148,8 +1151,11 @@ export function TasksPage() {
     }
     try {
       const created = spaceId
-        ? await createInstance({ spaceId })
-        : await createInstance({ workingDirectory: artifacts.directory });
+        ? await createInstance({ spaceId, accountId: accountIdParam })
+        : await createInstance({
+            workingDirectory: artifacts.directory,
+            accountId: accountIdParam,
+          });
       const draft = buildTaskReference(task);
       sessionStorage.setItem(`relay:draft:${created.id}`, draft);
       await maybePromoteTaskToInProgress(task);
@@ -1166,7 +1172,7 @@ export function TasksPage() {
     // this step so we don't create a second space for the one already made.
     const startChatInSpace = async (newSpaceId: string) => {
       try {
-        const created = await createInstance({ spaceId: newSpaceId });
+        const created = await createInstance({ spaceId: newSpaceId, accountId: accountIdParam });
         const draft = buildTaskReference(task);
         sessionStorage.setItem(`relay:draft:${created.id}`, draft);
         const taskInNewSpace = await fetchTask(projectId, task.id, { spaceId: newSpaceId });

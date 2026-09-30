@@ -4,6 +4,8 @@ import type { ProviderModelOption } from "#core/types.js";
 import {
   findCodexBinary,
   buildCodexSpawnEnv,
+  normalizeCodexHomeDir,
+  resolveCodexHomeDir,
   RELAY_CODEX_ORIGINATOR,
 } from "#core/providers/codex-cli.js";
 
@@ -31,6 +33,11 @@ interface CodexAppServerResponse {
 
 export interface DiscoverCodexModelsOptions {
   codexPath?: string;
+  /**
+   * Codex home (`CODEX_HOME`) the probe runs under — one login per home.
+   * Absent = the server's own home (`resolveCodexHomeDir()`).
+   */
+  codexHome?: string;
   includeHidden?: boolean;
   logger?: Logger;
   spawnProcess?: SpawnFn;
@@ -40,20 +47,39 @@ export interface DiscoverCodexModelsOptions {
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 /**
- * Module-level cache of Codex-reported models. Populated by
- * `prewarmCodexModels()` at server startup and refreshed when callers opt in
- * via `discoverCodexModels({ cache: true })`. The Codex binary spawns a fresh
- * `app-server` subprocess on every model probe, so this cache is what lets
+ * Per-home cache of Codex-reported models (one account login = one
+ * `CODEX_HOME`; the server's own home is just one entry, so a second
+ * account's picker probe never clobbers the first's list). Populated by
+ * `prewarmCodexModels()` at server startup and by `refreshCodexModelsIfStale()`
+ * / `discoverCodexModels()`. The Codex binary spawns a fresh `app-server`
+ * subprocess on every model probe, so this cache is what lets
  * `/api/provider-models?provider=codex` serve hot instead of paying the
  * subprocess startup cost on the first UI request.
  */
-let codexDiscoveredModels: ProviderModelOption[] | null = null;
+interface CodexModelsEntry {
+  models: ProviderModelOption[] | null;
+  /** When the model list was last probed (prewarm or staleness refresh). */
+  probedAt: number;
+  /** In-flight staleness refresh, deduped so concurrent callers share one probe. */
+  refreshInFlight: Promise<void> | null;
+}
 
-/** When the model list was last probed (prewarm or staleness refresh). */
-let codexModelsProbedAt = 0;
+const codexModelsByHome = new Map<string, CodexModelsEntry>();
 
-/** In-flight staleness refresh, deduped so concurrent callers share one probe. */
-let codexModelsRefreshInFlight: Promise<void> | null = null;
+function modelsEntry(codexHome?: string): CodexModelsEntry {
+  const key = codexHome?.trim() ? normalizeCodexHomeDir(codexHome) : resolveCodexHomeDir();
+  let entry = codexModelsByHome.get(key);
+  if (!entry) {
+    entry = { models: null, probedAt: 0, refreshInFlight: null };
+    codexModelsByHome.set(key, entry);
+  }
+  return entry;
+}
+
+/** Test seam: forget every per-home model cache. */
+export function clearCodexModelsCache(): void {
+  codexModelsByHome.clear();
+}
 
 /** Re-probe the model list this often — the reported list changes when the
  *  Codex CLI is updated (including via Relay's own provider-update flow), so a
@@ -61,12 +87,12 @@ let codexModelsRefreshInFlight: Promise<void> | null = null;
 const CODEX_MODELS_REFRESH_INTERVAL_MS = 30 * 60_000;
 
 /**
- * Return the cached Codex model list if `prewarmCodexModels()` (or a cached
- * `discoverCodexModels()` call) has populated it. Returns null otherwise so
- * callers know to fall back to a live probe.
+ * Return the cached Codex model list for a home (default: the server's own)
+ * if `prewarmCodexModels()` (or a `discoverCodexModels()` call) has populated
+ * it. Returns null otherwise so callers know to fall back to a live probe.
  */
-export function getCachedCodexModels(): ProviderModelOption[] | null {
-  return codexDiscoveredModels;
+export function getCachedCodexModels(codexHome?: string): ProviderModelOption[] | null {
+  return modelsEntry(codexHome).models;
 }
 
 /**
@@ -76,12 +102,13 @@ export function getCachedCodexModels(): ProviderModelOption[] | null {
  * so the provider driver falls back to the builtin catalog.
  */
 export async function prewarmCodexModels(options: DiscoverCodexModelsOptions = {}): Promise<void> {
-  if (codexDiscoveredModels) return;
+  const entry = modelsEntry(options.codexHome);
+  if (entry.models) return;
   try {
     const models = await discoverCodexModels(options);
     if (models.length > 0) {
-      codexDiscoveredModels = models;
-      codexModelsProbedAt = Date.now();
+      entry.models = models;
+      entry.probedAt = Date.now();
       options.logger?.info?.(`[CodexModels] Pre-warm discovered ${models.length} models`);
     } else {
       options.logger?.debug?.(
@@ -94,22 +121,24 @@ export async function prewarmCodexModels(options: DiscoverCodexModelsOptions = {
 }
 
 /**
- * Re-probe the Codex model list when the cached snapshot is older than
+ * Re-probe a home's Codex model list when its cached snapshot is older than
  * CODEX_MODELS_REFRESH_INTERVAL_MS. Fire-and-forget from the provider driver's
  * getModels() when the cache is warm (callers get the current cache
  * immediately and the UI's next poll picks up the refreshed list), or awaited
  * on a cold cache. An empty probe result leaves the previous cache in place.
+ * Staleness and in-flight dedupe are tracked per home.
  */
 export async function refreshCodexModelsIfStale(
   options: DiscoverCodexModelsOptions = {},
 ): Promise<void> {
-  if (Date.now() - codexModelsProbedAt < CODEX_MODELS_REFRESH_INTERVAL_MS) return;
-  if (codexModelsRefreshInFlight) return codexModelsRefreshInFlight;
-  codexModelsRefreshInFlight = (async () => {
+  const entry = modelsEntry(options.codexHome);
+  if (Date.now() - entry.probedAt < CODEX_MODELS_REFRESH_INTERVAL_MS) return;
+  if (entry.refreshInFlight) return entry.refreshInFlight;
+  entry.refreshInFlight = (async () => {
     try {
       const models = await discoverCodexModels(options);
       if (models.length > 0) {
-        codexDiscoveredModels = models;
+        entry.models = models;
         options.logger?.info?.(`[CodexModels] Refreshed model discovery: ${models.length} models`);
       }
     } catch (err) {
@@ -117,11 +146,11 @@ export async function refreshCodexModelsIfStale(
     } finally {
       // Stamp even on failure/empty so a broken environment retries once per
       // interval instead of spawning a probe on every picker open.
-      codexModelsProbedAt = Date.now();
-      codexModelsRefreshInFlight = null;
+      entry.probedAt = Date.now();
+      entry.refreshInFlight = null;
     }
   })();
-  return codexModelsRefreshInFlight;
+  return entry.refreshInFlight;
 }
 
 export async function discoverCodexModels(
@@ -139,7 +168,7 @@ export async function discoverCodexModels(
 
   return new Promise((resolve, reject) => {
     const child = spawnProcess(codexPath, ["app-server", "--listen", "stdio://"], {
-      env: buildCodexSpawnEnv(),
+      env: buildCodexSpawnEnv(options.codexHome),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -222,7 +251,7 @@ export async function discoverCodexModels(
         }));
 
       if (models.length > 0) {
-        codexDiscoveredModels = models.map((model) => ({ ...model }));
+        modelsEntry(options.codexHome).models = models.map((model) => ({ ...model }));
       }
       finish(null, models);
     };

@@ -14,6 +14,7 @@ import {
   listWorktrees,
 } from "#core/git.js";
 import { resolveSuggestions } from "#core/actions.js";
+import { resolveAccountLoginRoots } from "#core/account-scope.js";
 import { searchWorkspaceEntries } from "#core/workspace-entries.js";
 import { readJsonBody } from "#server/hono-utils.js";
 import { gitErrorResponse, gitResultStatus } from "#server/git-http.js";
@@ -252,13 +253,19 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         directory?: string;
         name?: string;
         targetBranch?: string;
+        /** Account registering the project (the browser's active account); absent = default. */
+        accountId?: string | null;
       }>(c);
       if (!body.directory || typeof body.directory !== "string") {
         return c.json({ error: "Missing directory" }, 400);
       }
+      if (body.accountId != null && typeof body.accountId !== "string") {
+        return c.json({ error: "accountId must be a string" }, 400);
+      }
       const project = instanceManager.projectManager.addProject(body.directory, {
         name: body.name,
         targetBranch: body.targetBranch,
+        accountId: body.accountId,
       });
       instanceManager.rescanAll();
       return c.json(project, 201);
@@ -275,6 +282,8 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       const body = await readJsonBody<{
         parentDirectory?: string;
         name?: string;
+        /** Register the new project under this account (absent = default). */
+        accountId?: string | null;
       }>(c);
       if (!body.parentDirectory || typeof body.parentDirectory !== "string") {
         return c.json({ error: "Missing parentDirectory" }, 400);
@@ -282,9 +291,13 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       if (!body.name || typeof body.name !== "string") {
         return c.json({ error: "Missing name" }, 400);
       }
+      if (body.accountId != null && typeof body.accountId !== "string") {
+        return c.json({ error: "accountId must be a string" }, 400);
+      }
       const project = await instanceManager.projectManager.initProject(
         body.parentDirectory,
         body.name.trim(),
+        { accountId: body.accountId },
       );
       instanceManager.rescanAll();
       return c.json(project, 201);
@@ -314,10 +327,30 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         spaceBranchSource?: "local" | "remote" | null;
         defaultProvider?: string | null;
         defaultModel?: string | null;
-        defaultProfileId?: string | null;
+        /** Account membership (`Account.id`s); unknown ids → 400, empty ⇒ default only. */
+        accountIds?: string[] | null;
         suggestions?: import("#core/types.js").SuggestionsConfig | null;
       }>(c);
-      const project = instanceManager.projectManager.updateProject(c.req.param("id"), body);
+      if (
+        body.accountIds !== undefined &&
+        body.accountIds !== null &&
+        (!Array.isArray(body.accountIds) || body.accountIds.some((id) => typeof id !== "string"))
+      ) {
+        return c.json({ error: "accountIds must be a list of account ids" }, 400);
+      }
+      const { name, targetBranch, customInstructions, defaultSpaceBranch } = body;
+      const { spaceBranchSource, defaultProvider, defaultModel, accountIds, suggestions } = body;
+      const project = instanceManager.projectManager.updateProject(c.req.param("id"), {
+        ...(name !== undefined ? { name } : {}),
+        ...(targetBranch !== undefined ? { targetBranch } : {}),
+        ...(customInstructions !== undefined ? { customInstructions } : {}),
+        ...(defaultSpaceBranch !== undefined ? { defaultSpaceBranch } : {}),
+        ...(spaceBranchSource !== undefined ? { spaceBranchSource } : {}),
+        ...(defaultProvider !== undefined ? { defaultProvider } : {}),
+        ...(defaultModel !== undefined ? { defaultModel } : {}),
+        ...(accountIds !== undefined ? { accountIds } : {}),
+        ...("suggestions" in body ? { suggestions } : {}),
+      });
       if (!project) {
         return c.json({ error: "Project not found" }, 404);
       }
@@ -372,7 +405,19 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 
   app.get("/api/project-artifacts/:name", (c) => {
-    const artifacts = instanceManager.getProjectArtifacts(c.req.param("name"));
+    // `?accountId=` scopes plans/memory/skills to that account's own Claude
+    // login (the default account's included) or to nothing when it has no
+    // Claude login; absent = the aggregate read across every root.
+    const claudeRoots = resolveAccountLoginRoots(
+      instanceManager,
+      "claude",
+      c.req.query("accountId"),
+      deps.config.logger,
+    );
+    const artifacts = instanceManager.getProjectArtifacts(
+      c.req.param("name"),
+      claudeRoots ? { claudeRoots } : undefined,
+    );
     if (!artifacts) {
       return c.json({ error: "Project not found" }, 404);
     }

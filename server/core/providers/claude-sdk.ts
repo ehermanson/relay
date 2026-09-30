@@ -436,34 +436,63 @@ function resolveClaudeExecutablePath(): string | undefined {
   return findClaudeBinary() ?? undefined;
 }
 
-/** Module-level cache of SDK-discovered models. Populated eagerly by prewarmSdk(), updated by sessions. */
-let sdkDiscoveredModels: SdkModelInfo[] | null = null;
+/**
+ * Per-config-dir cache of what the SDK discovered for one account: the model
+ * list (with the time it was last probed and any in-flight refresh), the raw
+ * accountInfo() payload, and the get_usage rate-limit snapshot. Keyed by the
+ * normalized config dir — the server's own dir is just one entry — so a
+ * second account's session or picker probe never clobbers the first's.
+ * Populated eagerly by prewarmSdk() for the default dir, lazily by
+ * refreshSdkDiscoveredModelsIfStale() / probeClaudeAccountIdentity() for
+ * others, and refreshed by live sessions bound to each dir.
+ */
+interface SdkDiscoveryEntry {
+  models: SdkModelInfo[] | null;
+  /** When the model list was last probed (prewarm, session discovery, or refresh). */
+  modelsProbedAt: number;
+  /** In-flight staleness refresh, deduped so concurrent callers share one probe. */
+  modelsRefreshInFlight: Promise<void> | null;
+  /** accountInfo() — plan/email/org. */
+  accountInfo: AccountInfo | null;
+  /**
+   * Plan rate-limit utilization from the experimental get_usage snapshot
+   * (SDK >= 0.3.169), refreshed by sessions (snapshot fetch + live
+   * rate_limit_event), so the UI can show utilization before any turn runs.
+   */
+  rateLimits: ProviderRateLimitStatus[] | null;
+}
 
-/** When the model list was last probed (prewarm, session discovery, or refresh). */
-let sdkModelsProbedAt = 0;
+const sdkDiscovery = new Map<string, SdkDiscoveryEntry>();
 
-/** In-flight staleness refresh, deduped so concurrent callers share one probe. */
-let sdkModelsRefreshInFlight: Promise<void> | null = null;
+/** Normalize a config dir for cache keys: trailing slashes off. */
+function discoveryKey(configDir: string): string {
+  return configDir.trim().replace(/\/+$/, "") || "/";
+}
+
+function discoveryEntry(configDir: string = resolveClaudeConfigDir()): SdkDiscoveryEntry {
+  const key = discoveryKey(configDir);
+  let entry = sdkDiscovery.get(key);
+  if (!entry) {
+    entry = {
+      models: null,
+      modelsProbedAt: 0,
+      modelsRefreshInFlight: null,
+      accountInfo: null,
+      rateLimits: null,
+    };
+    sdkDiscovery.set(key, entry);
+  }
+  return entry;
+}
+
+/** Test seam: forget every per-dir discovery cache. */
+export function clearSdkDiscoveryCache(): void {
+  sdkDiscovery.clear();
+}
 
 /** Re-probe the model list this often — new models are published server-side,
  *  so a long-running Relay must not serve a boot-time snapshot forever. */
 const SDK_MODELS_REFRESH_INTERVAL_MS = 30 * 60_000;
-
-/**
- * Module-level cache of SDK-discovered account info (plan/email/org).
- * Populated eagerly by prewarmSdk() — refreshed by real sessions via
- * fetchAccountInfo().
- */
-let sdkDiscoveredAccountInfo: AccountInfo | null = null;
-
-/**
- * Module-level cache of plan rate-limit utilization from the SDK's
- * experimental get_usage snapshot (SDK >= 0.3.169). Populated eagerly by
- * prewarmSdk() and refreshed by sessions (snapshot fetch + live
- * rate_limit_event), so the UI can show plan utilization at boot without
- * waiting for a mid-session event.
- */
-let sdkDiscoveredRateLimits: ProviderRateLimitStatus[] | null = null;
 
 /** One accumulated rate-limit window: utilization as 0-1 fraction, resetsAt as epoch seconds. */
 type RateLimitWindowData = {
@@ -612,7 +641,7 @@ export async function resolveQueryFn(): Promise<QueryFn> {
  *
  * startup() spawns a subprocess and completes initialization (including the
  * model list) before returning.  We consume the single-use WarmQuery handle
- * to call supportedModels(), populate the module-level sdkDiscoveredModels
+ * to call supportedModels(), populate this dir's discovery cache entry
  * cache, then close the handle.  This means the /api/provider-models endpoint
  * returns SDK-reported models from the moment the server finishes booting,
  * without waiting for a user to start a managed session.
@@ -626,7 +655,8 @@ export async function prewarmSdk(
   logger: CoreConfig["logger"],
   configDir: string = resolveClaudeConfigDir(),
 ): Promise<void> {
-  if (sdkDiscoveredModels && sdkDiscoveredAccountInfo) return; // already discovered
+  const entry = discoveryEntry(configDir);
+  if (entry.models && entry.accountInfo) return; // already discovered
   if (!cachedStartupFn) return;
   // The default dir has two credential keyings (see claudeConfigDirEnvMode).
   // Inspect the preferred one first and fall through to the other when it is
@@ -651,12 +681,12 @@ export async function prewarmSdk(
     if (inspection.signedIn) recordClaudeConfigDirEnvMode(configDir, mode);
     logger.info(`[SdkSession] Pre-warmed Claude Code subprocess (CLAUDE_CONFIG_DIR ${mode})`);
     if (inspection.models) {
-      sdkDiscoveredModels = inspection.models;
-      sdkModelsProbedAt = Date.now();
+      entry.models = inspection.models;
+      entry.modelsProbedAt = Date.now();
       logger.info(`[SdkSession] Pre-warm discovered ${inspection.models.length} models`);
     }
     if (inspection.rawAccount) {
-      sdkDiscoveredAccountInfo = inspection.rawAccount;
+      entry.accountInfo = inspection.rawAccount;
       const mapped = accountInfoToStatus(inspection.rawAccount);
       logger.info(
         hasNamedIdentity(mapped)
@@ -665,7 +695,7 @@ export async function prewarmSdk(
       );
     }
     if (inspection.usageWindows) {
-      sdkDiscoveredRateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
+      entry.rateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
       logger.info(
         `[SdkSession] Pre-warm usage snapshot: ${inspection.usageWindows.size} rate-limit windows`,
       );
@@ -678,11 +708,13 @@ export async function prewarmSdk(
 }
 
 /**
- * Return SDK-discovered model capabilities if available.
- * Populated eagerly by prewarmSdk() at server startup, and refreshed by sessions.
+ * Return SDK-discovered model capabilities for one config dir, if available.
+ * Populated eagerly by prewarmSdk() for the server's dir, lazily by
+ * refreshSdkDiscoveredModelsIfStale() for other accounts, and refreshed by
+ * sessions bound to that dir. Absent `configDir` = the server's resolved dir.
  */
-export function getSdkDiscoveredModels(): SdkModelInfo[] | null {
-  return sdkDiscoveredModels;
+export function getSdkDiscoveredModels(configDir?: string): SdkModelInfo[] | null {
+  return sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()))?.models ?? null;
 }
 
 /**
@@ -698,9 +730,10 @@ export function refreshSdkDiscoveredModelsIfStale(
   configDir: string = resolveClaudeConfigDir(),
 ): Promise<void> {
   if (!cachedStartupFn) return Promise.resolve();
-  if (Date.now() - sdkModelsProbedAt < SDK_MODELS_REFRESH_INTERVAL_MS) return Promise.resolve();
-  if (sdkModelsRefreshInFlight) return sdkModelsRefreshInFlight;
-  sdkModelsRefreshInFlight = (async () => {
+  const entry = discoveryEntry(configDir);
+  if (Date.now() - entry.modelsProbedAt < SDK_MODELS_REFRESH_INTERVAL_MS) return Promise.resolve();
+  if (entry.modelsRefreshInFlight) return entry.modelsRefreshInFlight;
+  entry.modelsRefreshInFlight = (async () => {
     try {
       const warm = await cachedStartupFn({
         options: {
@@ -713,8 +746,10 @@ export function refreshSdkDiscoveredModelsIfStale(
       const handle = warm.query(promptQueue);
       try {
         const models = await handle.supportedModels();
-        sdkDiscoveredModels = models;
-        logger.info(`[SdkSession] Refreshed model discovery: ${models.length} models`);
+        entry.models = models;
+        logger.info(
+          `[SdkSession] Refreshed model discovery for ${configDir}: ${models.length} models`,
+        );
       } finally {
         promptQueue.terminate();
         try {
@@ -728,28 +763,31 @@ export function refreshSdkDiscoveredModelsIfStale(
     } finally {
       // Stamp even on failure so a broken environment retries once per
       // interval instead of spawning a probe on every picker open.
-      sdkModelsProbedAt = Date.now();
-      sdkModelsRefreshInFlight = null;
+      entry.modelsProbedAt = Date.now();
+      entry.modelsRefreshInFlight = null;
     }
   })();
-  return sdkModelsRefreshInFlight;
+  return entry.modelsRefreshInFlight;
 }
 
 /**
- * Return SDK-discovered account info (plan/email/org) if available.
- * Populated eagerly by prewarmSdk() at server startup, and refreshed by sessions.
+ * Return SDK-discovered account info (plan/email/org) for one config dir, if
+ * available. Populated eagerly by prewarmSdk() for the server's dir, by the
+ * identity probe for other accounts, and refreshed by sessions bound to that
+ * dir. Absent `configDir` = the server's resolved dir.
  */
-export function getSdkDiscoveredAccountInfo(): AccountInfo | null {
-  return sdkDiscoveredAccountInfo;
+export function getSdkDiscoveredAccountInfo(configDir?: string): AccountInfo | null {
+  return sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()))?.accountInfo ?? null;
 }
 
 /**
  * Return plan rate-limit utilization discovered via the experimental
- * get_usage snapshot, if available. Populated eagerly by prewarmSdk() at
- * server startup, and refreshed by sessions.
+ * get_usage snapshot for one config dir, if available. Populated eagerly by
+ * prewarmSdk() for the server's dir, by the identity probe for other
+ * accounts, and refreshed by sessions bound to that dir.
  */
-export function getSdkDiscoveredRateLimits(): ProviderRateLimitStatus[] | null {
-  return sdkDiscoveredRateLimits;
+export function getSdkDiscoveredRateLimits(configDir?: string): ProviderRateLimitStatus[] | null {
+  return sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()))?.rateLimits ?? null;
 }
 
 // =============================================================================
@@ -758,7 +796,7 @@ export function getSdkDiscoveredRateLimits(): ProviderRateLimitStatus[] | null {
 
 /**
  * What one Claude config dir reports about its login. Kept separate from the
- * module-level default caches above: those describe the server's own resolved
+ * per-dir discovery caches above: those hold what the SDK reported for a
  * dir and feed provider global state; this is per account profile.
  */
 export interface ClaudeAccountIdentitySnapshot {
@@ -1046,6 +1084,13 @@ export function probeClaudeAccountIdentity(
       }
       if (!inspection.signedIn) continue;
       recordClaudeConfigDirEnvMode(configDir, mode);
+      // The probe already paid for accountInfo() and get_usage under this
+      // dir — keep them so provider global state for this account has a
+      // plan/email and rate-limit windows without a session ever running.
+      const discovery = discoveryEntry(configDir);
+      if (inspection.rawAccount) discovery.accountInfo = inspection.rawAccount;
+      if (inspection.usageWindows)
+        discovery.rateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
       const identity = inspection.identity;
       logger.info(
         `[SdkSession] account probe for ${configDir} (CLAUDE_CONFIG_DIR ${mode}): ${identity?.email ?? identity?.label ?? identity?.plan ?? identity?.status}`,
@@ -1150,12 +1195,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private cwd: string;
   private currentModel: string | null;
+  /** Config dir this session runs under — the discovery cache entry it refreshes. */
+  private configDir: string;
   readonly bootstrapContext?: ProviderSessionBootstrap;
 
   constructor(options: ClaudeSdkSessionOptions, queryFn: QueryFn) {
     super();
     this.logger = options.logger;
     this.cwd = options.cwd;
+    this.configDir = options.configDir ?? resolveClaudeConfigDir();
     this.currentModel = options.model ?? null;
     this.bootstrapContext = options.bootstrapContext;
     this._runtimeMode = options.runtimeMode ?? "approval-required";
@@ -1227,7 +1275,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // Fetch account info (plan, email, org) and emit as provider status
     this.fetchAccountInfo();
 
-    // Discover model capabilities and populate module-level cache
+    // Discover model capabilities and populate this account's discovery cache
     this.discoverModels();
 
     // Seed context usage eagerly (useful for resumed sessions that already have context state)
@@ -2260,9 +2308,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     void this.query
       .accountInfo()
       .then((info) => {
-        // Always refresh the module-level cache so the pre-warmed copy
+        // Always refresh this account's cache so the pre-warmed copy
         // doesn't go stale (e.g. if plan tier changes mid-day).
-        sdkDiscoveredAccountInfo = info;
+        discoveryEntry(this.configDir).accountInfo = info;
 
         const account = accountInfoToStatus(info);
         if (!account) return;
@@ -2299,9 +2347,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     try {
       const models = await this.query.supportedModels();
       this._cachedModelCapabilities = models;
-      // Always update module-level cache so the provider driver serves fresh data
-      sdkDiscoveredModels = models;
-      sdkModelsProbedAt = Date.now();
+      // Always update this account's cache so the provider driver serves fresh data
+      const entry = discoveryEntry(this.configDir);
+      entry.models = models;
+      entry.modelsProbedAt = Date.now();
       this.logger.info(`[SdkSession] Discovered ${models.length} models with capabilities`);
       return models;
     } catch (err) {
@@ -2311,7 +2360,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   }
 
   /**
-   * Kick off model capability discovery to populate the module-level cache.
+   * Kick off model capability discovery to populate this account's cache.
    * Called once after session init alongside account info.
    */
   private discoverModels(): void {
@@ -2429,9 +2478,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     const rateLimits = this.buildRateLimitsSnapshot();
     if (!rateLimits.length) return;
 
-    // Keep the module-level snapshot fresh so the boot-time fallback in
+    // Keep this account's snapshot fresh so the boot-time fallback in
     // instance-manager reflects the latest data.
-    sdkDiscoveredRateLimits = rateLimits;
+    discoveryEntry(this.configDir).rateLimits = rateLimits;
 
     this.emit("systemEvent", {
       type: "system_event",

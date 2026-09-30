@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { defaultLogger, type Logger } from "#core/logger.js";
 import type { ProviderKind, ProviderRuntimeMode } from "#core/types.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
+import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 
 /**
  * Core configuration — the subset needed by ClaudeProcess and InstanceManager.
@@ -51,7 +52,6 @@ function resolveRelayDir(): string {
 export const relayDir = resolveRelayDir();
 
 export function resolveCoreConfig(options: CoreOptions = {}): CoreConfig {
-  const home = homedir();
   return {
     workingDirectory: options.workingDirectory ?? process.cwd(),
     defaultRuntimeMode: options.defaultRuntimeMode ?? "full-access",
@@ -61,7 +61,7 @@ export function resolveCoreConfig(options: CoreOptions = {}): CoreConfig {
     dbPath: options.dbPath ?? join(relayDir, "sessions.db"),
     providerDirs: options.providerDirs ?? {
       claude: resolveClaudeConfigDir(),
-      codex: join(home, ".codex"),
+      codex: resolveCodexHomeDir(),
     },
   };
 }

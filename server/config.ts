@@ -4,12 +4,12 @@
  * Extends CoreConfig with HTTP/auth-specific fields.
  */
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { relayDir, type CoreConfig } from "#core/config.js";
 import { defaultLogger } from "#core/logger.js";
 import type { UpdateManager } from "#server/update-manager.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
+import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 
 /**
  * Fully resolved server configuration (all fields required).
@@ -47,7 +47,6 @@ export type RelayOptions = Partial<RelayConfig> & {
  * Merge user options with defaults to produce a full config.
  */
 export function resolveConfig(options: RelayOptions): RelayConfig {
-  const home = homedir();
   return {
     port: options.port ?? 7777,
     password: options.password,
@@ -64,7 +63,7 @@ export function resolveConfig(options: RelayOptions): RelayConfig {
     dbPath: options.dbPath ?? join(relayDir, "sessions.db"),
     providerDirs: options.providerDirs ?? {
       claude: resolveClaudeConfigDir(),
-      codex: join(home, ".codex"),
+      codex: resolveCodexHomeDir(),
     },
   };
 }

@@ -6,7 +6,6 @@ import { FileText } from "lucide-react";
 import {
   fetchProject,
   updateProject,
-  fetchProviders,
   fetchProviderModels,
   fetchProjectWorkspaceEntries,
   fetchGlobalSettings,
@@ -28,15 +27,13 @@ import { SuggestionSettings } from "@/components/settings/suggestion-settings";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { PageShell } from "@/components/ui/page-shell";
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
-import { useProviderProfiles } from "@/hooks/use-provider-profiles";
-import { formatIdentity } from "@/lib/account-profiles";
-import {
-  DEFAULT_ACCOUNT_PROFILE_ID,
-  type Project,
-  type GlobalSettings,
-  type ProviderDescriptor,
-  type ProviderKind,
-} from "@shared/types";
+import { useActiveAccount } from "@/hooks/use-active-account";
+import { useAvailableProviders } from "@/hooks/use-available-providers";
+import { accountLoginSummary } from "@/lib/account-identity";
+import { getProviderDisplayName } from "@shared/provider-catalog";
+import { projectAccountIds, stateKeyFor } from "@/lib/account-scope";
+import { Checkbox } from "@/components/ui/checkbox";
+import type { Project, GlobalSettings, ProviderDescriptor, ProviderKind } from "@shared/types";
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
@@ -83,11 +80,8 @@ export function SettingsPage() {
     staleTime: 60_000,
   });
 
-  const { data: providers = [], isLoading: isLoadingProviders } = useQuery({
-    queryKey: ["providers"],
-    queryFn: fetchProviders,
-    staleTime: 60_000,
-  });
+  // Only providers the active account has a login for (all of them below two accounts).
+  const { providers, isLoading: isLoadingProviders } = useAvailableProviders();
 
   if (isLoading || isLoadingGlobal || isLoadingProviders || !project || !globalSettings) {
     return (
@@ -190,8 +184,12 @@ function ProjectProviderMcpGroup({
   provider: ProviderDescriptor;
 }) {
   const queryClient = useQueryClient();
+  // MCP configuration is per login: read/list/add under the active account.
+  const { accountIdParam: mcpAccountId, loginDirFor } = useActiveAccount();
+  const mcpConfigDir = loginDirFor(provider.provider);
   const globalServers = useProviderRuntimeStore(
-    (state) => state.providerGlobalState[provider.provider]?.mcpServers ?? [],
+    (state) =>
+      state.providerGlobalState[stateKeyFor(provider.provider, mcpConfigDir)]?.mcpServers ?? [],
   );
   const transports = provider.capabilities.mcp?.management?.transports ?? [];
   const [name, setName] = useState("");
@@ -200,8 +198,8 @@ function ProjectProviderMcpGroup({
   const [args, setArgs] = useState("");
   const [tokenEnvVar, setTokenEnvVar] = useState("");
   const { data: projectServers = [] } = useQuery({
-    queryKey: ["project-mcp-servers", project.id, provider.provider],
-    queryFn: () => fetchProjectMcpServers(provider.provider, project.id),
+    queryKey: ["project-mcp-servers", project.id, provider.provider, mcpAccountId ?? null],
+    queryFn: () => fetchProjectMcpServers(provider.provider, project.id, mcpAccountId),
   });
   const servers = [
     ...new Map(
@@ -220,7 +218,7 @@ function ProjectProviderMcpGroup({
   const canAddProject = Boolean(provider.capabilities.mcp?.management?.scopes.includes("project"));
   const refresh = () =>
     queryClient.invalidateQueries({
-      queryKey: ["project-mcp-servers", project.id, provider.provider],
+      queryKey: ["project-mcp-servers", project.id, provider.provider, mcpAccountId ?? null],
     });
   const add = useMutation({
     mutationFn: () =>
@@ -229,6 +227,7 @@ function ProjectProviderMcpGroup({
         transport,
         scope: "project",
         projectId: project.id,
+        accountId: mcpAccountId,
         url: transport === "stdio" ? undefined : target.trim(),
         command: transport === "stdio" ? target.trim() : undefined,
         args:
@@ -471,19 +470,26 @@ function ProvidersSection({
   globalSettings: GlobalSettings;
   save: ReturnType<typeof useProjectAutoSave>;
 }) {
-  const { data: providers = [] } = useQuery({
-    queryKey: ["providers"],
-    queryFn: fetchProviders,
-    staleTime: 60_000,
-  });
+  const { providers } = useAvailableProviders();
 
   // Resolve the effective provider: explicit global > first available provider
-  const effectiveGlobalProvider = globalSettings.defaultProvider ?? providers[0]?.provider ?? "";
-  const effectiveProvider = project.defaultProvider ?? effectiveGlobalProvider;
+  // With several accounts a saved default the active account has no login for
+  // is not offered: fall through to the first provider the account can run.
+  const account = useActiveAccount();
+  const usable = (provider: string | null | undefined) =>
+    provider &&
+    (!account.isMulti || providers.length === 0 || providers.some((p) => p.provider === provider))
+      ? provider
+      : undefined;
+  const effectiveGlobalProvider =
+    usable(globalSettings.defaultProvider) ?? providers[0]?.provider ?? "";
+  const effectiveProvider = usable(project.defaultProvider) ?? effectiveGlobalProvider;
 
+  // Model discovery is per login: key by the active account.
+  const modelsAccountId = account.accountIdParam;
   const { data: providerModels } = useQuery({
-    queryKey: ["provider-models", effectiveProvider],
-    queryFn: () => fetchProviderModels(effectiveProvider as ProviderKind),
+    queryKey: ["provider-models", effectiveProvider, modelsAccountId ?? null],
+    queryFn: () => fetchProviderModels(effectiveProvider as ProviderKind, modelsAccountId),
     enabled: !!effectiveProvider,
     staleTime: 60_000,
   });
@@ -512,28 +518,23 @@ function ProvidersSection({
     return builtInDefault?.label ?? "Provider default";
   })();
 
-  // Account profiles: gated on the effective provider's capability, never on
-  // its name. The global default is `providerDefaults[provider].profileId`
-  // (null = the provider's default profile).
-  const effectiveDescriptor = providers.find((p) => p.provider === effectiveProvider);
-  const effectiveProviderLabel = effectiveDescriptor?.label ?? effectiveProvider;
-  const supportsAccountProfiles = Boolean(
-    (providerModels?.capabilities ?? effectiveDescriptor?.capabilities)?.supportsAccountProfiles,
-  );
-  const { data: profiles = [] } = useProviderProfiles(
-    effectiveProvider ? (effectiveProvider as ProviderKind) : undefined,
-    { enabled: supportsAccountProfiles },
-  );
-  const globalProfileId = providerDefaults[effectiveProvider]?.profileId ?? null;
-  const globalProfile =
-    profiles.find((p) => p.id === globalProfileId) ??
-    profiles.find((p) => p.id === DEFAULT_ACCOUNT_PROFILE_ID) ??
-    profiles[0];
-  const globalProfileLabel = globalProfile?.label ?? "Default";
+  // Account membership: which accounts this project shows under. Only rendered
+  // with two or more accounts.
+  const memberIds = projectAccountIds(project);
+  // The list names every account's providers, including ones the active
+  // account hides, so labels come from the catalog rather than `providers`.
+  const providerLabel = (provider: ProviderKind) =>
+    providers.find((p) => p.provider === provider)?.label ?? getProviderDisplayName(provider);
+  const setMembership = (id: string, checked: boolean) => {
+    const next = checked ? [...new Set([...memberIds, id])] : memberIds.filter((m) => m !== id);
+    // At least one account must remain: the last checkbox is disabled below.
+    if (next.length === 0) return;
+    save.mutate({ accountIds: next });
+  };
 
   const handleProviderChange = (value: string) => {
-    // When changing provider, also clear model and account since they may not be valid
-    save.mutate({ defaultProvider: value || null, defaultModel: null, defaultProfileId: null });
+    // When changing provider, also clear the model since it may not be valid
+    save.mutate({ defaultProvider: value || null, defaultModel: null });
   };
 
   const handleModelChange = (value: string) => {
@@ -555,8 +556,7 @@ function ProvidersSection({
               project.defaultProvider != null &&
               project.defaultProvider !== effectiveGlobalProvider,
             globalLabel: globalProviderLabel,
-            onReset: () =>
-              save.mutate({ defaultProvider: null, defaultModel: null, defaultProfileId: null }),
+            onReset: () => save.mutate({ defaultProvider: null, defaultModel: null }),
           }}
         >
           <Select
@@ -604,40 +604,48 @@ function ProvidersSection({
         </Select>
       </SettingRow>
 
-      {/* Account profile — only when the effective provider keeps several logins */}
-      {supportsAccountProfiles && effectiveProvider ? (
+      {/* Accounts membership — only with two or more accounts registered. A
+          project shows under each checked account; at least one stays checked. */}
+      {account.isMulti ? (
         <SettingRow
-          label="Account"
-          description={`Which ${effectiveProviderLabel} login new chats in this project use.`}
-          overrideInfo={{
-            isOverridden:
-              project.defaultProfileId != null &&
-              profiles.some((p) => p.id === project.defaultProfileId) &&
-              project.defaultProfileId !== globalProfileId,
-            globalLabel: globalProfileLabel,
-            onReset: () => save.mutate({ defaultProfileId: null }),
-          }}
+          label="Accounts"
+          description="Which accounts this project appears under. Chats in it run under the account that is active when they start."
+          vertical
         >
-          <Select
-            inputSize="md"
-            value={
-              project.defaultProfileId && profiles.some((p) => p.id === project.defaultProfileId)
-                ? project.defaultProfileId
-                : ""
-            }
-            onChange={(e) => save.mutate({ defaultProfileId: e.target.value || null })}
-            className="w-52"
-          >
-            <option value="">Global default ({globalProfileLabel})</option>
-            {profiles.map((p) => {
-              const identity = formatIdentity(p.identity);
+          <div className="flex flex-col divide-y divide-border/30 rounded-md border border-border/50">
+            {account.accounts.map((row) => {
+              const checked = memberIds.includes(row.id);
+              const isLastChecked = checked && memberIds.length === 1;
+              const id = `project-account-${row.id}`;
               return (
-                <option key={p.id} value={p.id}>
-                  {identity ? `${p.label} — ${identity}` : p.label}
-                </option>
+                <label
+                  key={row.id}
+                  htmlFor={id}
+                  className={`flex min-h-10 cursor-pointer items-center gap-3 px-3 py-2 ${
+                    isLastChecked ? "cursor-default" : ""
+                  }`}
+                >
+                  <Checkbox
+                    id={id}
+                    checked={checked}
+                    disabled={isLastChecked || save.isPending}
+                    onCheckedChange={(next) => setMembership(row.id, next)}
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="flex items-center gap-2 text-[0.8125rem] font-medium text-text-bright">
+                      {row.label}
+                      {row.id === account.activeId ? (
+                        <span className="text-[0.6875rem] font-normal text-accent">active</span>
+                      ) : null}
+                    </span>
+                    <span className="truncate text-[0.75rem] text-muted">
+                      {accountLoginSummary(row, providerLabel)}
+                    </span>
+                  </span>
+                </label>
               );
             })}
-          </Select>
+          </div>
         </SettingRow>
       ) : null}
 

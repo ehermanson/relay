@@ -87,6 +87,14 @@ export function ActionToastProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        // The active account has no login for the requested provider: nothing
+        // to retry, so say why (the server's message names the provider).
+        if (message.code === "provider_unavailable_in_account") {
+          pendingCreatesRef.current.clear();
+          toast.error(message.message);
+          return;
+        }
+
         if (message.instanceId && pendingMergesRef.current.has(message.instanceId)) {
           pendingMergesRef.current.delete(message.instanceId);
           toast.error(message.message);

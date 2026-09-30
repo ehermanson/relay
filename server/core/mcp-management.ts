@@ -8,7 +8,7 @@ import {
   resolveClaudeConfigDir,
   resolveClaudeGlobalConfigPath,
 } from "#core/providers/claude-cli.js";
-import { findCodexBinary } from "#core/providers/codex-cli.js";
+import { buildCodexSpawnEnv, findCodexBinary } from "#core/providers/codex-cli.js";
 import type { ProviderKind } from "#core/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +40,12 @@ export interface AddMcpServerInput {
   scope?: "global" | "project";
   projectDirectory?: string;
   bearerTokenEnvVar?: string;
+  /**
+   * Claude config dir (account) to write into; absent = the server's own
+   * resolved dir. `claude mcp add --scope user` writes to this dir's
+   * `.claude.json`, so a second account's servers land in its own config.
+   */
+  configDir?: string;
 }
 
 export interface McpCliInvocation {
@@ -164,9 +170,16 @@ export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
   await exclusiveMutation(input.provider, async () => {
     const binary = binaryFor(input.provider);
     const invocation = buildAddMcpServerInvocation(input);
-    // `claude mcp add` writes into the config dir — pin it to the one Relay indexes.
+    // `claude mcp add` / `codex mcp add` write into the login's config dir —
+    // pin it to the account's login (default: the one Relay indexes), for
+    // every provider, or the server would be updated while the account's
+    // state is credited elsewhere.
     const env =
-      input.provider === "claude" ? buildClaudeSpawnEnv(resolveClaudeConfigDir()) : process.env;
+      input.provider === "claude"
+        ? buildClaudeSpawnEnv(input.configDir ?? resolveClaudeConfigDir())
+        : input.provider === "codex"
+          ? buildCodexSpawnEnv(input.configDir)
+          : process.env;
     await run(binary, invocation.args, invocation.cwd, env);
   });
 }

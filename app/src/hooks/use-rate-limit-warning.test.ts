@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderGlobalState, ProviderKind } from "@shared/types";
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { stateKeyFor } from "@/lib/account-scope";
 import { resetRateLimitWarningState, useRateLimitWarning } from "./use-rate-limit-warning";
 
 const toastWarning = vi.fn();
@@ -21,7 +22,11 @@ function setStatus(status: "allowed" | "allowed_warning" | "rejected") {
       rateLimits: [{ scope: "five_hour", windows: [{ status }] }],
     },
   } as ProviderGlobalState;
-  act(() => useProviderRuntimeStore.setState({ providerGlobalState: { [provider]: state } }));
+  act(() =>
+    useProviderRuntimeStore.setState({
+      providerGlobalState: { [stateKeyFor(provider)]: state },
+    }),
+  );
 }
 
 beforeEach(() => {

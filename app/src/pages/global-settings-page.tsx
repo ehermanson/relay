@@ -21,7 +21,6 @@ import {
   fetchConnectEndpoints,
   fetchHealth,
   updateGlobalSettings,
-  fetchProviders,
   fetchProviderModels,
   recheckProviderVersions,
   runProviderUpdate,
@@ -43,9 +42,13 @@ import { MarkdownEditor } from "../components/ui/markdown-editor";
 import { RadioGroup, RadioGroupField } from "@/components/ui/radio-group";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
-import { SettingsSection, SettingRow } from "@/components/settings/settings-shared";
+import {
+  SettingsSection,
+  SettingsSectionBoundary,
+  SettingRow,
+} from "@/components/settings/settings-shared";
 import { Switch } from "@/components/ui/switch";
-import { AccountProfilesBlock } from "@/components/settings/account-profiles";
+import { AccountsSettingsSection } from "@/components/settings/accounts-section";
 import { BackgroundNotificationsSetting } from "@/components/settings/background-notifications";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { SuggestionSettings } from "@/components/settings/suggestion-settings";
@@ -53,6 +56,9 @@ import { endpointHint, isLocalhostUrl, resolveEndpointSelection } from "@/lib/re
 import { getCompatibleMcpProviders } from "@/lib/mcp-management";
 import { useThemeStore, type ThemePreference } from "@/stores/theme-store";
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { useActiveAccount } from "@/hooks/use-active-account";
+import { setAllProvidersData, useAvailableProviders } from "@/hooks/use-available-providers";
+import { stateKeyFor } from "@/lib/account-scope";
 import type {
   GlobalSettings,
   ProviderDefaults,
@@ -794,11 +800,9 @@ export function ProvidersSettingsSection() {
   const save = useAutoSave();
   const providerGlobalState = useProviderRuntimeStore((s) => s.providerGlobalState);
 
-  const { data: providers = [] } = useQuery({
-    queryKey: ["providers"],
-    queryFn: fetchProviders,
-    staleTime: 60_000,
-  });
+  // Only providers the active account has a login for (all of them below two
+  // accounts): a provider without a login is hidden, never a fallback.
+  const { providers } = useAvailableProviders();
 
   const defaultProvider = settings?.defaultProvider ?? "";
   const providerDefaults = settings?.providerDefaults ?? {};
@@ -823,51 +827,52 @@ export function ProvidersSettingsSection() {
     save.mutate({ providerDefaults: updated });
   };
 
-  // null clears the global override so new chats fall back to the default profile.
-  const handleProfileIdChange = (provider: string, profileId: string | null) => {
-    const updated = {
-      ...providerDefaults,
-      [provider]: { ...providerDefaults[provider], profileId },
-    };
-    save.mutate({ providerDefaults: updated });
-  };
+  // Provider runtime state (account, rate limits, MCP) is per login: show the
+  // state of the active account's login for each provider.
+  const account = useActiveAccount();
+  const runtimeStateFor = (provider: ProviderKind): ProviderGlobalState | undefined =>
+    providerGlobalState[stateKeyFor(provider, account.loginDirFor(provider))];
 
   return (
-    <SettingsSection
-      title="Providers"
-      description="Default provider, model, and per-provider settings."
-    >
-      {/* Default Provider — only show if multiple providers */}
-      {providers.length > 1 && (
-        <SettingRow label="Default Provider" description="The default provider for new sessions.">
-          <Select
-            inputSize="md"
-            value={defaultProvider}
-            onChange={(e) => handleProviderChange(e.target.value)}
-            className="w-44"
-          >
-            {providers.map((p) => (
-              <option key={p.provider} value={p.provider}>
-                {p.label}
-              </option>
-            ))}
-          </Select>
-        </SettingRow>
-      )}
+    <div className="flex flex-col gap-10">
+      <SettingsSectionBoundary name="Accounts">
+        <AccountsSettingsSection />
+      </SettingsSectionBoundary>
+      <SettingsSection
+        title="Providers"
+        description="Default provider, model, and per-provider settings."
+      >
+        {/* Default Provider — only show if multiple providers */}
+        {providers.length > 1 && (
+          <SettingRow label="Default Provider" description="The default provider for new sessions.">
+            <Select
+              inputSize="md"
+              value={defaultProvider}
+              onChange={(e) => handleProviderChange(e.target.value)}
+              className="w-44"
+            >
+              {providers.map((p) => (
+                <option key={p.provider} value={p.provider}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+          </SettingRow>
+        )}
 
-      {/* Per-provider defaults — always expanded */}
-      {providers.map((p) => (
-        <ProviderDefaultsRow
-          key={p.provider}
-          provider={p}
-          defaults={providerDefaults[p.provider] ?? {}}
-          onChange={(field, value) => handleProviderDefaultChange(p.provider, field, value)}
-          onProfileIdChange={(profileId) => handleProfileIdChange(p.provider, profileId)}
-          runtimeState={providerGlobalState[p.provider]}
-          availableProviders={providers}
-        />
-      ))}
-    </SettingsSection>
+        {/* Per-provider defaults — always expanded */}
+        {providers.map((p) => (
+          <ProviderDefaultsRow
+            key={p.provider}
+            provider={p}
+            defaults={providerDefaults[p.provider] ?? {}}
+            onChange={(field, value) => handleProviderDefaultChange(p.provider, field, value)}
+            runtimeState={runtimeStateFor(p.provider)}
+            availableProviders={providers}
+          />
+        ))}
+      </SettingsSection>
+    </div>
   );
 }
 
@@ -891,7 +896,7 @@ export function ProviderVersionAdvisoryCard({
   const recheckMutation = useMutation({
     mutationFn: () => recheckProviderVersions(provider),
     onSuccess: (providers) => {
-      queryClient.setQueryData(["providers"], providers);
+      setAllProvidersData(queryClient, providers);
       toast.success("Version check complete");
     },
     onError: (err) => {
@@ -902,7 +907,7 @@ export function ProviderVersionAdvisoryCard({
   const updateMutation = useMutation({
     mutationFn: () => runProviderUpdate(provider),
     onSuccess: ({ providers, result }) => {
-      queryClient.setQueryData(["providers"], providers);
+      setAllProvidersData(queryClient, providers);
       if (result.status === "updated") toast.success(result.message);
       else if (result.status === "failed") toast.error(result.message);
       else toast.warning(result.message);
@@ -1127,6 +1132,8 @@ function McpManagementForm({
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [selectedProviders, setSelectedProviders] = useState<ProviderKind[]>([provider.provider]);
   const management = provider.capabilities.mcp?.management;
+  // MCP configuration is per login: the server lands in the active account's.
+  const { accountIdParam } = useActiveAccount();
   const compatibleProviders = getCompatibleMcpProviders(availableProviders, transport);
   const supportsBearerTokenEnvVar = compatibleProviders.some(
     (candidate) => candidate.capabilities.mcp?.management?.bearerTokenEnvVar,
@@ -1142,6 +1149,7 @@ function McpManagementForm({
           await addProviderMcpServer(target, {
             name: name.trim(),
             transport,
+            accountId: accountIdParam,
             url: transport === "stdio" ? undefined : url.trim(),
             command: transport === "stdio" ? command.trim() : undefined,
             args:
@@ -1320,20 +1328,20 @@ function ProviderDefaultsRow({
   provider,
   defaults,
   onChange,
-  onProfileIdChange,
   runtimeState,
   availableProviders,
 }: {
   provider: ProviderDescriptor;
   defaults: ProviderDefaults;
   onChange: (field: keyof ProviderDefaults, value: string) => void;
-  onProfileIdChange: (profileId: string | null) => void;
   runtimeState?: ProviderGlobalState;
   availableProviders: ProviderDescriptor[];
 }) {
+  // Model discovery is per login: key by the active account.
+  const { accountIdParam } = useActiveAccount();
   const { data: providerModels } = useQuery({
-    queryKey: ["provider-models", provider.provider],
-    queryFn: () => fetchProviderModels(provider.provider),
+    queryKey: ["provider-models", provider.provider, accountIdParam ?? null],
+    queryFn: () => fetchProviderModels(provider.provider, accountIdParam),
     staleTime: 60_000,
   });
   const models = providerModels?.models ?? [];
@@ -1370,7 +1378,7 @@ function ProviderDefaultsRow({
   // silently disappear for the entire 30-min refresh window.
   const showAdvisory = versionAdvisory != null;
 
-  if (!hasAnyControls && !hasRuntime && !showAdvisory && !caps.supportsAccountProfiles) return null;
+  if (!hasAnyControls && !hasRuntime && !showAdvisory) return null;
 
   return (
     <div className="py-5">
@@ -1510,13 +1518,6 @@ function ProviderDefaultsRow({
           ) : null}
         </div>
       )}
-      {caps.supportsAccountProfiles ? (
-        <AccountProfilesBlock
-          provider={provider}
-          selectedProfileId={defaults.profileId}
-          onSelectProfile={onProfileIdChange}
-        />
-      ) : null}
       <McpManagementForm
         provider={provider}
         runtimeState={runtimeState}

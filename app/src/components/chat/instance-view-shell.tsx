@@ -10,22 +10,30 @@ import { InstanceViewContent } from "@/components/chat/instance-view-content";
 import { InstanceViewHeader } from "@/components/chat/instance-view-header";
 import { useInstanceViewContext } from "@/components/chat/instance-view-context";
 import { useFirstPaint } from "@/hooks/use-first-paint";
-import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
+import { useProviderGlobalState } from "@/stores/provider-runtime-store";
 import { useRateLimitWarning } from "@/hooks/use-rate-limit-warning";
 
 const TERMINAL_ANIM_TRANSITION = { duration: 0.22, ease: [0.22, 1, 0.36, 1] } as const;
 
 export function InstanceViewShell() {
   const { shared, actions } = useInstanceViewContext();
-  const providerGlobalState = useProviderRuntimeStore((s) => s.providerGlobalState);
-  const currentProviderGlobalState = providerGlobalState[shared.instance.provider];
+  // Provider state is per login: a chat reads the state of the account it is
+  // bound to (`configDir`; absent = default), not whichever account is active.
+  const currentProviderGlobalState = useProviderGlobalState(
+    shared.instance.provider,
+    shared.instance.configDir,
+  );
   const firstPaint = useFirstPaint();
 
-  useRateLimitWarning(shared.instance.provider, () => {
-    if (!shared.isSidecarOpen || shared.activeTab !== "context") {
-      actions.selectTab("context");
-    }
-  });
+  useRateLimitWarning(
+    shared.instance.provider,
+    () => {
+      if (!shared.isSidecarOpen || shared.activeTab !== "context") {
+        actions.selectTab("context");
+      }
+    },
+    shared.instance.configDir,
+  );
   const mountTerminalPanel =
     (shared.showTerminalPanel || shared.isTerminalCollapsed) && !shared.isMobile;
 
@@ -152,7 +160,6 @@ export function InstanceViewShell() {
                   provider={shared.instance.provider}
                   providerStatus={shared.instance.providerStatus}
                   providerGlobalState={currentProviderGlobalState}
-                  configDir={shared.instance.configDir}
                   instanceId={shared.id}
                   createdAt={shared.instance.createdAt}
                   lastActivityAt={shared.instance.lastActivityAt}
@@ -182,7 +189,6 @@ export function InstanceViewShell() {
             provider={shared.instance.provider}
             providerStatus={shared.instance.providerStatus}
             providerGlobalState={currentProviderGlobalState}
-            configDir={shared.instance.configDir}
             instanceId={shared.id}
             createdAt={shared.instance.createdAt}
             lastActivityAt={shared.instance.lastActivityAt}

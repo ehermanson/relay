@@ -5,6 +5,7 @@ import { createFileRoute, redirect, useNavigate, useParams } from "@tanstack/rea
 import { toast } from "sonner";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useProjectContext } from "@/context/project-context";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useTerminalMessages } from "@/hooks/use-terminal-messages";
 import { useTerminalShortcut } from "@/hooks/use-terminal-shortcut";
@@ -33,6 +34,7 @@ import {
   markSpinOffSent,
   SpaceCompleteError,
 } from "@/lib/api";
+import { chatBelongsToAccount } from "@/lib/account-scope";
 import { getProjectName } from "@/lib/project-route";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { aggregateSpaceStats, buildSpaceInstances, parseSpaceDiffFiles } from "@/lib/space-view";
@@ -194,7 +196,30 @@ export function SpaceView() {
     spaceQueryKey,
   ]);
 
-  const spaceInstances = buildSpaceInstances(spaceId, chatSummaries, instances);
+  // New chats bind to the active account (undefined below two accounts).
+  const account = useActiveAccount();
+  const { accountIdParam } = account;
+  // A project can belong to several accounts, so the space's chats are scoped
+  // to the active one *before* tabs are built and the remembered chat is
+  // restored — otherwise the other account's chats show as tabs and its
+  // remembered selection is auto-opened. The chat the URL names explicitly is
+  // never hidden (the chat-level account banner identifies it).
+  const spaceInstances = useMemo(() => {
+    const all = buildSpaceInstances(spaceId, chatSummaries, instances);
+    if (!account.isMulti) return all;
+    return all.filter(
+      (chat) =>
+        chat.id === chatId || chatBelongsToAccount(chat, account.activeId, account.accounts),
+    );
+  }, [
+    spaceId,
+    chatSummaries,
+    instances,
+    chatId,
+    account.isMulti,
+    account.activeId,
+    account.accounts,
+  ]);
 
   // The space diff is refetched only when the worktree's repo_status
   // fingerprint changes (agent turn end, Relay git ops, background fetch) or
@@ -355,7 +380,7 @@ export function SpaceView() {
       setPendingNewChatActive(true);
       setPendingNewChatId(PENDING_NEW_CHAT_TAB_ID);
       try {
-        const created = await createInstance({ spaceId });
+        const created = await createInstance({ spaceId, accountId: accountIdParam });
         // If the WS `instance_created` already resolved (race), the ref is
         // already set and pendingNewChatActive is already false — just ensure
         // the ID is correct without re-entering the pending state.
@@ -415,7 +440,7 @@ export function SpaceView() {
         }
       }
     },
-    [send, spaceId],
+    [send, spaceId, accountIdParam],
   );
 
   // Listen for "Send to new chat" relay events from child instance views

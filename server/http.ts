@@ -33,6 +33,7 @@ import { registerInstanceRoutes } from "#server/routes/instances.js";
 import { registerNativeOpenRoutes } from "#server/routes/native-open.js";
 import { registerProjectRoutes } from "#server/routes/projects.js";
 import { registerProviderRoutes } from "#server/routes/providers.js";
+import { registerAccountRoutes } from "#server/routes/accounts.js";
 import { registerSpaceRoutes } from "#server/routes/spaces.js";
 import { registerUiRoutes } from "#server/routes/ui.js";
 import { registerUploadRoutes } from "#server/routes/uploads.js";
@@ -306,6 +307,7 @@ export function createRequestHandler(
   registerWorkspaceRoutes(app, deps);
   registerRepoStatusRoutes(app, deps);
   registerProviderRoutes(app, deps);
+  registerAccountRoutes(app, deps);
   registerNativeOpenRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerOutboxRoutes(app, deps);

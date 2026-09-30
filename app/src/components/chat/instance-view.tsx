@@ -392,6 +392,8 @@ export function InstanceView({
         name: resolvedInstance.customTitle ? resolvedInstance.name : undefined,
         workingDirectory: resolvedInstance.workingDirectory,
         spaceId: resolvedInstance.spaceId,
+        // The replacement chat stays in the account of the chat it replaces.
+        accountId: resolvedInstance.accountId,
         runtimeMode: resolvedInstance.runtimeMode,
         model: model ?? undefined,
       });
@@ -455,6 +457,7 @@ export function InstanceView({
         name: `Review: ${instance.name}`,
         workingDirectory: instance.workingDirectory,
         spaceId: instance.spaceId,
+        accountId: instance.accountId,
         runtimeMode: selection.runtimeMode,
         model: selection.model,
         modelOptions: selection.modelOptions,

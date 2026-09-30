@@ -16,6 +16,8 @@ import { describeCodexCommand } from "#core/providers/codex-command-label.js";
 
 import { EventEmitter } from "events";
 import { spawn, type ChildProcess } from "child_process";
+import { existsSync } from "fs";
+import { homedir } from "os";
 import type { Readable } from "stream";
 import type {
   OutputMessage,
@@ -50,6 +52,7 @@ import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import {
   findCodexBinary,
   buildCodexSpawnEnv,
+  normalizeCodexHomeDir,
   RELAY_CODEX_ORIGINATOR,
 } from "#core/providers/codex-cli.js";
 import { resolveProviderDefaultModelOption } from "#core/provider-catalog.js";
@@ -254,6 +257,12 @@ export interface CodexAppServerSessionOptions {
   codexPath?: string;
   modelOptions?: ProviderModelOptions;
   bootstrapContext?: ProviderSessionBootstrap;
+  /**
+   * Codex home (`CODEX_HOME`) this chat is bound to — the login it runs and
+   * resumes under, and where its rollout is written. Absent = inherit the
+   * server env unchanged.
+   */
+  codexHome?: string;
 }
 
 export interface CodexProviderGlobalStateSnapshotOptions {
@@ -262,6 +271,8 @@ export interface CodexProviderGlobalStateSnapshotOptions {
   processTimeout?: number;
   spawnProcess?: SpawnFn;
   codexPath?: string;
+  /** Codex home (`CODEX_HOME`) to read the state of. Absent = inherit the server env. */
+  codexHome?: string;
 }
 
 // =============================================================================
@@ -841,6 +852,9 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   // Track whether we initiated close, to suppress spurious exit events
   private _closingIntentionally = false;
 
+  /** Codex home every spawn of this session is pinned to (undefined = inherited env). */
+  private readonly codexHome: string | undefined;
+
   constructor(options: CodexAppServerSessionOptions) {
     super();
     this.logger = options.logger;
@@ -856,6 +870,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
       );
     }
     this.codexPath = resolved;
+    this.codexHome = options.codexHome;
 
     this._sessionId = options.resumeSessionId;
     this._preferredModel = options.model ?? null;
@@ -1111,7 +1126,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     this._closingIntentionally = false;
     this.process = this.spawnProcess(this.codexPath, ["app-server", "--listen", "stdio://"], {
       cwd: this.cwd,
-      env: buildCodexSpawnEnv(),
+      env: buildCodexSpawnEnv(this.codexHome),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1131,7 +1146,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     this._closingIntentionally = false;
     this.process = this.spawnProcess(this.codexPath, ["app-server", "--listen", "stdio://"], {
       cwd: this.cwd,
-      env: buildCodexSpawnEnv(),
+      env: buildCodexSpawnEnv(this.codexHome),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1365,7 +1380,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private resolveCollaborationModel(): string {
     return (
       this._preferredModel ??
-      resolveProviderDefaultModelOption("codex", getCachedCodexModels() ?? undefined)?.id ??
+      resolveProviderDefaultModelOption("codex", getCachedCodexModels(this.codexHome) ?? undefined)
+        ?.id ??
       "gpt-5.4"
     );
   }
@@ -2309,15 +2325,17 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         getRecord(getRecord(getRecord(raw.source)?.subagent)?.thread_spawn) ??
         getRecord(getRecord(getRecord(raw.source)?.subagent)?.threadSpawn);
       const parentThreadId = spawn
-        ? getString(spawn.parent_thread_id) ?? getString(spawn.parentThreadId)
-        : getString(raw.parentThreadId) ?? getString(raw.parent_thread_id);
+        ? (getString(spawn.parent_thread_id) ?? getString(spawn.parentThreadId))
+        : (getString(raw.parentThreadId) ?? getString(raw.parent_thread_id));
       if (!parentThreadId) {
         this.logger.debug?.(
           `[CodexAppServer] thread/started for unknown non-root thread ${thread.id}; ignoring`,
         );
         return;
       }
-      const agentPath = spawn ? getString(spawn.agent_path) ?? getString(spawn.agentPath) : undefined;
+      const agentPath = spawn
+        ? (getString(spawn.agent_path) ?? getString(spawn.agentPath))
+        : undefined;
       const info: AgentInfo = {
         agentId: thread.id,
         providerAgentId: thread.id,
@@ -2429,7 +2447,12 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           this.childTextBuffers.delete(key);
           const text = getString((item as AgentMessageItem).text) ?? buffered;
           if (text) {
-            this.emit("output", { type: "output", text, agentId: threadId, raw: item } as OutputMessage);
+            this.emit("output", {
+              type: "output",
+              text,
+              agentId: threadId,
+              raw: item,
+            } as OutputMessage);
           }
           break;
         }
@@ -2503,7 +2526,10 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     // Child → parent report surfaced as an authored agent message on the root.
     // Unverified on the live wire (0.154 rollouts record it as a response_item);
     // handled defensively so a plaintext FINAL_ANSWER becomes the agent's result.
-    if (item.type === "agentMessage" && typeof (item as Record<string, unknown>).author === "string") {
+    if (
+      item.type === "agentMessage" &&
+      typeof (item as Record<string, unknown>).author === "string"
+    ) {
       const report = parseCodexAgentReport({
         type: "agent_message",
         author: (item as Record<string, unknown>).author,
@@ -2929,10 +2955,11 @@ export async function fetchCodexProviderGlobalStateSnapshot({
   processTimeout = 10_000,
   spawnProcess = spawn,
   codexPath = findCodexBinary() ?? "codex",
+  codexHome,
 }: CodexProviderGlobalStateSnapshotOptions): Promise<import("#core/types.js").ProviderGlobalState> {
   const child = spawnProcess(codexPath, ["app-server", "--listen", "stdio://"], {
     cwd,
-    env: buildCodexSpawnEnv(),
+    env: buildCodexSpawnEnv(codexHome),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stdin = child.stdin;
@@ -3029,9 +3056,15 @@ export async function fetchCodexProviderGlobalStateSnapshot({
     stdin.write(JSON.stringify(msg) + "\n");
   };
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error("Timed out fetching Codex global state")), processTimeout);
+    timeoutHandle = setTimeout(
+      () => reject(new Error("Timed out fetching Codex global state")),
+      processTimeout,
+    );
   });
+  // Every consumer races against it; nothing may be left unhandled once we return.
+  timeout.catch(() => {});
 
   try {
     await Promise.race([
@@ -3072,6 +3105,154 @@ export async function fetchCodexProviderGlobalStateSnapshot({
       updatedAt: Date.now(),
     };
   } finally {
+    clearTimeout(timeoutHandle);
     closeChild();
   }
+}
+
+// =============================================================================
+// Account identity (one login per CODEX_HOME)
+// =============================================================================
+
+/** What Relay knows about the login held by one Codex home. */
+export interface CodexAccountIdentitySnapshot {
+  probeState: "unknown" | "probing" | "ok" | "error";
+  identity?: ProviderAccountStatus;
+  probeError?: string;
+  probedAt?: number;
+}
+
+interface CodexAccountIdentityCacheEntry extends CodexAccountIdentitySnapshot {
+  inflight: Promise<CodexAccountIdentitySnapshot> | null;
+}
+
+/** Re-probe an identity older than this (matches Claude's and the model-discovery TTL). */
+export const CODEX_ACCOUNT_IDENTITY_TTL_MS = 30 * 60 * 1000;
+
+const codexAccountIdentityCache = new Map<string, CodexAccountIdentityCacheEntry>();
+
+function publicCodexIdentitySnapshot(
+  entry: CodexAccountIdentityCacheEntry | undefined,
+): CodexAccountIdentitySnapshot {
+  if (!entry) return { probeState: "unknown" };
+  const snapshot: CodexAccountIdentitySnapshot = { probeState: entry.probeState };
+  if (entry.identity) snapshot.identity = entry.identity;
+  if (entry.probeError) snapshot.probeError = entry.probeError;
+  if (entry.probedAt) snapshot.probedAt = entry.probedAt;
+  return snapshot;
+}
+
+/**
+ * Map the global-state account (from `account/read`) onto an identity, or
+ * undefined when the home holds no login. "Signed in" needs an actual account
+ * signal — email, plan, or an account-type label (ChatGPT / API key). The
+ * `auth_required` status is not one: a home with no `auth.json` reports only
+ * that, and a signed-in ChatGPT home reports it alongside the account (it
+ * describes the model provider, not the login), so it is dropped from the
+ * identity. Rate limits are state, not identity.
+ */
+export function codexAccountIdentityFromStatus(
+  account: ProviderAccountStatus | undefined,
+): ProviderAccountStatus | undefined {
+  if (!account) return undefined;
+  if (!account.email && !account.plan && !account.label) return undefined;
+  const identity: ProviderAccountStatus = {};
+  if (account.email) identity.email = account.email;
+  if (account.plan) identity.plan = account.plan;
+  if (account.label) identity.label = account.label;
+  if (account.status && account.status !== "auth_required") identity.status = account.status;
+  return identity;
+}
+
+/** Synchronous read of the cached identity for a Codex home (never probes). */
+export function getCodexAccountIdentitySnapshot(codexHome: string): CodexAccountIdentitySnapshot {
+  return publicCodexIdentitySnapshot(
+    codexAccountIdentityCache.get(normalizeCodexHomeDir(codexHome)),
+  );
+}
+
+/** Test seam: forget every cached identity. */
+export function clearCodexAccountIdentityCache(): void {
+  codexAccountIdentityCache.clear();
+}
+
+/**
+ * Probe which account a Codex home is logged in as, by spawning a short-lived
+ * `codex app-server` pinned to that home (`CODEX_HOME`) and reading its
+ * account — the same cold snapshot provider global state uses; no thread, no
+ * tokens. Results are cached per home for CODEX_ACCOUNT_IDENTITY_TTL_MS;
+ * concurrent callers share one in-flight probe; `force` bypasses the TTL
+ * (never the in-flight dedupe). A home with no login is "Not signed in".
+ */
+export function probeCodexAccountIdentity(
+  codexHome: string,
+  logger: CoreConfig["logger"],
+  options: {
+    force?: boolean;
+    spawnProcess?: SpawnFn;
+    codexPath?: string;
+    processTimeout?: number;
+  } = {},
+): Promise<CodexAccountIdentitySnapshot> {
+  const key = normalizeCodexHomeDir(codexHome);
+  const existing = codexAccountIdentityCache.get(key);
+  if (existing?.inflight) return existing.inflight;
+  if (
+    !options.force &&
+    existing?.probedAt &&
+    existing.probeState !== "unknown" &&
+    Date.now() - existing.probedAt < CODEX_ACCOUNT_IDENTITY_TTL_MS
+  ) {
+    return Promise.resolve(publicCodexIdentitySnapshot(existing));
+  }
+
+  const entry: CodexAccountIdentityCacheEntry = {
+    ...existing,
+    probeState: "probing",
+    inflight: null,
+  };
+  codexAccountIdentityCache.set(key, entry);
+
+  const finish = (patch: Partial<CodexAccountIdentitySnapshot>): CodexAccountIdentitySnapshot => {
+    const current = codexAccountIdentityCache.get(key) ?? entry;
+    Object.assign(current, patch, { inflight: null, probedAt: Date.now() });
+    codexAccountIdentityCache.set(key, current);
+    return publicCodexIdentitySnapshot(current);
+  };
+
+  entry.inflight = (async () => {
+    const codexPath = options.codexPath ?? findCodexBinary();
+    if (!codexPath) {
+      return finish({
+        probeState: "error",
+        probeError: "Codex CLI not found",
+        identity: undefined,
+      });
+    }
+    try {
+      const state = await fetchCodexProviderGlobalStateSnapshot({
+        // The account read is home-scoped, not project-scoped; the home itself
+        // is a cwd that always exists for a registered login.
+        cwd: existsSync(key) ? key : homedir(),
+        logger,
+        codexHome: key,
+        codexPath,
+        ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
+        ...(options.processTimeout ? { processTimeout: options.processTimeout } : {}),
+      });
+      const identity = codexAccountIdentityFromStatus(state.account);
+      if (!identity) {
+        return finish({ probeState: "error", probeError: "Not signed in", identity: undefined });
+      }
+      logger.info(
+        `[CodexAppServer] account probe for ${key}: ${identity.email ?? identity.label ?? identity.plan}`,
+      );
+      return finish({ probeState: "ok", identity, probeError: undefined });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.debug(`[CodexAppServer] account probe for ${key} failed: ${message}`);
+      return finish({ probeState: "error", probeError: message, identity: undefined });
+    }
+  })();
+  return entry.inflight;
 }

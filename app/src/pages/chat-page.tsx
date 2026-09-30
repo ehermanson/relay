@@ -20,6 +20,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useProjectNavigationModel } from "../hooks/use-project-navigation-model";
 import { useActionToasts } from "@/context/action-toast-context";
 import { fetchProjectIcons, fetchProjectArtifacts } from "../lib/api";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import type { InstanceInfo, ProjectArtifacts, ProviderKind } from "@shared/types";
 
 // ─── Project Card ────────────────────────────────────────────────────────────
@@ -263,6 +264,7 @@ export function Dashboard() {
     projectSpaces,
     spacesLoadingByDir,
   } = useProjectNavigationModel();
+  const { accountIdParam } = useActiveAccount();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const navigate = useNavigate();
   const pendingCreate = useRef(false);
@@ -296,7 +298,7 @@ export function Dashboard() {
   const handleNewSession = (workingDirectory: string) => {
     pendingCreate.current = true;
     trackInstanceCreate(workingDirectory);
-    send({ type: "create_instance", workingDirectory });
+    send({ type: "create_instance", workingDirectory, accountId: accountIdParam });
   };
 
   const handleCreateSpace = (dir: string) => {
@@ -315,10 +317,11 @@ export function Dashboard() {
     [projectGroups, projectByDir],
   );
 
+  // Artifacts (skills, plans) are per account; the key carries the accountId.
   const artifactResults = useQueries({
     queries: projectEntries.map(({ id }) => ({
-      queryKey: ["projectArtifacts", id],
-      queryFn: () => fetchProjectArtifacts(id),
+      queryKey: ["projectArtifacts", id, accountIdParam ?? null],
+      queryFn: () => fetchProjectArtifacts(id, accountIdParam),
       staleTime: 60_000,
       enabled: !isMobile,
     })),

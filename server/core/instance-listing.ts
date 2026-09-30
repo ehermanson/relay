@@ -2,7 +2,14 @@ import {
   getReviewInstanceIdFromRuntimePayload,
   getReviewSessionFromRuntimePayload,
 } from "#core/session-context.js";
-import type { InstanceInfo, ProviderKind, ProviderRuntimeMode, SessionStats } from "#core/types.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  type Account,
+  type InstanceInfo,
+  type ProviderKind,
+  type ProviderRuntimeMode,
+  type SessionStats,
+} from "#core/types.js";
 import type { ManagedInstanceRow, SessionRow } from "#core/db.js";
 
 /**
@@ -10,6 +17,29 @@ import type { ManagedInstanceRow, SessionRow } from "#core/db.js";
  * call) from `ProjectManager.listProjects()` so the summary helpers stay pure.
  */
 export type ProjectSlugLookup = Map<string, string>;
+
+/** The slice of `AccountStore` a listing needs to name a legacy row's account. */
+export interface AccountLoginLookup {
+  findForLogin(provider: ProviderKind, configDir: string | null | undefined): Account | undefined;
+}
+
+/**
+ * The account a managed row belongs to (undefined = default). Rows written
+ * before accounts carried an id have only `config_dir`; the account owning
+ * that login names it. A row with no `config_dir` is the default account —
+ * never guessed.
+ */
+export function accountIdForManagedRow(
+  entry: Pick<ManagedInstanceRow, "provider_name" | "config_dir" | "account_id">,
+  accounts?: AccountLoginLookup,
+): string | undefined {
+  const id =
+    entry.account_id ||
+    (entry.config_dir && accounts
+      ? accounts.findForLogin(entry.provider_name as ProviderKind, entry.config_dir)?.id
+      : undefined);
+  return id && id !== DEFAULT_ACCOUNT_ID ? id : undefined;
+}
 
 function slugFor(
   projectId: string | null | undefined,
@@ -118,6 +148,7 @@ export function summaryFromSessionRow(
 export function summaryFromManagedRow(
   entry: ManagedInstanceRow,
   projectSlugs?: ProjectSlugLookup,
+  accounts?: AccountLoginLookup,
 ): InstanceInfo {
   let runtimePayload: Record<string, unknown> | undefined;
   try {
@@ -148,6 +179,7 @@ export function summaryFromManagedRow(
     parentSessionId: entry.parent_session_id ?? undefined,
     preferredModel: entry.preferred_model ?? undefined,
     configDir: entry.config_dir ?? undefined,
+    accountId: accountIdForManagedRow(entry, accounts),
     runtimeMode: (entry.runtime_mode as ProviderRuntimeMode | null) ?? undefined,
     spaceId: entry.space_id ?? undefined,
     projectId: entry.project_id ?? undefined,

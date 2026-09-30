@@ -335,6 +335,11 @@ export interface ProviderSkill {
 
 export interface ProviderGlobalState {
   provider: ProviderKind;
+  /**
+   * Config dir this state describes (account/rate limits/MCP are per login).
+   * Absent = the server's default account. Keyed together with `provider`.
+   */
+  configDir?: string;
   account?: ProviderAccountStatus;
   mcpServers?: ProviderMcpServerStatus[];
   apps?: string[];
@@ -497,43 +502,65 @@ export interface ProviderCapabilities {
    */
   supportsAgentActivity?: boolean;
   /**
-   * The provider keeps one login per config dir, so several accounts can
-   * coexist on one machine as separate dirs (`ProviderAccountProfile`). When
-   * true the UI offers account profiles in Settings and per-project defaults,
-   * and shows a chat's account beside its model.
+   * The provider's login lives in a config dir Relay can point the CLI at
+   * (Claude: `CLAUDE_CONFIG_DIR`, Codex: `CODEX_HOME`), so an `Account` other
+   * than the default can carry a login for it. Without this a provider belongs
+   * to the default account only.
    */
-  supportsAccountProfiles?: boolean;
+  supportsAccountLogins?: boolean;
+  /** How to sign this provider in under a separate config dir — rendered as-is by Settings. */
+  accountLoginHowTo?: AccountLoginHowTo;
 }
 
-/**
- * One provider login on this machine, identified by its config dir (Claude:
- * `CLAUDE_CONFIG_DIR`). The server's own resolved dir is the implicit default
- * profile (`DEFAULT_ACCOUNT_PROFILE_ID`) and is never stored in settings.
- */
-export interface ProviderAccountProfile {
-  id: string;
-  provider: ProviderKind;
-  /** User-facing name ("Work", "Personal"). */
-  label: string;
-  /** Absolute config dir the provider CLI runs against. */
+/** Id of the implicit account backed by the server's own provider dirs. */
+export const DEFAULT_ACCOUNT_ID = "default";
+
+/** One provider login inside an account: the config dir the CLI runs against. */
+export interface AccountLogin {
+  /** Absolute config dir (Claude: `CLAUDE_CONFIG_DIR`, Codex: `CODEX_HOME`). */
   configDir: string;
 }
 
-/** Id of the implicit profile backed by the server's resolved config dir. */
-export const DEFAULT_ACCOUNT_PROFILE_ID = "default";
-
 /**
- * A profile plus what the provider reports about it. Identity is probed, never
- * typed: a label alone can't tell two logins apart.
+ * A Relay account — the highest layer of the UI ("Work", "Personal"): a named
+ * context owning **one login per provider it uses**. A provider with no login
+ * in an account is unavailable there; it never falls back to another account's
+ * login. The default account (`DEFAULT_ACCOUNT_ID`) is implicit: its logins are
+ * the server's own resolved dirs for every installed provider, and only its
+ * label can be stored.
  */
-export interface ProviderAccountProfileStatus extends ProviderAccountProfile {
-  /** True for the server's resolved dir (never removable). */
-  isDefault: boolean;
+export interface Account {
+  id: string;
+  /** User-facing name. */
+  label: string;
+  logins: Partial<Record<ProviderKind, AccountLogin>>;
+}
+
+/** A login plus what the provider reports about it. Identity is probed, never typed. */
+export interface AccountLoginStatus extends AccountLogin {
   probeState: "unknown" | "probing" | "ok" | "error";
-  /** Provider-reported account (email/org/plan) when the probe succeeded. */
   identity?: ProviderAccountStatus;
   probeError?: string;
   probedAt?: number;
+}
+
+/** `GET /api/accounts` row: an account with each login's probed identity. */
+export interface AccountStatus {
+  id: string;
+  label: string;
+  /** True for the implicit default account (never removable; logins not editable). */
+  isDefault: boolean;
+  logins: Partial<Record<ProviderKind, AccountLoginStatus>>;
+}
+
+/** Copy for the "add a login" form: where a second login lives and how to create it. */
+export interface AccountLoginHowTo {
+  /** Example config dir for a second login (also the field placeholder). */
+  exampleDir: string;
+  /** Shell command that signs in under that dir. */
+  command: string;
+  /** What to do once the CLI is running, when signing in is a second step. */
+  followUp?: string;
 }
 
 export type ProviderInstallMethod = "npm" | "brew" | "bun" | "pnpm" | "native" | "manual";
@@ -606,8 +633,6 @@ export interface ProviderModelsResponse {
 
 export interface ProviderDefaults {
   model?: string;
-  /** Global default account profile for new chats; null/absent = the server default. */
-  profileId?: string | null;
   reasoningEffort?: ReasoningEffort;
   runtimeMode?: ProviderRuntimeMode;
   fastMode?: boolean;
@@ -621,8 +646,11 @@ export interface GlobalSettings {
   defaultSpaceBranch: string | null;
   spaceBranchSource: "local" | "remote";
   providerDefaults: Record<string, ProviderDefaults>;
-  /** User-added account profiles (the implicit default is never listed here). */
-  providerProfiles: ProviderAccountProfile[];
+  /**
+   * Stored accounts: every non-default account, plus an optional
+   * `{ id: "default", label }` entry that only renames the default one.
+   */
+  accounts: Account[];
   customInstructions: string | null;
   projectOrder: string[] | null;
   suggestions: SuggestionsConfig | null;
@@ -734,6 +762,11 @@ export interface InstanceInfo {
    * the server's resolved default. Fixed at creation, like the provider.
    */
   configDir?: string;
+  /**
+   * `Account.id` this chat belongs to. Absent = the default account. Fixed at
+   * creation; `configDir` is the login that account had for this provider.
+   */
+  accountId?: string;
   /** Active provider runtime mode for this instance (defaults to "approval-required") */
   runtimeMode?: ProviderRuntimeMode;
   /** Pending plan markdown from ExitPlanMode, awaiting user approval/feedback */
@@ -799,11 +832,8 @@ export interface CreateInstancePayload {
   parentSessionId?: string;
   /** Review-session metadata */
   review?: ReviewSessionInfo;
-  /**
-   * Account profile to bind the chat to (`ProviderAccountProfile.id`).
-   * Absent = project default, then global provider default, then the server default.
-   */
-  profileId?: string;
+  /** Account the chat is created in (`Account.id`); absent = the default account. */
+  accountId?: string;
 }
 
 export interface RemoveInstancePayload {
@@ -1662,8 +1692,13 @@ export interface Project {
   spaceBranchSource: "local" | "remote" | null;
   defaultProvider: string | null;
   defaultModel: string | null;
-  /** Account profile for new chats in this project; null = the global default. */
-  defaultProfileId: string | null;
+  /**
+   * Accounts (`Account.id`) this project belongs to. A project
+   * shows only under its accounts; the same directory may belong to several.
+   * Rows with no membership recorded belong to the default account. With a
+   * single account registered the UI ignores membership entirely.
+   */
+  accountIds: string[];
   createdAt: number;
   lastActivityAt: number | null;
   suggestions: SuggestionsConfig | null;

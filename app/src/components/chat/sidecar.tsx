@@ -174,8 +174,6 @@ interface SidecarProps {
   provider?: ProviderKind;
   providerStatus?: ProviderStatusSummary;
   providerGlobalState?: ProviderGlobalState;
-  /** Provider config dir the chat is bound to (absent = default account profile). */
-  configDir?: string;
   instanceId?: string;
   createdAt?: number;
   lastActivityAt?: number;
@@ -213,7 +211,6 @@ export const Sidecar = memo(
     provider,
     providerStatus,
     providerGlobalState,
-    configDir,
     instanceId,
     createdAt,
     lastActivityAt,
@@ -293,7 +290,6 @@ export const Sidecar = memo(
             provider={provider}
             providerStatus={providerStatus}
             providerGlobalState={providerGlobalState}
-            configDir={configDir}
             createdAt={createdAt ?? Date.now()}
             lastActivityAt={lastActivityAt ?? Date.now()}
           />
@@ -360,7 +356,6 @@ export const Sidecar = memo(
       prev.provider === next.provider &&
       prev.providerStatus === next.providerStatus &&
       prev.providerGlobalState === next.providerGlobalState &&
-      prev.configDir === next.configDir &&
       prev.planContent === next.planContent &&
       prev.reviewContent === next.reviewContent &&
       prev.onSelectTab === next.onSelectTab &&

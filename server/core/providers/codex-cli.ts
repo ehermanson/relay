@@ -7,6 +7,8 @@
 
 import { execSync } from "child_process";
 import { existsSync } from "fs";
+import { homedir } from "os";
+import { join, resolve } from "path";
 
 let cachedCodexBinary: string | null | undefined;
 
@@ -47,17 +49,68 @@ export function findCodexCodeModeHost(): string | null {
   return cachedCodeModeHostPath;
 }
 
+/** Codex's own home when CODEX_HOME is unset. */
+export function defaultCodexHomeDir(): string {
+  return join(homedir(), ".codex");
+}
+
+function expandHome(path: string): string {
+  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+}
+
+/** Absolute, `~`-expanded, trailing-slash-free form of a Codex home (cache keys, comparisons). */
+export function normalizeCodexHomeDir(codexHome: string): string {
+  return resolve(expandHome(codexHome.trim()));
+}
+
 /**
- * Build the environment for spawning a Codex process. Inherits the current
- * process env and, when unset, injects CODEX_CODE_MODE_HOST_PATH pointing at the
- * bundled code-mode host binary so Codex "code mode" works without the user
- * having to export it manually. A user-provided value always wins.
+ * The single resolution of "which Codex home" Relay uses by default — for
+ * reading (rollouts under `sessions/`) and for spawning `codex app-server`.
+ * Precedence: CODEX_DIR (Relay's explicit override) > CODEX_HOME (the CLI's own
+ * switch, which is how several logins coexist on one machine) > ~/.codex.
+ * Mirrors `resolveClaudeConfigDir`.
  */
-export function buildCodexSpawnEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  if (baseEnv.CODEX_CODE_MODE_HOST_PATH) return baseEnv;
-  const hostPath = findCodexCodeModeHost();
-  if (!hostPath) return baseEnv;
-  return { ...baseEnv, CODEX_CODE_MODE_HOST_PATH: hostPath };
+export function resolveCodexHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.CODEX_DIR?.trim() || env.CODEX_HOME?.trim();
+  return raw ? normalizeCodexHomeDir(raw) : defaultCodexHomeDir();
+}
+
+/** The home the Codex CLI itself would pick under `env` (it never reads CODEX_DIR). */
+function codexHomeSeenByCli(env: NodeJS.ProcessEnv): string {
+  const inherited = env.CODEX_HOME?.trim();
+  return inherited ? normalizeCodexHomeDir(inherited) : defaultCodexHomeDir();
+}
+
+/**
+ * Build the environment for spawning a Codex process.
+ *
+ * - Injects CODEX_CODE_MODE_HOST_PATH (when unset) pointing at the bundled
+ *   code-mode host binary so Codex "code mode" works without the user having
+ *   to export it manually. A user-provided value always wins.
+ * - Pins CODEX_HOME to `codexHome` (one login per home: `auth.json`,
+ *   `config.toml`, `sessions/`) **only when it differs** from the home the CLI
+ *   would already resolve under `baseEnv`. When they agree — every spawn of a
+ *   single-account install — the variable is left exactly as inherited, so
+ *   the child env is identical to what it was before account logins existed.
+ *
+ * Returns `baseEnv` itself when nothing needs to change.
+ */
+export function buildCodexSpawnEnv(
+  codexHome?: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  let env = baseEnv;
+  if (codexHome?.trim()) {
+    const target = normalizeCodexHomeDir(codexHome);
+    if (target !== codexHomeSeenByCli(baseEnv)) {
+      env = { ...env, CODEX_HOME: target };
+    }
+  }
+  if (!env.CODEX_CODE_MODE_HOST_PATH) {
+    const hostPath = findCodexCodeModeHost();
+    if (hostPath) env = { ...env, CODEX_CODE_MODE_HOST_PATH: hostPath };
+  }
+  return env;
 }
 
 export function findCodexBinary(): string | null {

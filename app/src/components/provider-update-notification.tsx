@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { useAvailableProviders } from "@/hooks/use-available-providers";
+import { useInstalledProviders } from "@/hooks/use-available-providers";
 import { useDismissedProviderAdvisories } from "@/hooks/use-dismissed-provider-advisories";
 import {
   buildToastDescription,
@@ -13,7 +13,7 @@ import {
 const TOAST_ID = "provider-update-advisory";
 
 /**
- * Mounts at the app root. Watches `useAvailableProviders()` for any providers
+ * Mounts at the app root. Watches `useInstalledProviders()` for any providers
  * whose installed CLI is behind the latest published version, and fires a
  * single sonner toast per (provider, latestVersion) tuple.
  *
@@ -31,7 +31,8 @@ const TOAST_ID = "provider-update-advisory";
  */
 export function ProviderUpdateNotification() {
   const navigate = useNavigate();
-  const { providers } = useAvailableProviders();
+  // Every installed provider: an update matters whichever account is active.
+  const { providers } = useInstalledProviders();
   const { dismissed, dismiss } = useDismissedProviderAdvisories();
 
   // Track which keys we've already fired during this session so we don't

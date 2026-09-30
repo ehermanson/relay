@@ -16,8 +16,10 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { MobileSidebarToggle } from "@/components/ui/view-header";
 import { ProjectContext } from "@/context/project-context";
 import { useWSState } from "@/context/websocket-context";
+import { readStoredActiveAccountId } from "@/lib/account-scope";
 import { ApiError, fetchProjectArtifacts } from "@/lib/api";
 import { getProjectName, instanceMatchesProject } from "@/lib/project-route";
+import { DEFAULT_ACCOUNT_ID } from "@shared/types";
 
 const MotionLogo = motion.create(RelayLogo);
 
@@ -269,11 +271,22 @@ function ProjectError({ error }: { error: Error }) {
 async function loadProjectArtifactsWithRetry(
   projectId: string,
 ): Promise<Awaited<ReturnType<typeof fetchProjectArtifacts>>> {
+  // Artifacts (skills, plans) are per account. Loaders can't use hooks, so
+  // read the persisted choice directly; the switcher invalidates the router
+  // after a switch so this re-runs. A stale id the server rejects falls back
+  // to the default account rather than failing the whole project view.
+  const storedAccountId = readStoredActiveAccountId();
+  let accountId =
+    storedAccountId && storedAccountId !== DEFAULT_ACCOUNT_ID ? storedAccountId : undefined;
   const attempts = 8;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await fetchProjectArtifacts(projectId);
+      return await fetchProjectArtifacts(projectId, accountId);
     } catch (err) {
+      if (accountId && err instanceof ApiError && err.status !== 404) {
+        accountId = undefined;
+        continue;
+      }
       const isRetryable404 =
         err instanceof ApiError && err.status === 404 && attempt < attempts - 1;
       if (!isRetryable404) {

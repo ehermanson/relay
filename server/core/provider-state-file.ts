@@ -6,6 +6,10 @@
  * server restarts. The data is treated as stale-but-valid on restore: it
  * shows immediately while the live session catches up (rate limit windows,
  * for example, are only pushed by Codex mid-turn since their CLI update).
+ *
+ * One entry per provider login: a non-default account's state carries its
+ * `configDir`; the default account's never does, so files written before
+ * accounts existed load as the default account unchanged.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -35,7 +39,8 @@ export function loadPersistedProviderState(filePath: string): ProviderGlobalStat
           typeof (s as ProviderGlobalState).provider === "string" &&
           typeof (s as ProviderGlobalState).updatedAt === "number",
       )
-      .map(scrubLegacyAccountLabel);
+      .map(scrubLegacyAccountLabel)
+      .map(dropInvalidConfigDir);
   } catch {
     return [];
   }
@@ -63,4 +68,15 @@ function scrubLegacyAccountLabel(state: ProviderGlobalState): ProviderGlobalStat
   if (!label || !/^(Signed in via|Auth token \(|API key \()/i.test(label)) return state;
   const { label: _dropped, ...account } = state.account!;
   return { ...state, account };
+}
+
+/**
+ * `configDir` is the account key. Anything but a non-empty string collapses
+ * onto the default account rather than creating a phantom key.
+ */
+function dropInvalidConfigDir(state: ProviderGlobalState): ProviderGlobalState {
+  if (state.configDir === undefined) return state;
+  if (typeof state.configDir === "string" && state.configDir.trim()) return state;
+  const { configDir: _dropped, ...rest } = state;
+  return rest;
 }

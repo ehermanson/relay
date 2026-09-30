@@ -14,7 +14,7 @@ import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AuthManager } from "#server/auth.js";
 import type { InstanceManager } from "#core/instance-manager.js";
-import { MaxProcessesError } from "#core/instance-manager.js";
+import { MaxProcessesError, ProviderUnavailableInAccountError } from "#core/instance-manager.js";
 import type { TerminalManager } from "#core/terminal-manager.js";
 import type { InstanceInfo } from "#core/types.js";
 import { getPrimaryRemote } from "#core/git.js";
@@ -532,6 +532,14 @@ export function createWebSocketServer(
     });
     void instanceManager.ensureProviderGlobalState("codex");
     void instanceManager.ensureProviderGlobalState("claude");
+    // Every other account login, for every provider, gets its own entry
+    // (identity/rate limits keyed by config dir); cheap when fresh — entries
+    // younger than 5 min are left alone and hydration is deduped in flight.
+    for (const provider of ["claude", "codex"] as const) {
+      for (const configDir of instanceManager.listAccountConfigDirs(provider)) {
+        void instanceManager.ensureProviderGlobalState(provider, false, configDir);
+      }
+    }
     sendMessage(ws, {
       type: "projects_changed",
       projects: instanceManager.projectManager.listProjects(),
@@ -574,10 +582,13 @@ export function createWebSocketServer(
                 modelOptions: message.modelOptions,
                 parentSessionId: message.parentSessionId,
                 review: message.review,
-                profileId: message.profileId,
+                accountId: message.accountId,
               });
             } catch (err) {
-              if (err instanceof MaxProcessesError) {
+              if (err instanceof ProviderUnavailableInAccountError) {
+                // The account has no login for this provider — never a fallback.
+                sendMessage(ws, { type: "error", message: err.message, code: err.code });
+              } else if (err instanceof MaxProcessesError) {
                 // Structured so the client can open the capacity dialog and
                 // retry this exact create once the user frees a slot.
                 sendMessage(ws, {
@@ -596,7 +607,7 @@ export function createWebSocketServer(
                     modelOptions: message.modelOptions,
                     parentSessionId: message.parentSessionId,
                     review: message.review,
-                    profileId: message.profileId,
+                    accountId: message.accountId,
                   },
                 });
               } else {

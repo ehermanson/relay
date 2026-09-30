@@ -2,10 +2,9 @@ import { memo, useMemo } from "react";
 import { Tooltip } from "../ui/tooltip";
 import { Popover } from "../ui/popover";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { useProviderModels } from "@/hooks/use-provider-models";
-import { useProviderProfiles } from "@/hooks/use-provider-profiles";
-import { resolveChatAccountLabel } from "@/lib/account-profiles";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import type { ChatItem } from "@/hooks/use-instance-messages";
+import { stateKeyFor } from "@/lib/account-scope";
 
 import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
 import {
@@ -62,23 +61,6 @@ function StatHelpIcon({ tooltip }: { tooltip: string }) {
       </span>
     </Tooltip>
   );
-}
-
-/**
- * The chat's account label for the model line. Gated on the provider's
- * `supportsAccountProfiles` capability and shown only once more than one
- * profile exists — a single-login install gets no extra text.
- */
-function useChatAccountLabel(
-  provider: ProviderKind | undefined,
-  configDir: string | undefined,
-): { label: string; detail: string | null } | null {
-  const { capabilities } = useProviderModels(provider);
-  const supportsAccountProfiles = !!capabilities.supportsAccountProfiles;
-  const { data: profiles } = useProviderProfiles(provider, { enabled: supportsAccountProfiles });
-  if (!supportsAccountProfiles || !profiles || profiles.length < 2) return null;
-  const resolved = resolveChatAccountLabel(profiles, configDir);
-  return { label: resolved.label, detail: resolved.detail };
 }
 
 function StatRow({ label, value, help }: { label: string; value: React.ReactNode; help?: string }) {
@@ -241,8 +223,6 @@ interface InstanceContextProps {
   provider?: ProviderKind;
   providerStatus?: ProviderStatusSummary;
   providerGlobalState?: ProviderGlobalState;
-  /** Provider config dir the chat is bound to; absent = the default account profile. */
-  configDir?: string;
   createdAt: number;
   lastActivityAt: number;
 }
@@ -277,7 +257,6 @@ function InstanceContext({
   provider,
   providerStatus,
   providerGlobalState,
-  configDir,
   createdAt,
   lastActivityAt,
 }: InstanceContextProps) {
@@ -397,7 +376,6 @@ function InstanceContext({
             provider={provider}
             providerStatus={providerStatus}
             globalState={globalProviderState}
-            configDir={configDir}
           />
         </div>
       )}
@@ -413,16 +391,13 @@ function ProviderStatusBlock({
   provider,
   providerStatus,
   globalState,
-  configDir,
   mcpContext = "chat",
 }: {
   provider: string;
   providerStatus?: ProviderStatusSummary;
   globalState?: ProviderGlobalState;
-  configDir?: string;
   mcpContext?: "chat" | "provider";
 }) {
-  const accountLabel = useChatAccountLabel(provider as ProviderKind, configDir);
   const hasContent = Boolean(
     providerStatus?.threadStatus ||
     providerStatus?.turnStatus ||
@@ -481,21 +456,14 @@ function ProviderStatusBlock({
         ) : null}
       </div>
 
-      {/* Effective model (+ account when the provider keeps several logins) */}
-      {providerStatus?.effectiveModel || accountLabel ? (
+      {/* Effective model */}
+      {providerStatus?.effectiveModel ? (
         <span className="text-[0.75rem] text-muted ml-5.5">
-          {providerStatus?.effectiveModel ? formatModel(providerStatus.effectiveModel) : null}
-          {providerStatus?.effectiveModel &&
-          providerStatus.reroutedFromModel &&
+          {formatModel(providerStatus.effectiveModel)}
+          {providerStatus.reroutedFromModel &&
           providerStatus.reroutedFromModel !== providerStatus.effectiveModel
             ? ` (from ${formatModel(providerStatus.reroutedFromModel)})`
             : ""}
-          {accountLabel ? (
-            <>
-              {providerStatus?.effectiveModel ? " · " : ""}
-              <span title={accountLabel.detail ?? undefined}>{accountLabel.label}</span>
-            </>
-          ) : null}
         </span>
       ) : null}
 
@@ -556,8 +524,13 @@ function SpaceContext({
     : 0;
   const segments = stats ? computeSegments(stats) : [];
 
-  // Collect unique providers used in this space
+  // Collect unique providers used in this space. Provider state is per login;
+  // the space view shows the active account's state for each provider.
   const providerGlobalStates = useProviderRuntimeStore((s) => s.providerGlobalState);
+  const account = useActiveAccount();
+  const stateFor = (p: ProviderKind): ProviderGlobalState | undefined => {
+    return providerGlobalStates[stateKeyFor(p, account.loginDirFor(p))];
+  };
   const uniqueProviders = useMemo(() => {
     const seen = new Set<string>();
     for (const inst of instances) {
@@ -603,7 +576,7 @@ function SpaceContext({
               <ProviderStatusBlock
                 key={p}
                 provider={p}
-                globalState={providerGlobalStates[p as ProviderKind]}
+                globalState={stateFor(p as ProviderKind)}
                 mcpContext="provider"
               />
             ))}

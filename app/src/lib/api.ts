@@ -1,11 +1,11 @@
 import { videoContentType, MAX_VIDEO_UPLOAD } from "@shared/video-attachments";
 import type {
+  AccountStatus,
   CreateInstancePayload,
   HistoryEntry,
   InstanceInfo,
   NativeOpenTargetsResponse,
   Project,
-  ProviderAccountProfileStatus,
   ProviderDescriptor,
   ProviderUpdateResponse,
   ProviderKind,
@@ -196,8 +196,18 @@ export async function fetchProjectWorkspaceEntries(
   }
 }
 
-export async function fetchProviderModels(provider: ProviderKind): Promise<ProviderModelsResponse> {
-  const res = await fetch(`/api/provider-models?provider=${encodeURIComponent(provider)}`);
+/** Appends `accountId` (the active account) to a query when one is in effect. */
+function withAccountId(params: URLSearchParams, accountId?: string): URLSearchParams {
+  if (accountId) params.set("accountId", accountId);
+  return params;
+}
+
+export async function fetchProviderModels(
+  provider: ProviderKind,
+  accountId?: string,
+): Promise<ProviderModelsResponse> {
+  const params = withAccountId(new URLSearchParams({ provider }), accountId);
+  const res = await fetch(`/api/provider-models?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch provider models");
   const data = (await res.json()) as ProviderModelsResponse;
   return {
@@ -208,8 +218,13 @@ export async function fetchProviderModels(provider: ProviderKind): Promise<Provi
   };
 }
 
-export async function fetchProviders(): Promise<ProviderDescriptor[]> {
-  const res = await fetch("/api/providers");
+/**
+ * Installed providers. With `accountId` (a non-default active account) only
+ * the providers that account has a login for.
+ */
+export async function fetchProviders(accountId?: string): Promise<ProviderDescriptor[]> {
+  const params = withAccountId(new URLSearchParams(), accountId).toString();
+  const res = await fetch(`/api/providers${params ? `?${params}` : ""}`);
   if (!res.ok) throw new Error("Failed to fetch providers");
   const data = (await res.json()) as { providers?: ProviderDescriptor[] };
   return data.providers ?? [];
@@ -266,6 +281,8 @@ export async function addProviderMcpServer(
     bearerTokenEnvVar?: string;
     scope?: "global" | "project";
     projectId?: string;
+    /** Account whose provider config receives the server (absent = default). */
+    accountId?: string;
   },
 ): Promise<void> {
   const res = await fetch(`/api/providers/${encodeURIComponent(provider)}/mcp-servers`, {
@@ -280,6 +297,7 @@ export async function addProviderMcpServer(
 export async function fetchProjectMcpServers(
   provider: ProviderKind,
   projectId: string,
+  accountId?: string,
 ): Promise<
   Array<{
     name: string;
@@ -288,8 +306,9 @@ export async function fetchProjectMcpServers(
     scope: "local" | "project";
   }>
 > {
+  const params = withAccountId(new URLSearchParams({ projectId }), accountId);
   const res = await fetch(
-    `/api/providers/${encodeURIComponent(provider)}/mcp-servers?projectId=${encodeURIComponent(projectId)}`,
+    `/api/providers/${encodeURIComponent(provider)}/mcp-servers?${params.toString()}`,
   );
   if (!res.ok) throw new Error("Failed to load Project MCP servers");
   const data = (await res.json()) as {
@@ -628,8 +647,14 @@ export async function fetchProject(projectId: string): Promise<Project> {
   return res.json();
 }
 
-export async function fetchProjectArtifacts(projectId: string): Promise<ProjectArtifacts> {
-  const res = await fetch(`/api/project-artifacts/${encodeURIComponent(projectId)}`);
+export async function fetchProjectArtifacts(
+  projectId: string,
+  accountId?: string,
+): Promise<ProjectArtifacts> {
+  const params = withAccountId(new URLSearchParams(), accountId).toString();
+  const res = await fetch(
+    `/api/project-artifacts/${encodeURIComponent(projectId)}${params ? `?${params}` : ""}`,
+  );
   if (!res.ok) throw new ApiError("Failed to fetch project", res.status);
   return res.json();
 }
@@ -791,7 +816,8 @@ export async function fetchProjects(): Promise<Project[]> {
 
 export async function addProject(
   directory: string,
-  opts?: { name?: string; targetBranch?: string },
+  /** `accountId`: register under this account (adds membership if the directory exists). */
+  opts?: { name?: string; targetBranch?: string; accountId?: string },
 ): Promise<Project> {
   const res = await fetch("/api/projects", {
     method: "POST",
@@ -805,11 +831,16 @@ export async function addProject(
   return res.json();
 }
 
-export async function createProject(parentDirectory: string, name: string): Promise<Project> {
+export async function createProject(
+  parentDirectory: string,
+  name: string,
+  /** Register the new project under this account (absent = default). */
+  accountId?: string,
+): Promise<Project> {
   const res = await fetch("/api/projects/init", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parentDirectory, name }),
+    body: JSON.stringify({ parentDirectory, name, ...(accountId ? { accountId } : {}) }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: "Failed to create project" }));
@@ -828,7 +859,8 @@ export async function updateProject(
     spaceBranchSource?: "local" | "remote" | null;
     defaultProvider?: string | null;
     defaultModel?: string | null;
-    defaultProfileId?: string | null;
+    /** Account membership (`Account.id[]`); at least one id. */
+    accountIds?: string[];
     suggestions?: import("@shared/types").SuggestionsConfig | null;
   },
 ): Promise<Project> {
@@ -1186,75 +1218,65 @@ export async function updateGlobalSettings(
   return res.json();
 }
 
-// ─── Provider account profiles ─────────────────────────────────────────────
+// ─── Accounts ──────────────────────────────────────────────────────────────
 //
-// One provider login per config dir. The server lists the implicit default
-// profile first and probes each dir's identity; `?probe=1` re-probes in the
-// background, `/probe` awaits a single row's probe.
+// An account is a named context owning one login (config dir) per provider.
+// The server lists the implicit default account first and probes each login's
+// identity; `?probe=1` re-probes in the background, `/probe` awaits one row.
 
-function profilesUrl(provider: ProviderKind, suffix = ""): string {
-  return `/api/providers/${encodeURIComponent(provider)}/profiles${suffix}`;
+export type AccountLoginsInput = Partial<Record<ProviderKind, { configDir: string }>>;
+
+function accountsUrl(suffix = ""): string {
+  return `/api/accounts${suffix}`;
 }
 
-async function readProfileError(res: Response, fallback: string): Promise<never> {
+async function readAccountError(res: Response, fallback: string): Promise<never> {
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   throw new ApiError(data.error || fallback, res.status);
 }
 
-export async function fetchProviderProfiles(
-  provider: ProviderKind,
-  options: { probe?: boolean } = {},
-): Promise<ProviderAccountProfileStatus[]> {
-  const res = await fetch(profilesUrl(provider, options.probe ? "?probe=1" : ""));
-  if (!res.ok) return readProfileError(res, "Failed to load accounts");
-  const data = (await res.json()) as
-    | ProviderAccountProfileStatus[]
-    | { profiles?: ProviderAccountProfileStatus[] };
-  return Array.isArray(data) ? data : (data.profiles ?? []);
+export async function fetchAccounts(options: { probe?: boolean } = {}): Promise<AccountStatus[]> {
+  const res = await fetch(accountsUrl(options.probe ? "?probe=1" : ""));
+  if (!res.ok) return readAccountError(res, "Failed to load accounts");
+  const data = (await res.json()) as AccountStatus[] | { accounts?: AccountStatus[] };
+  return Array.isArray(data) ? data : (data.accounts ?? []);
 }
 
-export async function addProviderProfile(
-  provider: ProviderKind,
-  input: { label: string; configDir: string },
-): Promise<ProviderAccountProfileStatus> {
-  const res = await fetch(profilesUrl(provider), {
+export async function addAccount(input: {
+  label: string;
+  logins: AccountLoginsInput;
+}): Promise<AccountStatus> {
+  const res = await fetch(accountsUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) return readProfileError(res, "Failed to add account");
+  if (!res.ok) return readAccountError(res, "Failed to add account");
   return res.json();
 }
 
-export async function renameProviderProfile(
-  provider: ProviderKind,
+/** Rename and/or replace logins. The default account accepts `label` only. */
+export async function updateAccount(
   id: string,
-  label: string,
-): Promise<ProviderAccountProfileStatus> {
-  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}`), {
+  updates: { label?: string; logins?: AccountLoginsInput },
+): Promise<AccountStatus> {
+  const res = await fetch(accountsUrl(`/${encodeURIComponent(id)}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label }),
+    body: JSON.stringify(updates),
   });
-  if (!res.ok) return readProfileError(res, "Failed to rename account");
+  if (!res.ok) return readAccountError(res, "Failed to update account");
   return res.json();
 }
 
-export async function removeProviderProfile(provider: ProviderKind, id: string): Promise<void> {
-  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}`), {
-    method: "DELETE",
-  });
-  if (!res.ok) return readProfileError(res, "Failed to remove account");
+export async function removeAccount(id: string): Promise<void> {
+  const res = await fetch(accountsUrl(`/${encodeURIComponent(id)}`), { method: "DELETE" });
+  if (!res.ok) return readAccountError(res, "Failed to remove account");
 }
 
-export async function probeProviderProfile(
-  provider: ProviderKind,
-  id: string,
-): Promise<ProviderAccountProfileStatus> {
-  const res = await fetch(profilesUrl(provider, `/${encodeURIComponent(id)}/probe`), {
-    method: "POST",
-  });
-  if (!res.ok) return readProfileError(res, "Failed to check account");
+export async function probeAccount(id: string): Promise<AccountStatus> {
+  const res = await fetch(accountsUrl(`/${encodeURIComponent(id)}/probe`), { method: "POST" });
+  if (!res.ok) return readAccountError(res, "Failed to check account");
   return res.json();
 }
 
@@ -1290,16 +1312,29 @@ export interface SearchResultItem {
   rank: number;
   /** True when the result came from the OR fallback (not all terms matched) */
   partial?: boolean;
+  /** `Account.id` the chat belongs to; absent = the default account. */
+  accountId?: string;
 }
 
 export async function searchChats(
   query: string,
-  opts?: { projectId?: string; boostProjectId?: string; limit?: number },
+  opts?: {
+    projectId?: string;
+    boostProjectId?: string;
+    limit?: number;
+    /**
+     * Scope to one account's chats server-side, before ranking and the
+     * limit. Send only when accounts are in play (the active account with
+     * two or more registered); absent means no scoping.
+     */
+    accountId?: string;
+  },
 ): Promise<SearchResultItem[]> {
   const params = new URLSearchParams({ q: query });
   if (opts?.projectId) params.set("projectId", opts.projectId);
   if (opts?.boostProjectId) params.set("boostProjectId", opts.boostProjectId);
   if (opts?.limit) params.set("limit", String(opts.limit));
+  withAccountId(params, opts?.accountId);
   const res = await fetch("/api/search?" + params.toString());
   if (!res.ok) return [];
   const data = await res.json();

@@ -1,6 +1,11 @@
 import type { ComponentProps } from "react";
 import { Check, Copy, FolderOpen, GitBranch, Plus } from "lucide-react";
 import { motion } from "motion/react";
+import {
+  AccountMismatchHostProvider,
+  SpaceAccountMismatchBanner,
+  useProjectAccountMismatch,
+} from "@/components/chat/account-mismatch-banner";
 import { InstanceView } from "@/components/chat/instance-view";
 import { SpaceChatTabs } from "@/components/spaces/space-chat-tabs";
 import { SpaceSidebar } from "@/components/spaces/space-sidebar";
@@ -13,6 +18,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { CollapsedTerminalBar } from "@/components/terminal/terminal-collapsed-bar";
 import { LazyTerminalPanel } from "@/components/terminal/lazy-terminal-panel";
 import { useFirstPaint } from "@/hooks/use-first-paint";
+import { useProjectsQuery } from "@/hooks/use-projects-query";
 import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { useSidecarStore } from "@/stores/sidecar-store";
 import type { InstanceInfo } from "@shared/types";
@@ -23,6 +29,12 @@ const TERMINAL_ANIM_TRANSITION = { duration: 0.22, ease: [0.22, 1, 0.36, 1] } as
 export function SpaceViewBody() {
   const { shared, actions } = useSpaceViewContext();
   const firstPaint = useFirstPaint();
+  // Account guard: a space whose project isn't in the active account (deep
+  // link, tab left open across a switch) names its account up top. The chats
+  // inside then skip their own notice so the account isn't named twice.
+  const { data: projects } = useProjectsQuery();
+  const project = projects?.find((p) => p.slug === shared.projectId || p.id === shared.projectId);
+  const projectAccountOwner = useProjectAccountMismatch(project);
   const mountTerminalPanel =
     (shared.showTerminalPanel || shared.isTerminalCollapsed) && !shared.isMobile;
   const chatTabsProps: ComponentProps<typeof SpaceChatTabs> = {
@@ -61,7 +73,8 @@ export function SpaceViewBody() {
   };
 
   return (
-    <>
+    <AccountMismatchHostProvider value={projectAccountOwner !== null}>
+      {projectAccountOwner && <SpaceAccountMismatchBanner owner={projectAccountOwner} />}
       {shared.isMerged && (
         <div className="flex items-center gap-2 border-b border-border bg-surface-dim px-4 py-2 text-xs text-text-muted">
           <span>
@@ -253,7 +266,7 @@ export function SpaceViewBody() {
           />
         </MobileSidecarOverlay>
       )}
-    </>
+    </AccountMismatchHostProvider>
   );
 }
 

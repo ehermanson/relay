@@ -3,7 +3,9 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, FolderOpen, GitBranch, Globe, MessageSquare } from "lucide-react";
 import { fetchAllSpaces, searchChats, type SearchResultItem } from "@/lib/api";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useProjectsQuery } from "@/hooks/use-projects-query";
+import { projectBelongsToAccount } from "@/lib/account-scope";
 import { formatTimeAgo } from "@/lib/utils";
 import {
   Command,
@@ -57,7 +59,18 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
     }
   }, [open]);
 
-  const { data: projects = [] } = useProjectsQuery();
+  // Search is scoped to the active account like every other view: with two or
+  // more accounts only that account's projects and chats surface. Direct chat
+  // URLs still open — only search results are filtered, never navigation.
+  const account = useActiveAccount();
+  const { data: allProjects = [] } = useProjectsQuery();
+  const projects = useMemo(
+    () =>
+      account.isMulti
+        ? allProjects.filter((p) => projectBelongsToAccount(p, account.activeId, true))
+        : allProjects,
+    [allProjects, account.isMulti, account.activeId],
+  );
   const projectNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of projects) map.set(p.id, p.name);
@@ -82,8 +95,21 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
     return () => clearTimeout(id);
   }, [query]);
 
+  // The account scope is applied by the server, inside the query and before
+  // its limit — filtering the top-20 here let 20 recent chats of one account
+  // hide every chat of another. Sent only with two or more accounts (the
+  // default account included, so its view stays scoped too); the
+  // single-account wire is unchanged.
+  const searchAccountId = account.isMulti ? account.activeId : undefined;
+
   const { data: rawResults = [], isFetching } = useQuery({
-    queryKey: ["search", debouncedQuery, filterProjectId, routeProjectId ?? null],
+    queryKey: [
+      "search",
+      debouncedQuery,
+      filterProjectId,
+      routeProjectId ?? null,
+      searchAccountId ?? null,
+    ],
     // Empty query returns recent chats. When unfiltered, boost the current
     // route's project so local results rank first without hiding the rest.
     queryFn: () =>
@@ -91,14 +117,19 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
         projectId: filterProjectId ?? undefined,
         boostProjectId: filterProjectId ? undefined : routeProjectId,
         limit: 20,
+        accountId: searchAccountId,
       }),
     enabled: open,
     staleTime: 30_000,
     placeholderData: (prev) => prev,
   });
 
-  // Chats without a registered project can't be navigated to — hide them
-  const results = useMemo(() => rawResults.filter((r) => r.projectId), [rawResults]);
+  // Chats without a registered project can't be navigated to — hide them,
+  // along with chats of projects outside the active account's membership.
+  const results = useMemo(() => {
+    const visibleProjectIds = new Set(projects.map((p) => p.id));
+    return rawResults.filter((r) => r.projectId && visibleProjectIds.has(r.projectId));
+  }, [rawResults, projects]);
 
   const showingRecents = debouncedQuery.trim().length === 0;
   const showingPartial = !showingRecents && results.some((r) => r.partial);

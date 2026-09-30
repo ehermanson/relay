@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SessionDB, sanitizeSnippet } from "../dist/server/core/db.js";
+import { DatabaseSync } from "node:sqlite";
+import { SessionDB, accountLoginRootFilter, sanitizeSnippet } from "../dist/server/core/db.js";
 import { extractSearchableText } from "../dist/server/core/instance-manager.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -723,6 +724,423 @@ describe("SessionDB search", () => {
       const results = db.search("middleware");
       assert.equal(results.length, 1);
       assert.equal(results[0].source, "session");
+    });
+  });
+
+  describe("account (accountId) on results", () => {
+    const DEFAULT_DIR = "/home/me/.claude";
+    const WORK_DIR = "/home/me/.claude-work";
+    const CODEX_WORK_DIR = "/home/me/.codex-work";
+    /** Minimal `AccountStore.findForLogin` stand-in. */
+    const accounts = {
+      findForLogin(provider, configDir) {
+        const dirs = {
+          claude: { [DEFAULT_DIR]: "default", [WORK_DIR]: "work" },
+          codex: { "/home/me/.codex": "default", [CODEX_WORK_DIR]: "work" },
+        };
+        const id = dirs[provider]?.[configDir];
+        return id ? { id, label: id, logins: {} } : undefined;
+      },
+    };
+
+    it("managed rows report their stored account_id; default rows carry none", () => {
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-work",
+          provider_name: "claude",
+          name: "work account deployment notes",
+          config_dir: WORK_DIR,
+          account_id: "work",
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-default",
+          provider_name: "claude",
+          name: "default account deployment notes",
+          config_dir: null,
+          account_id: null,
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-explicit-default",
+          provider_name: "codex",
+          name: "explicit default deployment notes",
+          account_id: "default",
+        }),
+      );
+      for (const id of ["m-work", "m-default", "m-explicit-default"])
+        db.syncSearchIndexForInstance(id);
+
+      const results = db.search("deployment", { accounts });
+      const byId = new Map(results.map((r) => [r.instanceId, r]));
+      assert.equal(byId.get("m-work").accountId, "work");
+      assert.equal("accountId" in byId.get("m-default"), false);
+      assert.equal("accountId" in byId.get("m-explicit-default"), false);
+      assert.equal("configDir" in byId.get("m-work"), false, "the dir is no longer on the wire");
+
+      // The stored account is reported even without an account lookup.
+      const bare = db.search("deployment");
+      assert.equal(bare.find((r) => r.instanceId === "m-work").accountId, "work");
+      assert.equal(bare.find((r) => r.instanceId === "m-default").accountId, undefined);
+    });
+
+    it("managed rows written before accounts carried an id resolve it from their bound login", () => {
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-legacy-work",
+          provider_name: "claude",
+          name: "legacy work rollout plan",
+          config_dir: WORK_DIR,
+          account_id: null,
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-legacy-default",
+          provider_name: "claude",
+          name: "legacy default rollout plan",
+          config_dir: DEFAULT_DIR,
+          account_id: null,
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-legacy-gone",
+          provider_name: "claude",
+          name: "legacy orphan rollout plan",
+          config_dir: "/home/me/.claude-gone",
+          account_id: null,
+        }),
+      );
+      for (const id of ["m-legacy-work", "m-legacy-default", "m-legacy-gone"])
+        db.syncSearchIndexForInstance(id);
+
+      const byId = new Map(db.search("rollout", { accounts }).map((r) => [r.instanceId, r]));
+      assert.equal(byId.get("m-legacy-work").accountId, "work");
+      assert.equal(byId.get("m-legacy-default").accountId, undefined, "own dir = default");
+      assert.equal(byId.get("m-legacy-gone").accountId, undefined, "unregistered dir: no guess");
+
+      // Without the lookup nothing can name the account — never guessed from the dir.
+      assert.equal(
+        db.search("rollout").find((r) => r.instanceId === "m-legacy-work").accountId,
+        undefined,
+      );
+    });
+
+    it("external rows resolve the account from (provider, transcript root)", () => {
+      const rows = [
+        ["work", "claude", `${WORK_DIR}/projects/-tmp-test/s-work.jsonl`],
+        ["default", "claude", `${DEFAULT_DIR}/projects/-tmp-test/s-default.jsonl`],
+        ["codex", "codex", "/home/me/.codex/sessions/2026/09/30/rollout-s-codex.jsonl"],
+        ["codex-work", "codex", `${CODEX_WORK_DIR}/sessions/2026/09/30/rollout-s-codex-work.jsonl`],
+        // A root no account owns: no accountId rather than a guess.
+        ["orphan", "claude", "/home/me/.claude-gone/projects/-tmp-test/s-orphan.jsonl"],
+      ];
+      for (const [key, provider, jsonlPath] of rows) {
+        db.upsert(
+          makeRow({
+            session_id: `s-${key}`,
+            instance_id: `i-${key}`,
+            provider_name: provider,
+            name: `${key} migration plan`,
+            jsonl_path: jsonlPath,
+          }),
+        );
+        db.syncSearchIndexForInstance(`i-${key}`);
+      }
+
+      const results = db.search("migration", { accounts });
+      const byId = new Map(results.map((r) => [r.instanceId, r]));
+      assert.equal(results.length, 5);
+      assert.equal(byId.get("i-work").accountId, "work");
+      assert.equal(byId.get("i-codex-work").accountId, "work");
+      assert.equal(byId.get("i-default").accountId, undefined);
+      assert.equal(byId.get("i-codex").accountId, undefined);
+      assert.equal(byId.get("i-orphan").accountId, undefined);
+
+      // recentChats carries the same field.
+      const recent = db.recentChats({ accounts });
+      assert.equal(recent.find((r) => r.instanceId === "i-work").accountId, "work");
+      assert.equal(recent.find((r) => r.instanceId === "i-default").accountId, undefined);
+
+      // Without an account lookup an external root can't be resolved: no accountId.
+      assert.equal(
+        db.search("migration").find((r) => r.instanceId === "i-work").accountId,
+        undefined,
+      );
+    });
+  });
+
+  describe("account scoping (loginRoots) inside the query", () => {
+    const DEFAULT_DIR = "/home/me/.claude";
+    const WORK_DIR = "/home/me/.claude-work";
+    const CODEX_DIR = "/home/me/.codex";
+    const CODEX_WORK_DIR = "/home/me/.codex-work";
+    const accountList = [
+      {
+        id: "default",
+        label: "Default",
+        logins: { claude: { configDir: DEFAULT_DIR }, codex: { configDir: CODEX_DIR } },
+      },
+      {
+        id: "work",
+        label: "Work",
+        logins: { claude: { configDir: WORK_DIR }, codex: { configDir: CODEX_WORK_DIR } },
+      },
+    ];
+    const accounts = {
+      findForLogin(provider, configDir) {
+        return accountList.find((a) => a.logins[provider]?.configDir === configDir);
+      },
+    };
+    const workFilter = () => accountLoginRootFilter(accountList, "work");
+    const defaultFilter = () => accountLoginRootFilter(accountList, "default");
+
+    /** A DB that knows the server's own dirs, like the one InstanceManager builds. */
+    function openScopedDb() {
+      db.close();
+      db = new SessionDB(join(tempDir, "sessions.db"), noopLogger, {
+        defaultLoginRoots: { claude: DEFAULT_DIR, codex: CODEX_DIR },
+      });
+    }
+
+    function loginRootOf(instanceId) {
+      const row = db.db
+        .prepare("SELECT provider, login_root FROM search_index WHERE instance_id = ?")
+        .get(instanceId);
+      return row ? { provider: row.provider, login_root: row.login_root } : undefined;
+    }
+
+    it("files every doc under its (provider, login root)", () => {
+      openScopedDb();
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-work",
+          provider_name: "claude",
+          config_dir: `${WORK_DIR}/`,
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({ instance_id: "m-unbound", provider_name: "codex", config_dir: null }),
+      );
+      db.upsert(
+        makeRow({
+          session_id: "s-ext-work",
+          instance_id: "i-ext-work",
+          provider_name: "claude",
+          jsonl_path: `${WORK_DIR}/projects/-tmp-test/s-ext-work.jsonl`,
+        }),
+      );
+      db.upsert(
+        makeRow({
+          session_id: "s-ext-bare",
+          instance_id: "i-ext-bare",
+          provider_name: "codex",
+          // No root marker in the path: falls back to the server's own dir.
+          jsonl_path: "/tmp/rollout-bare.jsonl",
+        }),
+      );
+      for (const id of ["m-work", "m-unbound", "i-ext-work", "i-ext-bare"])
+        db.syncSearchIndexForInstance(id);
+
+      assert.deepEqual(loginRootOf("m-work"), { provider: "claude", login_root: WORK_DIR });
+      assert.deepEqual(loginRootOf("m-unbound"), { provider: "codex", login_root: CODEX_DIR });
+      assert.deepEqual(loginRootOf("i-ext-work"), { provider: "claude", login_root: WORK_DIR });
+      assert.deepEqual(loginRootOf("i-ext-bare"), { provider: "codex", login_root: CODEX_DIR });
+    });
+
+    it("returns another account's chats even when the default account's recent chats outrank them", () => {
+      openScopedDb();
+      const now = Date.now();
+      // 25 fresh default-account chats: more than the limit, all ranking first
+      // (the work chats are months old, so recency decay sinks them).
+      const monthsAgo = 90 * 24 * 60 * 60 * 1000;
+      for (let i = 0; i < 25; i++) {
+        db.upsertManaged(
+          makeManagedRow({
+            instance_id: `m-personal-${i}`,
+            provider_name: "claude",
+            name: `personal deployment checklist ${i}`,
+            config_dir: null,
+            account_id: null,
+            last_activity_at: now - i * 1000,
+          }),
+        );
+        db.syncSearchIndexForInstance(`m-personal-${i}`);
+      }
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-work-managed",
+          provider_name: "claude",
+          name: "work deployment checklist",
+          config_dir: WORK_DIR,
+          account_id: "work",
+          last_activity_at: now - monthsAgo,
+        }),
+      );
+      db.upsert(
+        makeRow({
+          session_id: "s-work-ext",
+          instance_id: "i-work-ext",
+          provider_name: "codex",
+          name: "work codex deployment checklist",
+          jsonl_path: `${CODEX_WORK_DIR}/sessions/2026/09/30/rollout-s-work-ext.jsonl`,
+          last_activity_at: now - monthsAgo,
+        }),
+      );
+      db.syncSearchIndexForInstance("m-work-managed");
+      db.syncSearchIndexForInstance("i-work-ext");
+
+      // Unfiltered: the top 20 are all personal — the finding.
+      const unfiltered = db.search("deployment", { accounts, limit: 20 });
+      assert.equal(unfiltered.length, 20);
+      assert.ok(unfiltered.every((r) => r.instanceId.startsWith("m-personal-")));
+
+      // Scoped to Work: both work chats, nothing else, still carrying accountId.
+      const work = db.search("deployment", { accounts, limit: 20, loginRoots: workFilter() });
+      assert.deepEqual(work.map((r) => r.instanceId).sort(), ["i-work-ext", "m-work-managed"]);
+      assert.ok(work.every((r) => r.accountId === "work"));
+
+      // Scoped to Default: only personal chats (still capped at the limit).
+      const dflt = db.search("deployment", { accounts, limit: 20, loginRoots: defaultFilter() });
+      assert.equal(dflt.length, 20);
+      assert.ok(dflt.every((r) => r.instanceId.startsWith("m-personal-")));
+
+      // recentChats (empty query) is scoped the same way.
+      const recentWork = db.recentChats({ accounts, limit: 20, loginRoots: workFilter() });
+      assert.deepEqual(recentWork.map((r) => r.instanceId).sort(), [
+        "i-work-ext",
+        "m-work-managed",
+      ]);
+      const recentDefault = db.recentChats({ accounts, limit: 20, loginRoots: defaultFilter() });
+      assert.ok(recentDefault.every((r) => r.instanceId.startsWith("m-personal-")));
+
+      // Project scoping composes with the account filter.
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-work-proj",
+          provider_name: "claude",
+          name: "work deployment in project",
+          config_dir: WORK_DIR,
+          account_id: "work",
+          project_id: "proj-1",
+        }),
+      );
+      db.syncSearchIndexForInstance("m-work-proj");
+      const inProject = db.search("deployment", {
+        accounts,
+        projectId: "proj-1",
+        loginRoots: workFilter(),
+      });
+      assert.deepEqual(
+        inProject.map((r) => r.instanceId),
+        ["m-work-proj"],
+      );
+      assert.deepEqual(db.recentChats({ projectId: "proj-1", loginRoots: defaultFilter() }), []);
+    });
+
+    it("the default account keeps chats under roots no account registers", () => {
+      openScopedDb();
+      db.upsert(
+        makeRow({
+          session_id: "s-orphan",
+          instance_id: "i-orphan",
+          provider_name: "claude",
+          name: "orphan root retrospective",
+          jsonl_path: "/home/me/.claude-gone/projects/-tmp-test/s-orphan.jsonl",
+        }),
+      );
+      db.syncSearchIndexForInstance("i-orphan");
+      assert.equal(db.search("retrospective", { loginRoots: defaultFilter() }).length, 1);
+      assert.equal(db.search("retrospective", { loginRoots: workFilter() }).length, 0);
+    });
+
+    it("no accountId means no filter, and unknown ids are ignored", () => {
+      assert.equal(accountLoginRootFilter(accountList, undefined), undefined);
+      assert.equal(accountLoginRootFilter(accountList, ""), undefined);
+      assert.equal(accountLoginRootFilter(accountList, "nobody"), undefined);
+      assert.deepEqual(accountLoginRootFilter(accountList, "work"), {
+        mode: "include",
+        roots: [
+          { provider: "claude", root: WORK_DIR },
+          { provider: "codex", root: CODEX_WORK_DIR },
+        ],
+      });
+      assert.deepEqual(accountLoginRootFilter(accountList, "default"), {
+        mode: "exclude",
+        roots: [
+          { provider: "claude", root: WORK_DIR },
+          { provider: "codex", root: CODEX_WORK_DIR },
+        ],
+      });
+      // A lone default account excludes nothing: every chat is visible.
+      assert.deepEqual(accountLoginRootFilter([accountList[0]], "default"), {
+        mode: "exclude",
+        roots: [],
+      });
+
+      openScopedDb();
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-a",
+          provider_name: "claude",
+          name: "alpha notes",
+          config_dir: WORK_DIR,
+        }),
+      );
+      db.upsertManaged(
+        makeManagedRow({
+          instance_id: "m-b",
+          provider_name: "claude",
+          name: "beta notes",
+          config_dir: null,
+        }),
+      );
+      db.syncSearchIndexForInstance("m-a");
+      db.syncSearchIndexForInstance("m-b");
+      assert.equal(db.search("notes").length, 2);
+      assert.equal(db.search("notes", { loginRoots: undefined }).length, 2);
+      assert.equal(db.search("notes", { loginRoots: { mode: "exclude", roots: [] } }).length, 2);
+      // An account with no logins at all matches nothing rather than everything.
+      assert.equal(db.search("notes", { loginRoots: { mode: "include", roots: [] } }).length, 0);
+      assert.equal(db.recentChats({ loginRoots: { mode: "include", roots: [] } }).length, 0);
+    });
+
+    it("adding the login_root column migrates an older index on open", () => {
+      db.upsertManaged(makeManagedRow({ instance_id: "m-old", name: "legacy index migration" }));
+      db.syncSearchIndexForInstance("m-old");
+      db.close();
+
+      // Recreate the FTS table in its pre-`login_root` shape.
+      const raw = new DatabaseSync(join(tempDir, "sessions.db"));
+      raw.exec(`
+        DROP TABLE search_index;
+        DROP TABLE search_index_docs;
+        CREATE VIRTUAL TABLE search_index USING fts5(
+          instance_id UNINDEXED, source UNINDEXED, project_id UNINDEXED, space_id UNINDEXED,
+          last_activity_at UNINDEXED, last_message_at UNINDEXED, created_at UNINDEXED,
+          archived UNINDEXED, pinned UNINDEXED,
+          title, summary, first_prompt, last_message_text, git_branch, transcript_content,
+          tokenize='unicode61'
+        );
+      `);
+      raw.close();
+
+      db = new SessionDB(join(tempDir, "sessions.db"), noopLogger, {
+        defaultLoginRoots: { claude: DEFAULT_DIR, codex: CODEX_DIR },
+      });
+      const columns = db.db
+        .prepare("PRAGMA table_info(search_index)")
+        .all()
+        .map((c) => c.name);
+      assert.ok(columns.includes("login_root"), `columns: ${columns.join(", ")}`);
+      assert.ok(columns.includes("provider"));
+      // The startup path rebuilds the index; the migrated doc is filed under its root.
+      db.rebuildSearchIndex();
+      assert.deepEqual(loginRootOf("m-old"), { provider: "codex", login_root: CODEX_DIR });
+      assert.equal(db.search("migration", { loginRoots: defaultFilter() }).length, 1);
     });
   });
 

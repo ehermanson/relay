@@ -22,7 +22,7 @@ import type { ProviderSession } from "#core/provider.js";
 import type {
   FileChange,
   HistoryEntry,
-  ProviderAccountProfileStatus,
+  AccountLoginStatus,
   ProviderCapabilities,
   ProviderDescriptor,
   ProviderKind,
@@ -50,7 +50,11 @@ import {
 } from "#core/provider-versions.js";
 import type { ProviderVersionAdvisory } from "#core/types.js";
 import { getCachedCodexModels, refreshCodexModelsIfStale } from "#core/providers/codex-models.js";
-import { CodexAppServerSession } from "#core/providers/codex-app-server.js";
+import {
+  CodexAppServerSession,
+  getCodexAccountIdentitySnapshot,
+  probeCodexAccountIdentity,
+} from "#core/providers/codex-app-server.js";
 import {
   findCodexTranscriptPath,
   parseCodexTranscript,
@@ -89,6 +93,13 @@ interface ProviderDriverContext {
   logger: CoreConfig["logger"];
   sdkQueryFn: QueryFn;
   registeredDirectories?: Set<string>;
+  /**
+   * Set when the context is scoped to a non-default account: the config dir
+   * `providerDirs` was rebound to. Drivers use it to decide whether a cold
+   * discovery cache is worth awaiting (a second account's first picker open)
+   * versus the default account's boot path, which must not block on a probe.
+   */
+  accountConfigDir?: string;
 }
 
 interface ProviderSessionOptions {
@@ -143,12 +154,14 @@ interface ProviderExternalDiscoveryContext extends ProviderDriverContext {
    */
   transcriptActivityWindowMs?: number;
   /**
-   * Every Claude config dir whose transcripts may belong to a running
-   * process: the default (`providerDirs.claude`) first, then each account
-   * profile's dir. A terminal session under a non-default account writes its
-   * JSONL there, so pairing by cwd must look in every root. Absent = default only.
+   * Every config dir per provider whose transcripts may hold a live external
+   * session: the default (`providerDirs[provider]`) first, then each account
+   * login's dir. A terminal session under a non-default account writes its
+   * transcript there, so Claude pairs a cwd's process with the newest JSONL
+   * across `providerRoots.claude` and Codex reads `providerRoots.codex` (one
+   * `CODEX_HOME` per login). Absent = default only.
    */
-  claudeRoots?: string[];
+  providerRoots?: Partial<Record<ProviderKind, string[]>>;
 }
 
 /**
@@ -205,7 +218,7 @@ interface ProviderDriver {
   readAgentHistory?(context: ProviderAgentHistoryContext): Promise<HistoryEntry[] | null>;
   readAgentModel?(context: ProviderAgentHistoryContext): string | undefined;
   /**
-   * Account profiles (`ProviderCapabilities.supportsAccountProfiles`): ask the
+   * Account logins (`ProviderCapabilities.supportsAccountLogins`): ask the
    * provider which login a config dir holds. `probeAccountIdentity` may spawn
    * a short-lived provider process and caches per dir; `getAccountIdentitySnapshot`
    * is a synchronous cache read that never probes.
@@ -218,9 +231,9 @@ interface ProviderDriver {
   getAccountIdentitySnapshot?(configDir: string): ProviderAccountIdentitySnapshot;
 }
 
-/** The probed half of `ProviderAccountProfileStatus` — what a driver knows about one config dir. */
+/** The probed half of `AccountLoginStatus` — what a driver knows about one config dir. */
 export type ProviderAccountIdentitySnapshot = Pick<
-  ProviderAccountProfileStatus,
+  AccountLoginStatus,
   "probeState" | "identity" | "probeError" | "probedAt"
 >;
 
@@ -486,9 +499,9 @@ async function discoverClaudeExternalSessions(
   return sessions;
 }
 
-/** Default root first, then each profile root — deduped, never empty. */
+/** Default root first, then each account login root — deduped, never empty. */
 function claudeDiscoveryRoots(context: ProviderExternalDiscoveryContext): string[] {
-  const roots = [context.providerDirs.claude, ...(context.claudeRoots ?? [])];
+  const roots = [context.providerDirs.claude, ...(context.providerRoots?.claude ?? [])];
   return [...new Set(roots.filter((root): root is string => !!root))];
 }
 
@@ -524,8 +537,17 @@ async function discoverCodexExternalSessions(
     (await findRunningProcessCwdsAsync("codex", context.excludePids));
   // Process-backed cwds plus still-being-written rollouts (Codex Desktop
   // exposes no `codex` process with the project cwd) — see codex-discovery.ts.
+  // Every Codex home (one per account login) can hold a live rollout; rollout
+  // paths are absolute, so candidates from different homes never collide.
+  const roots = [
+    ...new Set(
+      (context.providerRoots?.codex ?? [context.providerDirs.codex]).filter(
+        (root): root is string => !!root,
+      ),
+    ),
+  ];
   const selected = selectCodexExternalTranscripts({
-    transcripts: listCodexTranscripts(context.providerDirs.codex),
+    transcripts: roots.flatMap((root) => listCodexTranscripts(root)),
     readMeta: (candidate) => readCodexSessionMeta(candidate.path, candidate.mtime),
     processCwds: cwdInfoMap,
     isRegisteredDirectory: (cwd) =>
@@ -606,11 +628,22 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       return createClaudeSession(config, options, context);
     },
     async getModels(context) {
-      // Kick a background re-probe when the discovery snapshot is stale so a
+      // The discovery cache is per config dir (one account = one dir). Kick a
+      // background re-probe when the account's snapshot is stale so a
       // long-running server surfaces newly released models without a restart.
-      void refreshSdkDiscoveredModelsIfStale(context.logger, context.providerDirs.claude);
+      // A non-default account with a cold cache awaits the probe instead (like
+      // Codex): its first picker open should show that account's list, not
+      // builtins. The default account keeps its non-blocking boot path — the
+      // prewarm fills its entry.
+      const configDir = context.providerDirs.claude;
+      const refresh = refreshSdkDiscoveredModelsIfStale(context.logger, configDir);
+      if (context.accountConfigDir && !getSdkDiscoveredModels(configDir)) {
+        await refresh;
+      } else {
+        void refresh;
+      }
 
-      const sdkModels = getSdkDiscoveredModels();
+      const sdkModels = getSdkDiscoveredModels(configDir);
       const builtins = getBuiltinProviderModels("claude");
       if (!sdkModels?.length) return builtins;
 
@@ -811,7 +844,11 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       return isCodexInstalled();
     },
     createSession(config, options) {
+      // `config.providerDirs.codex` is the chat's bound Codex home (the manager
+      // rebinds it per instance); every spawn of the session pins CODEX_HOME
+      // to it, so a resume runs under the login whose rollout it continues.
       return new CodexAppServerSession({
+        codexHome: config.providerDirs.codex,
         cwd: config.workingDirectory,
         model: options?.model,
         runtimeMode: options?.runtimeMode ?? config.defaultRuntimeMode,
@@ -828,14 +865,18 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       // spawning `codex app-server`. On a warm cache, kick a background
       // re-probe when stale so a long-running server picks up models added by
       // a CLI update (including Relay's own provider-update flow) without a
-      // restart; on a cold cache, await the probe directly.
-      const cached = getCachedCodexModels();
+      // restart; on a cold cache, await the probe directly. The cache is per
+      // Codex home (one account login = one home): `providerDirs.codex` is the
+      // server's own home, or the account's when `accountConfigDir` is set, so
+      // a second account's first picker open probes (and shows) its own list.
+      const codexHome = context.providerDirs.codex;
+      const cached = getCachedCodexModels(codexHome);
       if (cached) {
-        void refreshCodexModelsIfStale({ logger: context.logger });
+        void refreshCodexModelsIfStale({ logger: context.logger, codexHome });
       } else {
-        await refreshCodexModelsIfStale({ logger: context.logger });
+        await refreshCodexModelsIfStale({ logger: context.logger, codexHome });
       }
-      const discovered = getCachedCodexModels() ?? [];
+      const discovered = getCachedCodexModels(codexHome) ?? [];
       if (discovered.length === 0) {
         return getBuiltinProviderModels("codex");
       }
@@ -939,6 +980,12 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
     },
     discoverExternalSessions(context) {
       return discoverCodexExternalSessions(context);
+    },
+    probeAccountIdentity(configDir, logger, options) {
+      return probeCodexAccountIdentity(configDir, logger, options);
+    },
+    getAccountIdentitySnapshot(configDir) {
+      return getCodexAccountIdentitySnapshot(configDir);
     },
   },
 };
@@ -1293,7 +1340,7 @@ export function captureManagedSessionForProvider(
 }
 
 export async function discoverLiveExternalSessions(
-  context: ProviderDriverContext,
+  context: ProviderDriverContext & Pick<ProviderExternalDiscoveryContext, "providerRoots">,
   excludePids: Set<number>,
   options: { transcriptActivityWindowMs?: number } = {},
 ): Promise<LiveExternalDiscoveryResult> {

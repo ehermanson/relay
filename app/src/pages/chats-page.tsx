@@ -11,7 +11,9 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { useProjectContext } from "@/context/project-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useActionToasts } from "@/context/action-toast-context";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { chatBelongsToAccount } from "@/lib/account-scope";
 import { fetchProjectChats, fetchAllSpaces } from "@/lib/api";
 import { getInstanceChatRoute, instanceMatchesProject } from "@/lib/project-route";
 import { isAttachedReviewInstance } from "@/lib/review-session";
@@ -147,6 +149,7 @@ export function ProjectChatList() {
   const { instances } = useWSState();
   const { artifacts } = useProjectContext();
   const { trackInstanceCreate } = useActionToasts();
+  const account = useActiveAccount();
   const [searchQuery, setSearchQuery] = useState("");
   const spaceDialog = useCreateSpaceDialog();
   const projectId = artifacts.projectId || routeProjectId;
@@ -177,12 +180,21 @@ export function ProjectChatList() {
     });
   }, [addMessageHandler, artifacts.directory, chatsQueryKey, queryClient, spacesQueryKey]);
 
+  // Overview is a per-account view too: with several accounts only chats bound
+  // to the active one are listed (the sidebar applies the same rule).
+  const inActiveAccount = (inst: InstanceInfo) =>
+    !account.isMulti || chatBelongsToAccount(inst, account.activeId, account.accounts);
   const projectInstancesMap = new Map<string, InstanceInfo>();
   for (const chat of chatSummaries) {
+    if (!inActiveAccount(chat)) continue;
     projectInstancesMap.set(chat.id, chat);
   }
   for (const inst of instances) {
     if (!instanceMatchesProject(inst, projectId)) continue;
+    if (!inActiveAccount(inst)) {
+      projectInstancesMap.delete(inst.id);
+      continue;
+    }
     projectInstancesMap.set(inst.id, inst);
   }
   const projectInstances = Array.from(projectInstancesMap.values()).sort(compareChatListOrder);
@@ -228,7 +240,11 @@ export function ProjectChatList() {
   const handleNewChat = () => {
     if (artifacts.directory) {
       trackInstanceCreate(artifacts.directory);
-      send({ type: "create_instance", workingDirectory: artifacts.directory });
+      send({
+        type: "create_instance",
+        workingDirectory: artifacts.directory,
+        accountId: account.accountIdParam,
+      });
     }
   };
 

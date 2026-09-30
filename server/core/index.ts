@@ -231,4 +231,5 @@ export {
   resolveSuggestions,
   type SuggestionContext,
 } from "#core/actions.js";
-export * from "#core/account-profiles.js";
+export * from "#core/accounts.js";
+export { AccountStore } from "#core/account-store.js";

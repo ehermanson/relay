@@ -26,7 +26,9 @@ import {
   createProject as apiCreateProject,
   fetchHealth,
 } from "@/lib/api";
+import { useActiveAccount } from "@/hooks/use-active-account";
 import { useSystemUpdate } from "@/hooks/use-system-update";
+import { AccountSwitcher } from "./account-switcher";
 import { AddProjectForm } from "../forms/add-project-form";
 import { CreateProjectForm } from "../forms/create-project-form";
 import { Badge } from "../ui/badge";
@@ -71,6 +73,9 @@ function AddProjectPanel({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  // A project added while account X is active registers under X (adds
+  // membership if the directory already exists). Undefined below two accounts.
+  const { accountIdParam } = useActiveAccount();
   const [projectTab, setProjectTab] = useState<"add" | "create">("add");
   const [addProjectError, setAddProjectError] = useState<string | null>(null);
   const [createProjectError, setCreateProjectError] = useState<string | null>(null);
@@ -79,7 +84,7 @@ function AddProjectPanel({
   const handleAddProject = async (directory: string) => {
     setAddProjectError(null);
     try {
-      const project = await apiAddProject(directory);
+      const project = await apiAddProject(directory, { accountId: accountIdParam });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       onClose();
       toast.success(`Added "${project.name}"`);
@@ -92,7 +97,7 @@ function AddProjectPanel({
     setCreateProjectError(null);
     setIsCreating(true);
     try {
-      const project = await apiCreateProject(parentDirectory, name);
+      const project = await apiCreateProject(parentDirectory, name, accountIdParam);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       onClose();
       toast.success(`Created "${project.name}"`);
@@ -202,56 +207,62 @@ export function SidebarHeader({
   const health = useSidebarDocumentTitle();
 
   return (
-    <div className="sidebar-header group/header flex shrink-0 items-center justify-between px-4 py-3">
-      <Link
-        to="/"
-        className="flex items-center gap-2 rounded-md transition-opacity hover:opacity-80"
-      >
-        {showLogo ? (
-          <RelayLogo size={28} className="sidebar-logo-icon" connected={isConnected} />
-        ) : (
-          <div className="h-7 w-7" aria-hidden />
-        )}
-        <span
-          className="sidebar-logo-text text-[1.1rem] text-text-bright"
-          style={{
-            fontFamily: "'Orbitron', sans-serif",
-            fontWeight: 900,
-            letterSpacing: "0.04em",
-          }}
+    <>
+      <div className="sidebar-header group/header flex shrink-0 items-center justify-between px-4 py-3">
+        <Link
+          to="/"
+          className="flex items-center gap-2 rounded-md transition-opacity hover:opacity-80"
         >
-          Relay
-        </span>
-        {(import.meta.env.DEV || health?.git?.isWorktree) && (
-          <span className="sidebar-logo-text flex items-center gap-1">
-            {import.meta.env.DEV && (
-              <Badge variant="default" size="xs">
-                Dev
-              </Badge>
-            )}
-            {health?.git?.isWorktree && (
-              <Badge variant="accent" size="xs">
-                Worktree
-              </Badge>
-            )}
+          {showLogo ? (
+            <RelayLogo size={28} className="sidebar-logo-icon" connected={isConnected} />
+          ) : (
+            <div className="h-7 w-7" aria-hidden />
+          )}
+          <span
+            className="sidebar-logo-text text-[1.1rem] text-text-bright"
+            style={{
+              fontFamily: "'Orbitron', sans-serif",
+              fontWeight: 900,
+              letterSpacing: "0.04em",
+            }}
+          >
+            Relay
           </span>
-        )}
-      </Link>
-      <div className="flex items-center gap-1">
-        {onCollapse && (
-          <Tooltip content="Collapse sidebar" side="bottom">
-            <Button
-              variant="icon"
-              onClick={onCollapse}
-              className="opacity-0 transition-opacity duration-200 ease-in group-hover/header:opacity-100"
-            >
-              <PanelLeftClose size={15} strokeWidth={2} />
-            </Button>
-          </Tooltip>
-        )}
-        {action ?? <AddProjectButton registeredDirs={registeredDirs} />}
+          {(import.meta.env.DEV || health?.git?.isWorktree) && (
+            <span className="sidebar-logo-text flex items-center gap-1">
+              {import.meta.env.DEV && (
+                <Badge variant="default" size="xs">
+                  Dev
+                </Badge>
+              )}
+              {health?.git?.isWorktree && (
+                <Badge variant="accent" size="xs">
+                  Worktree
+                </Badge>
+              )}
+            </span>
+          )}
+        </Link>
+        <div className="flex items-center gap-1">
+          {onCollapse && (
+            <Tooltip content="Collapse sidebar" side="bottom">
+              <Button
+                variant="icon"
+                onClick={onCollapse}
+                className="opacity-0 transition-opacity duration-200 ease-in group-hover/header:opacity-100"
+              >
+                <PanelLeftClose size={15} strokeWidth={2} />
+              </Button>
+            </Tooltip>
+          )}
+          {action ?? <AddProjectButton registeredDirs={registeredDirs} />}
+        </div>
       </div>
-    </div>
+      {/* The account is the top layer of the UI: its pill sits directly under the
+        logo row in both layouts (and the mobile drawer, which hosts the same
+        sidebar). Renders nothing below two accounts. */}
+      <AccountSwitcher />
+    </>
   );
 }
 

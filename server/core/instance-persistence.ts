@@ -113,6 +113,7 @@ export function toManagedInstanceRow(options: {
     model_options_json: info.modelOptions ? JSON.stringify(info.modelOptions) : null,
     original_git_branch: info.originalGitBranch ?? null,
     config_dir: info.configDir ?? null,
+    account_id: info.accountId ?? null,
   };
 }
 

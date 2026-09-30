@@ -8,6 +8,7 @@ import type {
 } from "@shared/types";
 import { getDefaultProviderCapabilities } from "@shared/provider-catalog";
 import { fetchProviderModels } from "@/lib/api";
+import { useActiveAccount } from "@/hooks/use-active-account";
 
 // Discovered models change rarely; cache for a minute so opening the picker for
 // several providers doesn't refire discovery on every render/mount.
@@ -18,13 +19,22 @@ export function providerModelsRefetchInterval(data: ProviderModelsResponse | und
   return data?.capabilities.versionAdvisory ? false : PROVIDER_MODELS_BOOTSTRAP_REFETCH_INTERVAL;
 }
 
+/**
+ * Model discovery is per login (config dir), so the key carries the active
+ * account's id — undefined below two accounts and for the default account.
+ */
+export function providerModelsQueryKey(provider: ProviderKind | undefined, accountId?: string) {
+  return ["providerModels", provider, accountId ?? null] as const;
+}
+
 export function useProviderModels(provider?: ProviderKind) {
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const { accountIdParam: accountId } = useActiveAccount();
 
   const { data } = useQuery({
     // queryFn only runs when `enabled` is true, so the non-null assertion is safe.
-    queryKey: ["providerModels", provider],
-    queryFn: () => fetchProviderModels(provider!),
+    queryKey: providerModelsQueryKey(provider, accountId),
+    queryFn: () => fetchProviderModels(provider!, accountId),
     enabled: !!provider,
     staleTime: PROVIDER_MODELS_STALE_TIME,
     refetchInterval: (query) => providerModelsRefetchInterval(query.state.data),
@@ -68,10 +78,11 @@ export function useProviderModelsMap(
   options: { enabled?: boolean } = {},
 ): Partial<Record<ProviderKind, ProviderModelsEntry>> {
   const enabled = options.enabled ?? true;
+  const { accountIdParam: accountId } = useActiveAccount();
   const results = useQueries({
     queries: providers.map((provider) => ({
-      queryKey: ["providerModels", provider],
-      queryFn: () => fetchProviderModels(provider),
+      queryKey: providerModelsQueryKey(provider, accountId),
+      queryFn: () => fetchProviderModels(provider, accountId),
       staleTime: PROVIDER_MODELS_STALE_TIME,
       enabled,
     })),

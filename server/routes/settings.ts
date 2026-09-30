@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import { readJsonBody } from "#server/hono-utils.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
-import type { GlobalSettings, ProviderAccountProfile, SuggestionsConfig } from "#core/types.js";
+import { accountsFromLegacyProfiles, type LegacyProviderProfile } from "#core/accounts.js";
+import type { Account, GlobalSettings, SuggestionsConfig } from "#core/types.js";
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -26,6 +27,7 @@ function rowToSettings(row: {
   max_processes: number | null;
   sidebar_layout: string | null;
   provider_profiles_json?: string | null;
+  accounts_json?: string | null;
 }): GlobalSettings {
   let providerDefaults: Record<string, unknown> = {};
   if (row.provider_defaults_json) {
@@ -39,6 +41,8 @@ function rowToSettings(row: {
       projectOrder = JSON.parse(row.project_order_json) as string[];
     } catch {}
   }
+  const legacyProfiles =
+    parseJson<LegacyProviderProfile[]>(row.provider_profiles_json ?? null) ?? [];
   return {
     theme: row.theme === "light" ? "light" : row.theme === "system" ? "system" : "dark",
     defaultOpenTarget: row.default_open_target,
@@ -49,7 +53,10 @@ function rowToSettings(row: {
     providerDefaults: providerDefaults as GlobalSettings["providerDefaults"],
     customInstructions: row.custom_instructions,
     projectOrder,
-    providerProfiles: parseJson<ProviderAccountProfile[]>(row.provider_profiles_json ?? null) ?? [],
+    // Accounts supersede per-provider profiles; an install that only ever
+    // wrote the legacy column is migrated on read (one account per profile).
+    accounts:
+      parseJson<Account[]>(row.accounts_json ?? null) ?? accountsFromLegacyProfiles(legacyProfiles),
     suggestions: parseJson<SuggestionsConfig>(row.suggestions_json),
     maxProcesses:
       typeof row.max_processes === "number" && row.max_processes > 0 ? row.max_processes : null,
@@ -103,8 +110,9 @@ export function registerSettingsRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       dbPatch.project_order_json =
         body.projectOrder !== null ? JSON.stringify(body.projectOrder) : null;
 
-    // `providerProfiles` is deliberately ignored here: profiles are mutated only
-    // through /api/providers/:provider/profiles (fs validation + root refresh).
+    // `accounts` is deliberately ignored
+    // here: accounts are mutated only through /api/accounts (fs validation,
+    // change notification, project-membership cleanup).
     if (body.providerDefaults !== undefined) {
       const existing = instanceManager.sessionDb.getGlobalSettings();
       let current: Record<string, unknown> = {};

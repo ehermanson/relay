@@ -9,6 +9,12 @@ import { mkdirSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { Logger } from "#core/logger.js";
+import {
+  loginRootForTranscriptPath,
+  normalizeConfigDir,
+  type DefaultLogins,
+} from "#core/accounts.js";
+import { DEFAULT_ACCOUNT_ID, type Account, type ProviderKind } from "#core/types.js";
 
 const CURRENT_SCHEMA_VERSION = 26;
 type SQLiteBindValue = string | number | bigint | null | NodeJS.ArrayBufferView;
@@ -39,8 +45,8 @@ export interface ProjectRow {
   space_branch_source: string | null;
   default_provider: string | null;
   default_model: string | null;
-  /** Account profile id for new chats (null = global default). */
-  default_profile_id?: string | null;
+  /** JSON string[] of `Account.id`s; null/empty = default account only. */
+  account_ids_json?: string | null;
   created_at: number;
   last_activity_at: number | null;
   suggestions_json: string | null;
@@ -83,8 +89,10 @@ export interface GlobalSettingsRow {
   suggestions_json: string | null;
   max_processes: number | null;
   sidebar_layout: string | null;
-  /** JSON `ProviderAccountProfile[]` — user-added account profiles. */
+  /** @deprecated Legacy per-provider profile list; read once by `AccountStore` as a migration. */
   provider_profiles_json?: string | null;
+  /** JSON `Account[]` — stored accounts (see `GlobalSettings.accounts`). */
+  accounts_json?: string | null;
 }
 
 export interface SessionRow {
@@ -164,6 +172,8 @@ export interface ManagedInstanceRow {
   original_git_branch: string | null;
   /** Provider config dir the chat is bound to (null = server default). */
   config_dir?: string | null;
+  /** `Account.id` the chat belongs to (null = default account). */
+  account_id?: string | null;
 }
 
 /**
@@ -241,6 +251,7 @@ function normalizeManagedInstanceRow(row: ManagedInstanceRow): ManagedInstanceRo
   normalized.model_options_json ??= null;
   normalized.original_git_branch ??= null;
   normalized.config_dir ??= null;
+  normalized.account_id ??= null;
   return normalized;
 }
 
@@ -283,6 +294,9 @@ function normalizeProjectRow(row: ProjectRow): ProjectRow {
   normalized.default_model ??= null;
   normalized.last_activity_at ??= null;
   normalized.suggestions_json ??= null;
+  // Deprecated column (kept for old rows, never written): rows read back with
+  // `SELECT *` carry it, and an unbound named parameter would throw.
+  delete (normalized as { default_profile_id?: unknown }).default_profile_id;
   return normalized;
 }
 
@@ -296,6 +310,8 @@ interface SearchResultRow {
   created_at: string;
   archived: string;
   pinned: string;
+  provider: string;
+  login_root: string;
   title: string;
   summary: string;
   first_prompt: string;
@@ -313,6 +329,12 @@ interface SearchResultRow {
 
 // `weight` is the bm25 per-column weight: a title hit should outrank a hit
 // buried in a huge transcript, so title ≫ summary/branch > prompts/messages > transcript.
+//
+// `provider` + `login_root` let the account filter run inside the SQL (before
+// `LIMIT`): managed rows store their bound `config_dir` (the server's own dir
+// when unbound), external rows the root their transcript lives under. Adding
+// a column here is self-migrating — `ensureSearchIndex()` drops a table
+// missing a declared column and startup rebuilds it.
 const SEARCH_INDEX_COLUMNS = [
   { name: "instance_id", unindexed: true },
   { name: "source", unindexed: true },
@@ -323,6 +345,8 @@ const SEARCH_INDEX_COLUMNS = [
   { name: "created_at", unindexed: true },
   { name: "archived", unindexed: true },
   { name: "pinned", unindexed: true },
+  { name: "provider", unindexed: true },
+  { name: "login_root", unindexed: true },
   { name: "title", weight: 8.0 },
   { name: "summary", weight: 4.0 },
   { name: "first_prompt", weight: 3.0 },
@@ -406,6 +430,91 @@ function buildSearchStatementSql(
 // Pinned-first, then recency — matching compareChatListOrder in the UI
 const RECENT_CHATS_ORDER_SQL = `ORDER BY CAST(s.pinned AS INTEGER) DESC, ${RECENCY_SQL} DESC`;
 
+function buildRecentChatsStatementSql(whereClause: string): string {
+  return `
+      SELECT * FROM search_index s
+      WHERE ${whereClause}
+      ${RECENT_CHATS_ORDER_SQL}
+      LIMIT ?
+    `;
+}
+
+/** The slice of `AccountStore` search needs to resolve an external chat's account. */
+export interface SearchAccountLookup {
+  findForLogin(provider: ProviderKind, configDir: string | null | undefined): Account | undefined;
+}
+
+/** One login: a provider and the config dir its chats live under. */
+export interface SearchLoginRoot {
+  provider: ProviderKind;
+  root: string;
+}
+
+/**
+ * Account scoping for `search()` / `recentChats()`, applied inside the SQL
+ * before `LIMIT` — filtering the top-N afterwards let N recent chats of one
+ * account hide every chat of another.
+ *
+ * - `include`: only chats under one of `roots` (a non-default account's logins).
+ * - `exclude`: every chat **not** under any of `roots` (the default account:
+ *   the server's own dirs plus roots no account registers — the same
+ *   "unknown owner is the default account" rule the UI applies).
+ */
+export interface SearchLoginRootFilter {
+  mode: "include" | "exclude";
+  roots: SearchLoginRoot[];
+}
+
+/**
+ * The login-root filter that scopes search to `accountId`. Absent or unknown
+ * ids mean no filter (undefined); the default account excludes every other
+ * account's logins; any other account includes only its own.
+ */
+export function accountLoginRootFilter(
+  accounts: readonly Account[],
+  accountId: string | null | undefined,
+): SearchLoginRootFilter | undefined {
+  if (!accountId) return undefined;
+  const account = accounts.find((a) => a.id === accountId);
+  if (!account) return undefined;
+  const rootsOf = (entries: readonly Account[]): SearchLoginRoot[] => {
+    const roots: SearchLoginRoot[] = [];
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      for (const [provider, login] of Object.entries(entry.logins)) {
+        if (!login?.configDir) continue;
+        const root = normalizeConfigDir(login.configDir);
+        const key = `${provider}:${root}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        roots.push({ provider: provider as ProviderKind, root });
+      }
+    }
+    return roots;
+  };
+  if (account.id === DEFAULT_ACCOUNT_ID) {
+    return { mode: "exclude", roots: rootsOf(accounts.filter((a) => a.id !== DEFAULT_ACCOUNT_ID)) };
+  }
+  return { mode: "include", roots: rootsOf([account]) };
+}
+
+/**
+ * `(provider, login_root)` matching as a parameterized clause plus its bind
+ * values, or `null` when the filter is a no-op (`exclude` with nothing to
+ * exclude). An `include` with no roots matches nothing.
+ */
+function buildLoginRootFilterSql(
+  filter: SearchLoginRootFilter | undefined,
+): { sql: string; params: string[] } | null {
+  if (!filter) return null;
+  if (filter.roots.length === 0) {
+    return filter.mode === "include" ? { sql: "0", params: [] } : null;
+  }
+  const pairs = filter.roots.map(() => "(s.provider = ? AND s.login_root = ?)").join(" OR ");
+  const params = filter.roots.flatMap((r) => [r.provider, normalizeConfigDir(r.root)]);
+  return { sql: filter.mode === "include" ? `(${pairs})` : `NOT (${pairs})`, params };
+}
+
 export interface SearchResult {
   instanceId: string;
   source: "session" | "managed";
@@ -422,6 +531,12 @@ export interface SearchResult {
   rank: number;
   /** True when the result came from the OR fallback (not all terms matched) */
   partial?: boolean;
+  /**
+   * `Account.id` the chat belongs to: managed rows from
+   * `managed_sessions.account_id`, external rows resolved from the login root
+   * their transcript lives under. Absent = the default account.
+   */
+  accountId?: string;
 }
 
 /** Strip all HTML tags except <mark> and </mark> from FTS5 snippet output */
@@ -559,8 +674,17 @@ export class SessionDB {
   private stmtGetSpinOffsBySourceChat!: StatementSync;
   private stmtGetSpinOffsByTargetChat!: StatementSync;
   private stmtUpdateSpinOffStatus!: StatementSync;
+  /** Account-filtered search/recent statements, prepared on first use per filter shape. */
+  private filteredSearchStatements = new Map<string, StatementSync>();
+  /**
+   * The server's own dir per provider — the default account's logins — used
+   * as the `login_root` of docs whose row carries no binding (a managed row
+   * with null `config_dir`, or a transcript path the root can't be read from).
+   */
+  private defaultLoginRoots: DefaultLogins;
 
-  constructor(dbPath: string, logger: Logger) {
+  constructor(dbPath: string, logger: Logger, options: { defaultLoginRoots?: DefaultLogins } = {}) {
+    this.defaultLoginRoots = options.defaultLoginRoots ?? {};
     // Ensure the directory exists
     mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -890,7 +1014,8 @@ ${buildSearchIndexSchemaSql()},
         model TEXT,
         model_options_json TEXT,
         original_git_branch TEXT,
-        config_dir TEXT
+        config_dir TEXT,
+        account_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_managed_sessions_provider ON managed_sessions(provider_name);
@@ -923,6 +1048,7 @@ ${buildSearchIndexSchemaSql()},
         default_provider TEXT,
         default_model TEXT,
         default_profile_id TEXT,
+        account_ids_json TEXT,
         created_at INTEGER NOT NULL,
         last_activity_at INTEGER,
         suggestions_json TEXT
@@ -998,6 +1124,9 @@ ${buildSearchIndexSchemaSql()},
     if (!columnNames.has("provider_profiles_json")) {
       this.db.exec("ALTER TABLE global_settings ADD COLUMN provider_profiles_json TEXT");
     }
+    if (!columnNames.has("accounts_json")) {
+      this.db.exec("ALTER TABLE global_settings ADD COLUMN accounts_json TEXT");
+    }
   }
 
   /**
@@ -1012,8 +1141,14 @@ ${buildSearchIndexSchemaSql()},
     if (!has("projects", "default_profile_id")) {
       this.db.exec("ALTER TABLE projects ADD COLUMN default_profile_id TEXT");
     }
+    if (!has("projects", "account_ids_json")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN account_ids_json TEXT");
+    }
     if (!has("managed_sessions", "config_dir")) {
       this.db.exec("ALTER TABLE managed_sessions ADD COLUMN config_dir TEXT");
+    }
+    if (!has("managed_sessions", "account_id")) {
+      this.db.exec("ALTER TABLE managed_sessions ADD COLUMN account_id TEXT");
     }
   }
 
@@ -1212,7 +1347,7 @@ ${buildSearchIndexSchemaSql()},
         resume_cursor_json, runtime_payload_json, transcript_path,
         last_message_text, last_message_from, last_message_at,
         git_info_branch, git_info_is_worktree, space_id, project_id, model,
-        model_options_json, original_git_branch, config_dir
+        model_options_json, original_git_branch, config_dir, account_id
       ) VALUES (
         @instance_id, @provider_name, @provider_session_id, @name, @working_directory,
         @created_at, @last_activity_at, @archived, @custom_title, @pinned, @done_at,
@@ -1222,7 +1357,7 @@ ${buildSearchIndexSchemaSql()},
         @resume_cursor_json, @runtime_payload_json, @transcript_path,
         @last_message_text, @last_message_from, @last_message_at,
         @git_info_branch, @git_info_is_worktree, @space_id, @project_id, @model,
-        @model_options_json, @original_git_branch, @config_dir
+        @model_options_json, @original_git_branch, @config_dir, @account_id
       )
       ON CONFLICT(instance_id) DO UPDATE SET
         provider_name = excluded.provider_name,
@@ -1259,7 +1394,8 @@ ${buildSearchIndexSchemaSql()},
         model = excluded.model,
         model_options_json = excluded.model_options_json,
         original_git_branch = excluded.original_git_branch,
-        config_dir = excluded.config_dir
+        config_dir = excluded.config_dir,
+        account_id = excluded.account_id
     `),
     );
 
@@ -1462,8 +1598,8 @@ ${buildSearchIndexSchemaSql()},
 
     // Project CRUD
     this.stmtUpsertProject = this.db.prepare(`
-      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_space_branch, space_branch_source, default_provider, default_model, default_profile_id, created_at, last_activity_at, suggestions_json)
-      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_space_branch, @space_branch_source, @default_provider, @default_model, @default_profile_id, @created_at, @last_activity_at, @suggestions_json)
+      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_space_branch, space_branch_source, default_provider, default_model, account_ids_json, created_at, last_activity_at, suggestions_json)
+      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_space_branch, @space_branch_source, @default_provider, @default_model, @account_ids_json, @created_at, @last_activity_at, @suggestions_json)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         slug = excluded.slug,
@@ -1476,7 +1612,7 @@ ${buildSearchIndexSchemaSql()},
         space_branch_source = excluded.space_branch_source,
         default_provider = excluded.default_provider,
         default_model = excluded.default_model,
-        default_profile_id = excluded.default_profile_id,
+        account_ids_json = excluded.account_ids_json,
         last_activity_at = excluded.last_activity_at,
         suggestions_json = excluded.suggestions_json
     `);
@@ -1649,7 +1785,8 @@ ${buildSearchIndexSchemaSql()},
         suggestions_json = @suggestions_json,
         max_processes = @max_processes,
         sidebar_layout = @sidebar_layout,
-        provider_profiles_json = @provider_profiles_json
+        provider_profiles_json = @provider_profiles_json,
+        accounts_json = @accounts_json
       WHERE id = 1
     `);
 
@@ -1674,19 +1811,11 @@ ${buildSearchIndexSchemaSql()},
     );
 
     // Recent chats (empty-query search): plain recency scan of the index, no MATCH
-    this.stmtRecentChatsProject = this.db.prepare(`
-      SELECT * FROM search_index s
-      WHERE s.project_id = ? AND s.archived = '0'
-      ${RECENT_CHATS_ORDER_SQL}
-      LIMIT ?
-    `);
+    this.stmtRecentChatsProject = this.db.prepare(
+      buildRecentChatsStatementSql("s.project_id = ? AND s.archived = '0'"),
+    );
 
-    this.stmtRecentChatsGlobal = this.db.prepare(`
-      SELECT * FROM search_index s
-      WHERE s.archived = '0'
-      ${RECENT_CHATS_ORDER_SQL}
-      LIMIT ?
-    `);
+    this.stmtRecentChatsGlobal = this.db.prepare(buildRecentChatsStatementSql("s.archived = '0'"));
 
     this.stmtDeleteSearchDoc = this.db.prepare("DELETE FROM search_index WHERE rowid = ?");
     this.stmtGetSearchDocRowids = this.db.prepare(
@@ -1703,11 +1832,13 @@ ${buildSearchIndexSchemaSql()},
       INSERT INTO search_index (
         instance_id, source, project_id, space_id,
         last_activity_at, last_message_at, created_at, archived, pinned,
+        provider, login_root,
         title, summary, first_prompt, last_message_text, git_branch,
         transcript_content
       ) VALUES (
         @instance_id, @source, @project_id, @space_id,
         @last_activity_at, @last_message_at, @created_at, @archived, @pinned,
+        @provider, @login_root,
         @title, @summary, @first_prompt, @last_message_text, @git_branch,
         @transcript_content
       )
@@ -2098,17 +2229,6 @@ ${buildSearchIndexSchemaSql()},
     this.stmtUpdateProjectActivity.run(timestamp, id);
   }
 
-  /**
-   * Drop every project's default account profile that points at `profileId`
-   * (the profile was removed). Returns the number of projects cleared.
-   */
-  clearProjectDefaultProfile(profileId: string): number {
-    const result = this.db
-      .prepare("UPDATE projects SET default_profile_id = NULL WHERE default_profile_id = ?")
-      .run(profileId);
-    return Number(result.changes);
-  }
-
   /** Bulk-assign project_id to all sessions matching a working directory */
   assignSessionsToProject(projectId: string | null, directory: string): void {
     this.stmtUpdateSessionProjectId.run(projectId, directory);
@@ -2345,6 +2465,8 @@ ${buildSearchIndexSchemaSql()},
           "provider_profiles_json" in patch
             ? patch.provider_profiles_json
             : (current.provider_profiles_json ?? null),
+        accounts_json:
+          "accounts_json" in patch ? patch.accounts_json : (current.accounts_json ?? null),
       }),
     );
     return this.getGlobalSettings();
@@ -2384,6 +2506,25 @@ ${buildSearchIndexSchemaSql()},
     this.stmtDeleteSearchDocRowids.run(instanceId);
   }
 
+  /**
+   * The login root a search doc is filed under: a managed row's bound
+   * `config_dir`, an external row's transcript root — either falling back to
+   * the server's own dir for the provider (the default account). Empty only
+   * when neither is known.
+   */
+  private searchDocLoginRoot(
+    source: "session" | "managed",
+    row: SessionRow | ManagedInstanceRow,
+  ): string {
+    const provider = row.provider_name as ProviderKind;
+    const bound =
+      source === "managed"
+        ? (row as ManagedInstanceRow).config_dir
+        : loginRootForTranscriptPath(provider, (row as SessionRow).jsonl_path);
+    const root = bound || this.defaultLoginRoots[provider];
+    return root ? normalizeConfigDir(root) : "";
+  }
+
   private insertSearchDoc(
     source: "session" | "managed",
     row: SessionRow | ManagedInstanceRow,
@@ -2404,6 +2545,8 @@ ${buildSearchIndexSchemaSql()},
         created_at: String(row.created_at),
         archived: String(row.archived),
         pinned: String(row.pinned ?? 0),
+        provider: row.provider_name ?? "",
+        login_root: this.searchDocLoginRoot(source, row),
         title: row.name ?? "",
         summary: "summary" in row ? (row.summary ?? "") : "",
         first_prompt: "first_prompt" in row ? (row.first_prompt ?? "") : "",
@@ -2508,11 +2651,88 @@ ${buildSearchIndexSchemaSql()},
     });
   }
 
+  /**
+   * The account a search hit belongs to (undefined = default). Looked up per
+   * result (≤ limit rows, both by primary-key-ish indexes) rather than
+   * indexed: a rebuild of the FTS table for a column the UI only filters on
+   * isn't worth it, and the lookup follows account changes immediately.
+   */
+  private searchResultAccountId(
+    r: SearchResultRow,
+    accounts: SearchAccountLookup | undefined,
+  ): string | undefined {
+    if (r.source === "managed") {
+      const managed = this.getManagedByInstanceId(r.instance_id);
+      // Rows written before accounts carried an id: the bound login names it.
+      // A row with no `config_dir` is the default account — never guessed.
+      const id =
+        managed?.account_id ||
+        (managed?.config_dir && accounts
+          ? accounts.findForLogin(managed.provider_name as ProviderKind, managed.config_dir)?.id
+          : undefined);
+      return id && id !== DEFAULT_ACCOUNT_ID ? id : undefined;
+    }
+    if (!accounts) return undefined;
+    const session = this.getByInstanceId(r.instance_id);
+    const provider = session?.provider_name;
+    const root = loginRootForTranscriptPath(provider, session?.jsonl_path);
+    if (!provider || !root) return undefined;
+    const id = accounts.findForLogin(provider as ProviderKind, root)?.id;
+    return id && id !== DEFAULT_ACCOUNT_ID ? id : undefined;
+  }
+
+  /**
+   * A prepared search/recent statement for a login-root filter shape. Filter
+   * values are bound, so only the pair count varies; statements are cached
+   * per (kind, scope, pair count, mode).
+   */
+  private filteredStatement(
+    kind: "search-project" | "search-global" | "recent-project" | "recent-global",
+    filter: { sql: string },
+  ): StatementSync {
+    const key = `${kind}:${filter.sql}`;
+    let stmt = this.filteredSearchStatements.get(key);
+    if (stmt) return stmt;
+    switch (kind) {
+      case "search-project":
+        stmt = this.db.prepare(
+          buildSearchStatementSql(
+            `search_index MATCH ?\n        AND s.project_id = ?\n        AND s.archived = '0'\n        AND ${filter.sql}`,
+          ),
+        );
+        break;
+      case "search-global":
+        stmt = this.db.prepare(
+          buildSearchStatementSql(
+            `search_index MATCH ?\n        AND s.archived = '0'\n        AND ${filter.sql}`,
+            { projectBoost: true },
+          ),
+        );
+        break;
+      case "recent-project":
+        stmt = this.db.prepare(
+          buildRecentChatsStatementSql(`s.project_id = ? AND s.archived = '0' AND ${filter.sql}`),
+        );
+        break;
+      case "recent-global":
+        stmt = this.db.prepare(buildRecentChatsStatementSql(`s.archived = '0' AND ${filter.sql}`));
+        break;
+    }
+    this.filteredSearchStatements.set(key, stmt);
+    return stmt;
+  }
+
   /** Map a search_index row to the shared SearchResult shape */
   private toSearchResult(
     r: SearchResultRow,
-    extras: { snippet: string | null; matchField: string | null; rank: number },
+    extras: {
+      snippet: string | null;
+      matchField: string | null;
+      rank: number;
+      accounts?: SearchAccountLookup;
+    },
   ): SearchResult {
+    const accountId = this.searchResultAccountId(r, extras.accounts);
     return {
       instanceId: r.instance_id,
       source: r.source as "session" | "managed",
@@ -2528,15 +2748,29 @@ ${buildSearchIndexSchemaSql()},
       snippet: extras.snippet,
       matchField: extras.matchField,
       rank: extras.rank,
+      ...(accountId ? { accountId } : {}),
     };
   }
 
   /** Search chats using FTS5 */
   search(
     query: string,
-    options: { projectId?: string; boostProjectId?: string; limit?: number } = {},
+    options: {
+      projectId?: string;
+      boostProjectId?: string;
+      limit?: number;
+      /**
+       * Account lookup (the `AccountStore`). Needed to resolve an external
+       * chat's account from its transcript root; without it external results
+       * carry no `accountId` (managed rows still report their stored one).
+       */
+      accounts?: SearchAccountLookup;
+      /** Scope to an account's logins inside the SQL, before ranking/limiting. */
+      loginRoots?: SearchLoginRootFilter;
+    } = {},
   ): SearchResult[] {
     const limit = options.limit ?? 20;
+    const filter = buildLoginRootFilterSql(options.loginRoots);
 
     // Sanitize for FTS5: wrap each token in quotes to avoid syntax errors
     const tokens = query
@@ -2555,21 +2789,26 @@ ${buildSearchIndexSchemaSql()},
 
     try {
       const now = Date.now();
+      const filterParams = filter?.params ?? [];
       const executeSearch = (ftsQuery: string): SearchResultRow[] =>
         options.projectId
           ? asRows<SearchResultRow>(
-              this.stmtSearchProject.all(now, ftsQuery, options.projectId, limit) as Record<
+              (filter
+                ? this.filteredStatement("search-project", filter)
+                : this.stmtSearchProject
+              ).all(now, ftsQuery, options.projectId, ...filterParams, limit) as Record<
                 string,
                 unknown
               >[],
             )
           : asRows<SearchResultRow>(
-              this.stmtSearchGlobal.all(
-                now,
-                options.boostProjectId ?? "",
-                ftsQuery,
-                limit,
-              ) as Record<string, unknown>[],
+              (filter
+                ? this.filteredStatement("search-global", filter)
+                : this.stmtSearchGlobal
+              ).all(now, options.boostProjectId ?? "", ftsQuery, ...filterParams, limit) as Record<
+                string,
+                unknown
+              >[],
             );
 
       // Tokens are ANDed, so one wrong word kills the whole query. When the
@@ -2614,6 +2853,7 @@ ${buildSearchIndexSchemaSql()},
           snippet: sanitizeSnippet(bestSnippet),
           matchField,
           rank: r.combined_rank,
+          accounts: options.accounts,
         });
       });
 
@@ -2628,15 +2868,40 @@ ${buildSearchIndexSchemaSql()},
   }
 
   /** Most recently active chats, for the search dialog's empty-query state */
-  recentChats(options: { projectId?: string; limit?: number } = {}): SearchResult[] {
+  recentChats(
+    options: {
+      projectId?: string;
+      limit?: number;
+      accounts?: SearchAccountLookup;
+      /** Scope to an account's logins inside the SQL, before limiting. */
+      loginRoots?: SearchLoginRootFilter;
+    } = {},
+  ): SearchResult[] {
     const limit = options.limit ?? 20;
+    const filter = buildLoginRootFilterSql(options.loginRoots);
+    const filterParams = filter?.params ?? [];
     const rows = options.projectId
       ? asRows<SearchResultRow>(
-          this.stmtRecentChatsProject.all(options.projectId, limit) as Record<string, unknown>[],
+          (filter
+            ? this.filteredStatement("recent-project", filter)
+            : this.stmtRecentChatsProject
+          ).all(options.projectId, ...filterParams, limit) as Record<string, unknown>[],
         )
-      : asRows<SearchResultRow>(this.stmtRecentChatsGlobal.all(limit) as Record<string, unknown>[]);
+      : asRows<SearchResultRow>(
+          (filter
+            ? this.filteredStatement("recent-global", filter)
+            : this.stmtRecentChatsGlobal
+          ).all(...filterParams, limit) as Record<string, unknown>[],
+        );
 
-    return rows.map((r) => this.toSearchResult(r, { snippet: null, matchField: null, rank: 0 }));
+    return rows.map((r) =>
+      this.toSearchResult(r, {
+        snippet: null,
+        matchField: null,
+        rank: 0,
+        accounts: options.accounts,
+      }),
+    );
   }
 
   clear(): void {

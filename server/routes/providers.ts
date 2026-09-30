@@ -1,69 +1,23 @@
 import type { Hono } from "hono";
-import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
-import {
-  DEFAULT_ACCOUNT_PROFILE_ID,
-  type ProviderAccountProfile,
-  type ProviderAccountProfileStatus,
-  type ProviderDefaults,
-  type ProviderKind,
-  type ProviderModelsResponse,
-} from "#core/types.js";
-import {
-  listAccountProfiles,
-  normalizeConfigDir,
-  validateAccountProfileInput,
-} from "#core/account-profiles.js";
+import { DEFAULT_ACCOUNT_ID, type ProviderKind, type ProviderModelsResponse } from "#core/types.js";
 import { mergeCapabilities, resolveProviderDefaultModelOption } from "#core/provider-catalog.js";
-import {
-  getProviderAccountIdentitySnapshot,
-  getRegisteredProviders,
-  probeProviderAccountIdentity,
-  refreshProviderVersionAdvisories,
-  runProviderUpdate,
-} from "#core/provider-registry.js";
+import { refreshProviderVersionAdvisories, runProviderUpdate } from "#core/provider-registry.js";
 import { addMcpServer, listClaudeProjectMcpServers } from "#core/mcp-management.js";
+import { resolveAccountConfigDir } from "#core/account-scope.js";
+import { resolveClaudeGlobalConfigPath } from "#core/providers/claude-cli.js";
 import { readJsonBody } from "#server/hono-utils.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
-import type { SessionDB } from "#core/db.js";
-
-/** Stored (non-default) profiles from global settings; a corrupt column reads as empty. */
-function readStoredProfiles(db: SessionDB): ProviderAccountProfile[] {
-  const raw = db.getGlobalSettings().provider_profiles_json;
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ProviderAccountProfile[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredProfiles(db: SessionDB, profiles: ProviderAccountProfile[]): void {
-  db.updateGlobalSettings({ provider_profiles_json: JSON.stringify(profiles) });
-}
-
-/** Expand a leading `~` and make the path absolute. */
-function expandConfigDir(dir: string): string {
-  const expanded =
-    dir === "~" ? homedir() : dir.startsWith("~/") ? resolve(homedir(), dir.slice(2)) : dir;
-  return normalizeConfigDir(resolve(expanded));
-}
-
-function toProfileStatus(
-  provider: ProviderKind,
-  profile: ProviderAccountProfile,
-): ProviderAccountProfileStatus {
-  return {
-    ...profile,
-    isDefault: profile.id === DEFAULT_ACCOUNT_PROFILE_ID,
-    ...getProviderAccountIdentitySnapshot(provider, profile.configDir),
-  };
-}
 
 export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  /**
+   * `accountId` → the account's config dir for the provider, or undefined for
+   * the default account (absent, `default`, unknown, or no login for the
+   * provider) so every scoped route falls back to exactly its pre-accounts
+   * behaviour.
+   */
+  const scopedConfigDir = (provider: ProviderKind, accountId: string | undefined) =>
+    resolveAccountConfigDir(deps.instanceManager, provider, accountId, deps.config.logger);
+
   app.get("/api/provider-models", async (c) => {
     const providerParam = c.req.query("provider");
     const provider = deps
@@ -74,7 +28,14 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     }
     try {
       const capabilities = deps.getProviderCapabilities(provider);
-      const models = (await deps.getProviderModels(provider)).map((model) => ({
+      // The default account keeps the shared 60s route cache; another
+      // account's list comes straight from the manager, whose per-dir SDK
+      // discovery cache (30-min TTL) already makes repeat calls cheap.
+      const configDir = scopedConfigDir(provider, c.req.query("accountId"));
+      const rawModels = configDir
+        ? await deps.instanceManager.getProviderModels(provider, configDir)
+        : await deps.getProviderModels(provider);
+      const models = rawModels.map((model) => ({
         ...model,
         resolvedCapabilities: mergeCapabilities(capabilities, model.capabilities),
       }));
@@ -94,8 +55,18 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     }
   });
 
+  // `?accountId=` lists only the providers that account has a login for — a
+  // provider with no login there is unavailable, never a fallback to another
+  // account's. Absent, `default`, or an unknown id returns the full list.
   app.get("/api/providers", (c) => {
-    return c.json({ providers: deps.getAvailableProviders() });
+    const providers = deps.getAvailableProviders();
+    const accountId = c.req.query("accountId")?.trim();
+    const account =
+      accountId && accountId !== DEFAULT_ACCOUNT_ID
+        ? deps.instanceManager.accounts.get(accountId)
+        : undefined;
+    if (!account) return c.json({ providers });
+    return c.json({ providers: providers.filter((entry) => account.logins[entry.provider]) });
   });
 
   // Force-refresh provider version advisories, bypassing the 1h npm registry
@@ -152,6 +123,7 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       bearerTokenEnvVar?: string;
       scope?: "global" | "project";
       projectId?: string;
+      accountId?: string;
     }>(c);
     if (!body?.name) return c.json({ error: "Name is required" }, 400);
     const transport = body.transport ?? "http";
@@ -169,6 +141,10 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       ) {
         return c.json({ error: "Project-scoped MCP configuration is unavailable" }, 400);
       }
+      // The client sends the account in the JSON body; the query form is kept
+      // for parity with the GET.
+      const bodyAccountId = typeof body.accountId === "string" ? body.accountId : undefined;
+      const configDir = scopedConfigDir(provider, bodyAccountId ?? c.req.query("accountId"));
       await addMcpServer({
         provider,
         name: body.name,
@@ -179,10 +155,11 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         scope: body.scope ?? "global",
         projectDirectory: project?.directory,
         bearerTokenEnvVar: body.bearerTokenEnvVar,
+        configDir,
       });
       if (body.scope !== "project") {
-        await deps.instanceManager.ensureProviderGlobalState(provider, true);
-        deps.instanceManager.recordManagedMcpConfiguration(provider, body.name.trim());
+        await deps.instanceManager.ensureProviderGlobalState(provider, true, configDir);
+        deps.instanceManager.recordManagedMcpConfiguration(provider, body.name.trim(), configDir);
       }
       return c.json({ ok: true });
     } catch (error) {
@@ -199,200 +176,15 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (provider !== "claude" || !projectId) return c.json({ servers: [] });
     const project = deps.instanceManager.projectManager.getProject(projectId);
     if (!project) return c.json({ error: "Project not found" }, 404);
-    return c.json({ servers: await listClaudeProjectMcpServers(project.directory) });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Account profiles — one provider login per config dir. The server's own
-  // resolved dir is the implicit default (never stored, never removable);
-  // user-added dirs live in global_settings.provider_profiles_json. Identity is
-  // probed through the provider driver and cached per dir; profiles are only
-  // mutated here (PATCH /api/settings ignores `providerProfiles`).
-  // ---------------------------------------------------------------------------
-
-  const { instanceManager, config } = deps;
-
-  const resolveProfileProvider = (
-    raw: string,
-  ): { provider: ProviderKind; supported: boolean } | null => {
-    const provider = raw as ProviderKind;
-    if (!getRegisteredProviders().includes(provider)) return null;
-    const supported = deps.getProviderCapabilities(provider)?.supportsAccountProfiles === true;
-    return { provider, supported };
-  };
-
-  const profilesFor = (provider: ProviderKind): ProviderAccountProfile[] =>
-    listAccountProfiles(
-      readStoredProfiles(instanceManager.sessionDb),
-      provider,
-      instanceManager.getProviderDirs()[provider],
-    );
-
-  // Fire-and-forget: the driver dedupes in-flight probes and honours its own
-  // TTL, so calling this on every list is a cache hit in the common case.
-  const kickProbe = (provider: ProviderKind, profile: ProviderAccountProfile, force: boolean) => {
-    void probeProviderAccountIdentity(provider, profile.configDir, config.logger, { force }).catch(
-      () => {},
-    );
-  };
-
-  app.get("/api/providers/:provider/profiles", (c) => {
-    const resolved = resolveProfileProvider(c.req.param("provider"));
-    if (!resolved) return c.json({ error: "Unknown provider" }, 404);
-    if (!resolved.supported) return c.json([]);
-    const force = c.req.query("probe") === "1";
-    const profiles = profilesFor(resolved.provider);
-    const rows = profiles.map((profile) => toProfileStatus(resolved.provider, profile));
-    // Unknown or expired snapshots get a background probe; fresh ones are a
-    // no-op inside the driver's TTL. `?probe=1` bypasses the TTL for all.
-    for (const profile of profiles) kickProbe(resolved.provider, profile, force);
-    return c.json(rows);
-  });
-
-  app.post("/api/providers/:provider/profiles", async (c) => {
-    const resolved = resolveProfileProvider(c.req.param("provider"));
-    if (!resolved) return c.json({ error: "Unknown provider" }, 404);
-    if (!resolved.supported)
-      return c.json({ error: "Provider does not support account profiles" }, 400);
-    const { provider } = resolved;
-    let body: { label?: unknown; configDir?: unknown } | null;
-    try {
-      body = await readJsonBody(c);
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-    if (!body) return c.json({ error: "Invalid JSON body" }, 400);
-
-    const existing = profilesFor(provider);
-    let validated: { label: string; configDir: string };
-    try {
-      validated = validateAccountProfileInput(body, existing);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Invalid profile" }, 400);
-    }
-
-    const configDir = expandConfigDir(validated.configDir);
-    if (!existsSync(configDir)) {
-      return c.json({ error: `Config directory does not exist: ${configDir}` }, 400);
-    }
-    if (!statSync(configDir).isDirectory()) {
-      return c.json({ error: `Config directory is not a directory: ${configDir}` }, 400);
-    }
-    const defaultDir = normalizeConfigDir(instanceManager.getProviderDirs()[provider]);
-    if (configDir === defaultDir) {
-      return c.json({ error: "That is already the default account's config directory" }, 400);
-    }
-    // `~` expansion can collide with a stored absolute path the shape check missed.
-    const clash = existing.find((p) => normalizeConfigDir(p.configDir) === configDir);
-    if (clash) {
-      return c.json({ error: `"${clash.label}" already uses that config directory` }, 400);
-    }
-
-    const profile: ProviderAccountProfile = {
-      id: randomUUID(),
-      provider,
-      label: validated.label,
-      configDir,
-    };
-    writeStoredProfiles(instanceManager.sessionDb, [
-      ...readStoredProfiles(instanceManager.sessionDb),
-      profile,
-    ]);
-    instanceManager.refreshAccountProfileRoots();
-    kickProbe(provider, profile, true);
-    return c.json(toProfileStatus(provider, profile), 201);
-  });
-
-  app.patch("/api/providers/:provider/profiles/:id", async (c) => {
-    const resolved = resolveProfileProvider(c.req.param("provider"));
-    if (!resolved) return c.json({ error: "Unknown provider" }, 404);
-    const { provider } = resolved;
-    const id = c.req.param("id");
-    if (id === DEFAULT_ACCOUNT_PROFILE_ID) {
-      return c.json({ error: "The default account cannot be renamed" }, 400);
-    }
-    let body: { label?: unknown } | null;
-    try {
-      body = await readJsonBody(c);
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-    if (!body) return c.json({ error: "Invalid JSON body" }, 400);
-
-    const stored = readStoredProfiles(instanceManager.sessionDb);
-    const target = stored.find((p) => p.id === id && p.provider === provider);
-    if (!target) return c.json({ error: "Profile not found" }, 404);
-
-    let validated: { label: string };
-    try {
-      validated = validateAccountProfileInput(
-        { label: body.label, configDir: target.configDir },
-        profilesFor(provider),
-        { excludeId: id },
-      );
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : "Invalid profile" }, 400);
-    }
-
-    const updated: ProviderAccountProfile = { ...target, label: validated.label };
-    writeStoredProfiles(
-      instanceManager.sessionDb,
-      stored.map((p) => (p.id === id ? updated : p)),
-    );
-    // Roots can't change on rename; the call is memoized on the stored JSON
-    // and keeps every profile mutation on the same refresh path.
-    instanceManager.refreshAccountProfileRoots();
-    return c.json(toProfileStatus(provider, updated));
-  });
-
-  app.delete("/api/providers/:provider/profiles/:id", (c) => {
-    const resolved = resolveProfileProvider(c.req.param("provider"));
-    if (!resolved) return c.json({ error: "Unknown provider" }, 404);
-    const { provider } = resolved;
-    const id = c.req.param("id");
-    if (id === DEFAULT_ACCOUNT_PROFILE_ID) {
-      return c.json({ error: "The default account cannot be removed" }, 400);
-    }
-    const db = instanceManager.sessionDb;
-    const stored = readStoredProfiles(db);
-    if (!stored.some((p) => p.id === id && p.provider === provider)) {
-      return c.json({ error: "Profile not found" }, 404);
-    }
-    writeStoredProfiles(
-      db,
-      stored.filter((p) => p.id !== id),
-    );
-
-    // Clear dangling references. Chats already bound to this dir keep their
-    // `managed_sessions.config_dir` — they still work, they just aren't a
-    // named profile any more.
-    const settings = db.getGlobalSettings();
-    if (settings.provider_defaults_json) {
-      let defaults: Record<string, ProviderDefaults> = {};
-      try {
-        defaults = JSON.parse(settings.provider_defaults_json);
-      } catch {}
-      if (defaults[provider]?.profileId === id) {
-        defaults = { ...defaults, [provider]: { ...defaults[provider], profileId: null } };
-        db.updateGlobalSettings({ provider_defaults_json: JSON.stringify(defaults) });
-      }
-    }
-    const clearedProjects = db.clearProjectDefaultProfile(id);
-    instanceManager.refreshAccountProfileRoots();
-    return c.json({ ok: true, clearedProjects });
-  });
-
-  app.post("/api/providers/:provider/profiles/:id/probe", async (c) => {
-    const resolved = resolveProfileProvider(c.req.param("provider"));
-    if (!resolved) return c.json({ error: "Unknown provider" }, 404);
-    if (!resolved.supported)
-      return c.json({ error: "Provider does not support account profiles" }, 400);
-    const { provider } = resolved;
-    const id = c.req.param("id");
-    const profile = profilesFor(provider).find((p) => p.id === id);
-    if (!profile) return c.json({ error: "Profile not found" }, 404);
-    // Awaited: a forced probe spawns a provider process (30s worst case).
-    await probeProviderAccountIdentity(provider, profile.configDir, config.logger, { force: true });
-    return c.json(toProfileStatus(provider, profile));
+    // Local-scope project servers live in the account's `.claude.json`; the
+    // default account reads the server's own (today's path, untouched).
+    const configDir = scopedConfigDir(provider, c.req.query("accountId"));
+    const servers = configDir
+      ? await listClaudeProjectMcpServers(
+          project.directory,
+          resolveClaudeGlobalConfigPath(configDir),
+        )
+      : await listClaudeProjectMcpServers(project.directory);
+    return c.json({ servers });
   });
 }
