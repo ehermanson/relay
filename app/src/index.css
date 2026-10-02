@@ -341,9 +341,23 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
-/* Viewport-fixed opaque strip over the top safe area. Sticky elements inside
-   the app shell don't count (the document never scrolls), so this is the
-   element WebKit sees docked to the top edge. Above every overlay. */
+/* Installed iOS apps can blur content below the reported top safe area.
+   Keep that screen band empty: on-device testing found 16px still clipped
+   the title with blur, while 22px was clear. */
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone) {
+    :root {
+      --app-top-inset: calc(env(safe-area-inset-top, 0px) + 22px);
+    }
+  }
+}
+
+/* Opaque fixed box over the top inset. WebKit skips the iOS 26+ edge blur
+   when a fixed/sticky box with a solid background covers the top edge
+   (LocalFrameView::fixedContainerEdges: >10px tall, ~full width). Sticky
+   elements inside the app shell don't qualify — the document never scrolls.
+   Requires black-translucent: with an opaque status bar the inset is 0 and
+   this box collapses below the threshold. */
 .status-bar-backdrop {
   position: fixed;
   top: 0;

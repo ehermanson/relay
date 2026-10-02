@@ -23,9 +23,7 @@ interface ViewHeaderProps {
 export function ViewHeader({ children, className, style }: ViewHeaderProps) {
   return (
     <div
-      // Pinned and opaque so iOS standalone apps paint the status bar solid
-      // instead of blurring the content beneath it.
-      className={`sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-border/70 bg-bg px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
+      className={`flex shrink-0 items-center gap-3 border-b border-border/70 px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
       style={style}
     >
       {children}
