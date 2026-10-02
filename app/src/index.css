@@ -341,6 +341,19 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
+/* Installed iOS apps: extend the top inset 12px past the status bar so the
+   backdrop below covers WebKit's edge sample point (4px inside the area the
+   status bar doesn't cover). Padding alone needed 22px to keep the title
+   clear (16px still blurred), so a crisp title at 12px means the backdrop
+   substitution is working. */
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone) {
+    :root {
+      --app-top-inset: calc(env(safe-area-inset-top, 0px) + 12px);
+    }
+  }
+}
+
 /* Opaque fixed box over the top inset. WebKit skips the iOS 26+ edge blur
    when a fixed/sticky box with a solid background covers the top edge
    (LocalFrameView::fixedContainerEdges: >10px tall, ~full width). Sticky
