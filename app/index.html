@@ -24,6 +24,9 @@
     </script>
   </head>
   <body>
+    <!-- Solid, viewport-fixed top edge so iOS standalone apps paint the
+         status bar from it instead of blurring content. See index.css. -->
+    <div class="status-bar-backdrop" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

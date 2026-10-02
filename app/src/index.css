@@ -341,6 +341,20 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
+/* Viewport-fixed opaque strip over the top safe area. Sticky elements inside
+   the app shell don't count (the document never scrolls), so this is the
+   element WebKit sees docked to the top edge. Above every overlay. */
+.status-bar-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-top-inset);
+  background: var(--color-bg);
+  z-index: 10000;
+  pointer-events: none;
+}
+
 html {
   scroll-behavior: smooth;
   /* Matches body — shows through briefly below the shell when the keyboard
