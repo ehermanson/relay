@@ -26,10 +26,16 @@ function loadPreference(): ThemePreference {
   }
 }
 
-/** Apply theme class to <html> and persist to localStorage. */
+/** Header background (--color-bg) per theme; iOS paints the status bar with it. */
+const THEME_COLORS: Record<ResolvedTheme, string> = { dark: "#1d1e20", light: "#ffffff" };
+
+/** Apply theme class and status-bar color to the document. */
 function applyTheme(resolved: ResolvedTheme) {
   if (typeof document !== "undefined") {
     document.documentElement.classList.toggle("light", resolved === "light");
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", THEME_COLORS[resolved]);
   }
 }
 
