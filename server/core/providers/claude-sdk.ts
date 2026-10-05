@@ -2545,7 +2545,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     }
 
     // File change tracking
-    this.trackFileChange(toolName, input);
+    this.trackFileChange(toolName, input, agentKey);
 
     // Normalize Edit input into the same EditToolInput shape as Codex:
     // generate a patch diff from old/new strings so the UI has one rendering path.
@@ -2796,7 +2796,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     this.emit("activity", activity);
   }
 
-  private trackFileChange(toolName: string, input: Record<string, unknown> | undefined): void {
+  private trackFileChange(
+    toolName: string,
+    input: Record<string, unknown> | undefined,
+    agentKey?: string,
+  ): void {
     if (!input || !FILE_WRITE_TOOLS.has(toolName)) return;
     const filePath = (input.file_path || input.path || input.notebook_path) as string | undefined;
     if (!filePath) return;
@@ -2811,16 +2815,21 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         type: toolName === "Write" ? "added" : "edited",
       });
     }
-    this.emitFileList();
+    this.emitFileList(agentKey);
   }
 
-  private emitFileList(): void {
+  /**
+   * The list is always the whole workspace set. `agentKey` marks a change made
+   * by a delegated agent, so the chat's own turn state isn't driven by it.
+   */
+  private emitFileList(agentKey?: string): void {
     const activity: ActivityMessage = {
       type: "activity",
       activity: "file_list",
       description: "Files changed",
       files: Array.from(this.fileMap.values()).map((f) => ({ ...f })),
     };
+    if (agentKey) activity.agentId = agentKey;
     this.emit("activity", activity);
   }
 

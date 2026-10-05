@@ -140,6 +140,35 @@ describe("live delegated-agent frames", () => {
     assert.equal(manager.instances.get(id)?.info.status, "processing");
   });
 
+  it("a child's file_list updates the chat's files without setting processing", async () => {
+    const { manager, proc, instance, id } = await bootChat();
+    const fileStats = [];
+    manager.on("instance:file_stats", (_id, m) => fileStats.push(m));
+    proc.emit("output", { type: "output", text: "", isWaiting: true });
+    await tick();
+    assert.equal(instance.info.status, "idle");
+
+    proc.emit("activity", {
+      type: "activity",
+      activity: "file_list",
+      description: "Files changed",
+      files: [{ path: "/x/drawer.ts", editCount: 1, type: "added" }],
+      agentId: "toolu_child",
+    });
+    await tick();
+
+    assert.equal(instance.info.status, "idle", "a child's edit does not mark the chat busy");
+    assert.deepEqual(
+      manager.getChangedFiles(id).map((f) => f.path),
+      ["/x/drawer.ts"],
+    );
+    assert.deepEqual(
+      fileStats.at(-1)?.files.map((f) => f.path),
+      ["/x/drawer.ts"],
+      "broadcast as file_stats so the Files/Review sidecars appear",
+    );
+  });
+
   it("a child's isWaiting never ends the root turn", async () => {
     const { proc, instance } = await bootChat();
     proc.emit("output", { type: "output", text: "", isWaiting: true, agentId: "toolu_child" });

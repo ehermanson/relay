@@ -2675,7 +2675,7 @@ describe("multi-agent thread scoping", () => {
     session.close();
   });
 
-  it("attributes child items with agentId and keeps file_list session-level", async () => {
+  it("attributes child items, including the workspace file_list, with agentId", async () => {
     const { session, child, activities } = await startRootTurn();
     spawnChild(child);
     notify(child, "item/started", {
@@ -2705,7 +2705,11 @@ describe("multi-agent thread scoping", () => {
     assert.equal(cmd.agentId, "thread-child");
     const fileList = activities.map(([a]) => a).find((a) => a.activity === "file_list");
     assert.ok(fileList);
-    assert.equal(fileList.agentId, undefined);
+    assert.equal(fileList.agentId, "thread-child");
+    assert.deepEqual(
+      fileList.files.map((f) => f.path),
+      ["/tmp/project/a.ts"],
+    );
     const patch = activities.map(([a]) => a).find((a) => a.toolUseId === "fc-c1");
     assert.equal(patch.agentId, "thread-child");
     session.close();

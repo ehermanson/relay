@@ -2375,8 +2375,9 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   /** Emit an activity, attributing it to the child agent currently being converted. */
   private emitActivity(activity: ActivityMessage): void {
     const agentId = this._activityAgentId;
-    // file_list is session-level (workspace files), never per-agent.
-    if (agentId && activity.activity !== "file_list") {
+    // A child's file_list still carries the whole workspace set; the agentId
+    // only marks who made the change, so it can't drive the root turn state.
+    if (agentId) {
       this.emit("activity", { ...activity, agentId });
     } else {
       this.emit("activity", activity);

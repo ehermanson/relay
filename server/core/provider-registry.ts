@@ -217,6 +217,8 @@ interface ProviderDriver {
    */
   readAgentHistory?(context: ProviderAgentHistoryContext): Promise<HistoryEntry[] | null>;
   readAgentModel?(context: ProviderAgentHistoryContext): string | undefined;
+  /** Path of a delegated agent's own transcript file, when it exists. Lookup only. */
+  resolveAgentTranscriptPath?(context: ProviderAgentHistoryContext): string | undefined;
   /**
    * Account logins (`ProviderCapabilities.supportsAccountLogins`): ask the
    * provider which login a config dir holds. `probeAccountIdentity` may spawn
@@ -749,6 +751,10 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       return attributeHistoryToAgent(parsed.history, context.agentId);
     },
     readAgentModel(context) {
+      const path = this.resolveAgentTranscriptPath!(context);
+      return path ? readAgentModelFromTranscript(path, "claude") : undefined;
+    },
+    resolveAgentTranscriptPath(context) {
       const parentPath =
         context.transcriptPath ??
         (context.sessionId
@@ -757,8 +763,7 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
               `${context.sessionId}.jsonl`,
             )
           : undefined);
-      const path = resolveClaudeAgentTranscriptPath(parentPath, context.providerAgentId);
-      return path ? readAgentModelFromTranscript(path, "claude") : undefined;
+      return resolveClaudeAgentTranscriptPath(parentPath, context.providerAgentId);
     },
     resolveManagedTranscriptPath(options) {
       const derivedPath =
@@ -948,11 +953,14 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       });
     },
     readAgentModel(context) {
-      const path = resolveCodexAgentRolloutPath(
+      const path = this.resolveAgentTranscriptPath!(context);
+      return path ? readAgentModelFromTranscript(path, "codex") : undefined;
+    },
+    resolveAgentTranscriptPath(context) {
+      return resolveCodexAgentRolloutPath(
         context.providerDirs.codex,
         context.providerAgentId ?? context.agentId,
       );
-      return path ? readAgentModelFromTranscript(path, "codex") : undefined;
     },
     resolveManagedTranscriptPath(options) {
       if (options.transcriptPath && existsSync(options.transcriptPath)) {
@@ -1323,6 +1331,13 @@ export function getProviderAccountIdentitySnapshot(
       probeState: "unknown",
     }
   );
+}
+
+export function resolveAgentTranscriptPathForProvider(
+  provider: ProviderKind,
+  context: ProviderAgentHistoryContext,
+): string | undefined {
+  return getProviderDriver(provider).resolveAgentTranscriptPath?.(context);
 }
 
 export function readAgentModelForProvider(

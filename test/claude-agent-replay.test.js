@@ -278,6 +278,56 @@ function buildChildTranscript(cwd) {
   ].join("\n");
 }
 
+function registerExternalChat(tempDir, cwd, parentPath) {
+  const db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
+  db.upsertProject({
+    id: "proj-1",
+    name: "workspace",
+    directory: cwd,
+    repo_root: null,
+    remote_url: null,
+    target_branch: null,
+    created_at: Date.now(),
+    last_activity_at: null,
+  });
+  db.upsert({
+    session_id: SESSION_ID,
+    instance_id: "inst-1",
+    provider_name: "claude",
+    name: "Delegation",
+    working_directory: cwd,
+    jsonl_path: parentPath,
+    created_at: Date.now() - 1000,
+    last_activity_at: Date.now(),
+    type: "external",
+    archived: 0,
+    custom_title: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    summary: null,
+    first_prompt: null,
+    git_branch: null,
+    message_count: 0,
+    allowed_tools: "[]",
+    worktree_path: null,
+    original_directory: null,
+    parent_session_id: null,
+    preferred_model: null,
+    reasoning_budget: null,
+    last_message_text: null,
+    last_message_from: null,
+    last_message_at: null,
+    git_info_branch: null,
+    git_info_is_worktree: null,
+    space_id: null,
+    project_id: "proj-1",
+    model: null,
+  });
+  db.close();
+}
+
 describe("Claude delegated-agent replay", () => {
   let tempDir;
   let manager;
@@ -557,53 +607,7 @@ describe("Claude delegated-agent replay", () => {
   });
 
   it("folds agent state from history and reads attributed child history without booting", async () => {
-    const db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
-    db.upsertProject({
-      id: "proj-1",
-      name: "workspace",
-      directory: cwd,
-      repo_root: null,
-      remote_url: null,
-      target_branch: null,
-      created_at: Date.now(),
-      last_activity_at: null,
-    });
-    db.upsert({
-      session_id: SESSION_ID,
-      instance_id: "inst-1",
-      provider_name: "claude",
-      name: "Delegation",
-      working_directory: cwd,
-      jsonl_path: parentPath,
-      created_at: Date.now() - 1000,
-      last_activity_at: Date.now(),
-      type: "external",
-      archived: 0,
-      custom_title: 0,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_tokens: 0,
-      cache_read_tokens: 0,
-      summary: null,
-      first_prompt: null,
-      git_branch: null,
-      message_count: 0,
-      allowed_tools: "[]",
-      worktree_path: null,
-      original_directory: null,
-      parent_session_id: null,
-      preferred_model: null,
-      reasoning_budget: null,
-      last_message_text: null,
-      last_message_from: null,
-      last_message_at: null,
-      git_info_branch: null,
-      git_info_is_worktree: null,
-      space_id: null,
-      project_id: "proj-1",
-      model: null,
-    });
-    db.close();
+    registerExternalChat(tempDir, cwd, parentPath);
 
     manager.restoreAndScan();
     assert.equal(manager.listInstances().length, 1);
@@ -668,6 +672,44 @@ describe("Claude delegated-agent replay", () => {
     const info = manager.listInstances()[0];
     assert.equal(info.status, "stopped");
     assert.equal(info.external, true);
+  });
+
+  it("folds files written by delegated agents into the chat's file set", () => {
+    // The async agent edits a workspace file; only its own transcript records it.
+    writeFileSync(
+      join(projectDir, SESSION_ID, "subagents", `agent-${ASYNC_AGENT}.jsonl`),
+      line({
+        type: "assistant",
+        isSidechain: true,
+        agentId: ASYNC_AGENT,
+        message: {
+          role: "assistant",
+          model: "claude-haiku-4-5",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_child_write",
+              name: "Write",
+              input: { file_path: join(cwd, "drawer.ts"), content: "export {}" },
+            },
+          ],
+        },
+        timestamp: "2026-09-17T10:00:04.000Z",
+      }),
+    );
+    registerExternalChat(tempDir, cwd, parentPath);
+    manager.restoreAndScan();
+
+    const fileLists = manager
+      .getHistory("inst-1")
+      .filter((e) => e.message.type === "activity" && e.message.activity === "file_list");
+    const last = fileLists.at(-1)?.message;
+    assert.ok(last, "history carries a file_list");
+    assert.equal(last.agentId, undefined, "surfaced as the chat's own file list");
+    assert.deepEqual(
+      last.files.map((f) => [f.path, f.type]),
+      [[join(cwd, "drawer.ts"), "added"]],
+    );
   });
 
   it("keeps the orchestrator's text as the last visible output", () => {

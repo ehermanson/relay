@@ -176,6 +176,7 @@ import {
   probeProviderAccountIdentity,
   readAgentHistoryForProvider,
   readAgentModelForProvider,
+  resolveAgentTranscriptPathForProvider,
   resolveManagedTranscriptPathForProvider,
 } from "#core/provider-registry.js";
 import {
@@ -1504,6 +1505,11 @@ export class InstanceManager extends EventEmitter {
   private projectIconCache = new Map<string, string | null>();
   /** Parsed transcript cache keyed by provider + path + file metadata */
   private transcriptParseCache = new Map<string, TranscriptCacheEntry>();
+  /** Files written by each delegated agent, keyed by child transcript path (mtime/size checked). */
+  private agentFileChangeCache = new Map<
+    string,
+    { mtimeMs: number; size: number; files: FileChange[] }
+  >();
   /** True once the background filesystem scan has completed */
   scanComplete = false;
   /** Guard to prevent concurrent discovery polls from overlapping */
@@ -4285,11 +4291,16 @@ export class InstanceManager extends EventEmitter {
     );
 
     const history = this.mergeSessionEvents(id, parsed.history);
+    const files = this.withAgentFileChanges(
+      instance,
+      parsed.files,
+      this.foldInstanceAgents(history, instance.process ? instance.agents : undefined),
+    );
 
     if (instance.hydrated) {
       instance.history = history;
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
-      instance.files = parsed.files.size > 0 ? parsed.files : undefined;
+      instance.files = files;
       this.rebuildInstanceAgents(instance, history);
 
       const parsedStats = hasSessionStats(parsed.stats) ? parsed.stats : undefined;
@@ -4305,7 +4316,7 @@ export class InstanceManager extends EventEmitter {
       this.rebuildPendingInteractiveState(instance);
     }
 
-    return this.buildHistoryView(history, parsed.files.size > 0 ? parsed.files : undefined);
+    return this.buildHistoryView(history, files);
   }
 
   // ===========================================================================
@@ -4386,6 +4397,82 @@ export class InstanceManager extends EventEmitter {
     const context = this.getAgentReadContext(id, agentId);
     if (!context) return undefined;
     return readAgentModelForProvider(this.instances.get(id)!.info.provider, context);
+  }
+
+  /**
+   * Fold files written by delegated agents into the chat's file set. Agents
+   * write to their own transcripts (Claude `subagents/agent-*.jsonl`, Codex
+   * child rollouts), so the parent transcript alone misses their edits and the
+   * Files/Review sidecars never appear. Passive: reads files only, cached by
+   * mtime/size.
+   */
+  private withAgentFileChanges(
+    instance: Instance,
+    files: Map<string, FileChange>,
+    agents: Map<string, AgentInfo> | undefined,
+  ): Map<string, FileChange> | undefined {
+    if (agents && agents.size > 0) {
+      const transcriptPath =
+        instance.jsonlPath ??
+        instance.providerBinding?.transcriptPath ??
+        instance.externalState?.jsonlPath;
+      const sessionId =
+        instance.sessionId ??
+        instance.info.sessionId ??
+        instance.providerBinding?.providerSessionId;
+      const providerDirs = this.providerDirsFor(instance);
+      const workingDirectory = instance.actualCwd || instance.info.workingDirectory;
+      for (const agent of agents.values()) {
+        const childPath = resolveAgentTranscriptPathForProvider(instance.info.provider, {
+          providerDirs,
+          transcriptPath,
+          sessionId,
+          workingDirectory,
+          agentId: agent.agentId,
+          providerAgentId: agent.providerAgentId,
+          parseClaudeTranscript: (path: string) => this.parseProviderTranscript("claude", path),
+        });
+        if (!childPath || childPath === transcriptPath) continue;
+        for (const file of this.readAgentFileChanges(instance.info.provider, childPath)) {
+          const existing = files.get(file.path);
+          if (existing) {
+            existing.editCount += file.editCount;
+          } else {
+            files.set(file.path, { ...file });
+          }
+        }
+      }
+    }
+    return files.size > 0 ? files : undefined;
+  }
+
+  private readAgentFileChanges(provider: ProviderKind, filePath: string): FileChange[] {
+    let stat: { mtimeMs: number; size: number };
+    try {
+      stat = statSync(filePath);
+    } catch {
+      return [];
+    }
+    const cached = this.agentFileChangeCache.get(filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.files;
+    }
+    let files: FileChange[] = [];
+    try {
+      const parsed = parseTranscriptForProvider(provider, filePath, (path) =>
+        this.parseJsonl(path),
+      );
+      files = Array.from(parsed.files.values()).map((f) => ({ ...f }));
+    } catch {
+      // Unreadable child transcript: contributes nothing.
+    }
+    this.agentFileChangeCache.delete(filePath);
+    this.agentFileChangeCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, files });
+    if (this.agentFileChangeCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES * 5) {
+      const oldest = this.agentFileChangeCache.keys().next().value;
+      if (oldest) this.agentFileChangeCache.delete(oldest);
+    }
+    return files;
   }
 
   private getAgentReadContext(id: string, agentId: string) {
@@ -4507,9 +4594,9 @@ export class InstanceManager extends EventEmitter {
 
       instance.history = this.mergeSessionEvents(id, parsed.history);
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
-      instance.files = parsed.files.size > 0 ? parsed.files : undefined;
-      instance.fileStateRevision += 1;
       this.rebuildInstanceAgents(instance, instance.history);
+      instance.files = this.withAgentFileChanges(instance, parsed.files, instance.agents);
+      instance.fileStateRevision += 1;
 
       const parsedStats = hasSessionStats(parsed.stats) ? parsed.stats : undefined;
       if (parsedStats) {
@@ -4601,20 +4688,35 @@ export class InstanceManager extends EventEmitter {
     files?: Map<string, FileChange>,
   ): HistoryEntry[] {
     // If we have enriched file data on the instance, patch the last file_list
-    // activity in history so the UI gets diff stats on initial load.
+    // activity in history so the UI gets diff stats on initial load. When only
+    // delegated agents wrote files, the chat's own transcript has no file_list
+    // to patch, so one is appended.
     if (files && files.size > 0) {
       const enriched = Array.from(files.values()).map((f) => ({ ...f }));
       const view = [...history];
       for (let i = view.length - 1; i >= 0; i--) {
         const msg = view[i].message;
-        if (msg.type === "activity" && (msg as ActivityMessage).activity === "file_list") {
+        if (
+          msg.type === "activity" &&
+          (msg as ActivityMessage).activity === "file_list" &&
+          !(msg as ActivityMessage).agentId
+        ) {
           view[i] = {
             ...view[i],
             message: { ...msg, files: enriched } as ActivityMessage,
           };
-          break;
+          return view;
         }
       }
+      view.push({
+        timestamp: view.at(-1)?.timestamp ?? Date.now(),
+        message: {
+          type: "activity",
+          activity: "file_list",
+          description: "Files changed",
+          files: enriched,
+        } as ActivityMessage,
+      });
       return view;
     }
 
@@ -9075,6 +9177,13 @@ export class InstanceManager extends EventEmitter {
         // pending-interaction sync (child permissions arrive via
         // permissionRequest with relayAgentId).
         if (message.agentId) {
+          // A delegated agent's file change: the list is the whole workspace
+          // set, so it updates the chat's files (Files/Review sidecars) — but
+          // as file_stats, which never marks the chat as processing.
+          if (message.activity === "file_list") {
+            if (message.files) this.applyAgentFileList(id, live, message.files);
+            return;
+          }
           this.pushHistory(live, message);
           live.info.lastActivityAt = Date.now();
           this.dbSave(live);
@@ -10218,6 +10327,26 @@ export class InstanceManager extends EventEmitter {
       } satisfies FileStatsMessage);
     });
     invalidateRepoStatus(diffCwd);
+  }
+
+  private applyAgentFileList(id: string, live: Instance, files: FileChange[]): void {
+    const previous = live.files;
+    const next = new Map(previous);
+    for (const file of files) {
+      const known = previous?.get(file.path);
+      next.set(file.path, {
+        ...file,
+        additions: file.additions ?? known?.additions,
+        deletions: file.deletions ?? known?.deletions,
+      });
+    }
+    live.files = next;
+    live.fileStateRevision += 1;
+    this.emit("instance:file_stats", id, {
+      type: "file_stats",
+      files: Array.from(next.values()).map((file) => ({ ...file })),
+    } satisfies FileStatsMessage);
+    this.fileStatsDebouncer.schedule(id);
   }
 
   /** Turn end: force a diff-stat pass and a repo-status refresh for the chat's worktree. */
