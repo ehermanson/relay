@@ -1206,6 +1206,13 @@ export interface FileChange {
   additions?: number;
   /** Lines deleted (from git diff --numstat) */
   deletions?: number;
+  /**
+   * How Relay learned about the change. Absent = a tracked edit tool
+   * (Edit/Write/NotebookEdit, Codex fileChange). `"worktree"` = git showed
+   * the file changed in the chat's checkout during one of its turns (edits
+   * made via Bash, scripts, formatters, codegen, …).
+   */
+  origin?: "worktree";
 }
 
 /**

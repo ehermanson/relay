@@ -226,6 +226,9 @@ function TreeNodeView({
               >
                 <FileIcon path={file.path} size={15} />
                 <span className="min-w-0 flex-1 truncate text-text">{basename}</span>
+                {file.origin === "worktree" && (
+                  <span className="shrink-0 text-[0.625rem] text-muted/70">detected</span>
+                )}
                 {(file.additions != null || file.deletions != null) && (
                   <DiffStats additions={file.additions} deletions={file.deletions} />
                 )}

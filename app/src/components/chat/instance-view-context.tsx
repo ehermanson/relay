@@ -60,6 +60,7 @@ export type InstanceViewContextValue = {
     hasStats: boolean;
     hasTasksContent: boolean;
     hasFilesContent: boolean;
+    hasReviewContent: boolean;
     tasksCount: number;
     filesCount: number;
     hasPlanContent: boolean;

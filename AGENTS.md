@@ -312,6 +312,15 @@ Spaces group multiple concurrent agent chats within a shared git worktree/branch
 - UI: `useRepoStatus(target, { invalidate: [queryKeys] })` (`app/src/hooks/use-repo-status.ts`) ref-counts one wire subscription per target, re-subscribes per connection, and invalidates the given react-query keys when the fingerprint changes (first snapshot is the baseline). The header badge/diff drawer (`instance-git-status`, `instanceDiff`), `GitStatusBar` (`branches`) and the space diff (`spaceDiff`, also refreshed when the drawer opens) use it; focus refetch remains a fallback. A failed space diff is an error state with retry, never "no changes".
 - **Per-edit diff stats are debounced.** `file_list` is emitted immediately with last-known per-file stats; `InstanceManager.fileStatsDebouncer` (`KeyedTrailingDebouncer`, 800ms quiet / 5s max wait, never overlapping per chat) runs one `enrichDiffStats` pass outside the chat's mutation queue and emits a replayable `file_stats` message, which the UI merges into `currentFiles` without touching processing state. Turn end and hydrate force an immediate pass. The watcher's 2s branch check reads HEAD from the filesystem (`readGitHeadInfo`), never spawning git.
 
+### Changed Files
+
+- A chat's file set (`instance.files`, Files/Review sidecars) has two sources: tool tracking (Claude edit tools, Codex `fileChange`/patch events) and a **per-turn git worktree diff** (`server/core/worktree-changes.ts`) that catches everything else — Bash `sed -i`, scripts, formatters, codegen, `git checkout -- file`, commits.
+- Baseline at dispatch (`dispatchUserMessageLocked`, before the provider gets the message; 1.5s cap, `null` = no attribution that turn; a still-tracked turn keeps its baseline), reconcile at turn end (idle, exit, stop; queue drain reconciles inline and reuses the end snapshot as the next baseline). Snapshot = HEAD + `mtimeMs:size` of every `git status` path (untracked listed individually, >5000 paths → skipped). Attributed: paths new or re-fingerprinted between the snapshots, plus files committed in the turn (HEAD moved). Vanished paths aren't attributed.
+- Shared checkouts: only changes that appeared during this chat's turn count, so pre-existing dirt is never claimed; concurrent turns in one checkout may both claim a file (accepted).
+- Detected files get `origin: "worktree"`, `editCount: 1`, and never replace a tool entry; a later provider `file_list` keeps them. Applied as `file_stats`, **never** `file_list` (that would mark the chat processing), then an immediate stats pass + `invalidateRepoStatus`.
+- Replay: each turn with new detections writes one `session_events` row `files_detected`; hydrate/`getHistory` fold them in (`withDetectedFileChanges`), and `mergeSessionEvents` skips them (never a visible `system_event`).
+- Managed chats only (both providers, same InstanceManager path). External/terminal chats have no observed turn start and keep tool-tracked files.
+
 ### Project Settings
 
 - Per-project settings stored in `projects` table: `custom_instructions`, `default_space_branch`, `default_provider`, `default_model`

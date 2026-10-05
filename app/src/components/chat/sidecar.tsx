@@ -85,6 +85,7 @@ function sameFiles(prev: FileChange[] | null, next: FileChange[] | null): boolea
       a.path !== b.path ||
       a.editCount !== b.editCount ||
       a.type !== b.type ||
+      a.origin !== b.origin ||
       a.additions !== b.additions ||
       a.deletions !== b.deletions
     ) {

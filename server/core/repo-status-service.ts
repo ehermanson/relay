@@ -150,7 +150,11 @@ export function canonicalRepoDir(dir: string): string {
  * untracked file) still changes the fingerprint.
  */
 export async function computeRepoStatus(dir: string): Promise<RepoStatusComputation> {
-  const { paths = [], ...status } = await getStatusSummary(dir, { collectPaths: true });
+  const {
+    paths = [],
+    untrackedPaths: _untracked,
+    ...status
+  } = await getStatusSummary(dir, { collectPaths: true });
   const base = status.head ? "HEAD" : EMPTY_TREE_HASH;
   const { stdout, truncated } = await runGit(["diff", base, "--numstat", "-z"], {
     cwd: dir,

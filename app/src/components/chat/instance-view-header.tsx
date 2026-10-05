@@ -19,7 +19,7 @@ export function InstanceViewHeader() {
       agentsCount={Object.keys(shared.agents).length}
       hasAgentsContent={shared.hasAgentsContent}
       hasPlanContent={shared.hasPlanContent}
-      hasReviewContent={!!shared.instance.reviewInstanceId || shared.hasFilesContent}
+      hasReviewContent={shared.hasReviewContent}
       hasStats={shared.hasStats}
       sidecarContentCount={shared.sidecarContentCount}
       loadingSidecarActions={shared.isLoadingSession}

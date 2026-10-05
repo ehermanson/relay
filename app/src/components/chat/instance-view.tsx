@@ -7,6 +7,7 @@ import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useOutbox } from "@/context/outbox-context";
 import type { OutboxAttachment } from "@/lib/outbox-store";
 import { useInstanceMessages } from "@/hooks/use-instance-messages";
+import { useRepoStatus } from "@/hooks/use-repo-status";
 import { useProviderModels } from "@/hooks/use-provider-models";
 import { useConnectionBanner } from "@/hooks/use-connection-banner";
 import { useDismissedBranchChanges } from "@/hooks/use-dismissed-branch-changes";
@@ -63,7 +64,7 @@ async function fetchUploadedFile(path: string): Promise<File | null> {
 function filesFingerprint(files: FileChange[] | null | undefined): string {
   if (!files?.length) return "";
   return files
-    .map((f) => `${f.path}:${f.type}:${f.editCount}`)
+    .map((f) => `${f.path}:${f.type}:${f.editCount}:${f.origin ?? ""}`)
     .sort()
     .join("\n");
 }
@@ -561,7 +562,14 @@ export function InstanceView({
   const hasTasksContent = tasksCount > 0;
   const hasFilesContent = filesCount > 0;
   const hasPlanContent = !!resolvedInstance?.planContent;
-  const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent;
+  // Review is reachable whenever the chat's checkout has uncommitted changes,
+  // even before any file is attributed. Shares the header's ref-counted
+  // subscription (one wire subscription per target).
+  const repoStatus = useRepoStatus(
+    resolvedInstance?.id ? { kind: "instance", instanceId: resolvedInstance.id } : null,
+  );
+  const worktreeDirty = repoStatus?.status?.dirty === true;
+  const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent || worktreeDirty;
   // Capability gate, applied once at the source: when the provider doesn't
   // advertise `supportsAgentActivity`, the agent state handed to the chat is
   // EMPTY, so cards, notes, anchored substitution, badges, the header toggle
@@ -808,6 +816,7 @@ export function InstanceView({
       hasStats,
       hasTasksContent,
       hasFilesContent,
+      hasReviewContent,
       tasksCount,
       filesCount,
       hasPlanContent,

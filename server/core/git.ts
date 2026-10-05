@@ -544,6 +544,8 @@ export interface GitStatusSummary {
   dirty: boolean;
   /** Changed paths relative to the repo root (only with `collectPaths`). */
   paths?: string[];
+  /** The subset of `paths` that is untracked (only with `collectPaths`). */
+  untrackedPaths?: string[];
 }
 
 /**
@@ -552,10 +554,22 @@ export interface GitStatusSummary {
  */
 export async function getStatusSummary(
   dir: string,
-  opts?: { signal?: AbortSignal; timeoutMs?: number; collectPaths?: boolean },
+  opts?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    collectPaths?: boolean;
+    /** `all` lists files inside new untracked directories individually. */
+    untrackedFiles?: "normal" | "all";
+  },
 ): Promise<GitStatusSummary> {
   const { stdout } = await runGit(
-    ["status", "--porcelain=2", "--branch", "-z", "--untracked-files=normal"],
+    [
+      "status",
+      "--porcelain=2",
+      "--branch",
+      "-z",
+      `--untracked-files=${opts?.untrackedFiles ?? "normal"}`,
+    ],
     {
       ...readOnly(dir, "git status", opts?.timeoutMs ?? GIT_TIMEOUTS.fast * 2),
       signal: opts?.signal,
@@ -576,6 +590,7 @@ export async function getStatusSummary(
   };
   const tokens = stdout.split("\0");
   const paths: string[] | null = opts?.collectPaths ? [] : null;
+  const untrackedPaths: string[] | null = opts?.collectPaths ? [] : null;
   // Porcelain v2: the path follows a fixed number of space-separated fields.
   const pathAfterFields = (entry: string, fields: number): string => {
     let idx = -1;
@@ -607,7 +622,10 @@ export async function getStatusSummary(
     if (paths) {
       const fields = kind === "?" ? 1 : kind === "1" ? 8 : kind === "2" ? 9 : kind === "u" ? 10 : 0;
       const path = fields ? pathAfterFields(entry, fields) : "";
-      if (path) paths.push(path);
+      if (path) {
+        paths.push(path);
+        if (kind === "?") untrackedPaths?.push(path);
+      }
     }
     if (kind === "?") {
       summary.untracked++;
@@ -625,6 +643,7 @@ export async function getStatusSummary(
   }
   summary.dirty = summary.changeCount > 0;
   if (paths) summary.paths = paths;
+  if (untrackedPaths) summary.untrackedPaths = untrackedPaths;
   return summary;
 }
 

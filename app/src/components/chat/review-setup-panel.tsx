@@ -122,6 +122,11 @@ export function ReviewSetupPanel({
               >
                 <FilePenLine size={13} strokeWidth={1.75} className="shrink-0 text-muted" />
                 <span className="flex-1 font-medium text-text">Session files</span>
+                {sessionFilesUnavailable && (
+                  <span className="text-[0.625rem] text-muted">
+                    No files attributed to this chat yet
+                  </span>
+                )}
                 {sourceFileCount > 0 && (
                   <span
                     className={`rounded-md px-1.5 py-px text-[0.625rem] tabular-nums ${

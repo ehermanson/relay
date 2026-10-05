@@ -252,6 +252,12 @@ import {
 import { searchWorkspaceEntries, type WorkspaceEntry } from "#core/workspace-entries.js";
 import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
+import {
+  captureWorktreeSnapshot,
+  detectTurnWorktreeChanges,
+  type DetectedFileChange,
+  type WorktreeSnapshot,
+} from "#core/worktree-changes.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { findClaudeBinary, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { normalizeConfigDir, type DefaultLogins } from "#core/accounts.js";
@@ -394,7 +400,21 @@ interface Instance {
    * after a server restart re-establishes the baseline without a divider.
    */
   lastTurnModel?: string;
+  /**
+   * Worktree snapshot taken when the current turn was dispatched (see
+   * `reconcileTurnWorktree`). `undefined` = no turn being tracked; `null` = a
+   * turn is running but has no git baseline (not a repo, timeout, too many
+   * paths), so it gets no git attribution.
+   */
+  turnWorktreeBaseline?: WorktreeSnapshot | null;
+  /** Tail of the per-chat reconcile chain, so reconciles never overlap. */
+  worktreeReconcile?: Promise<void>;
 }
+
+/** Turn-start snapshot budget: on timeout the turn just gets no git attribution. */
+const TURN_BASELINE_TIMEOUT_MS = 1500;
+/** `session_events` row recording the files one turn changed per git (never a visible event). */
+const FILES_DETECTED_EVENT = "files_detected";
 
 export interface InstanceManagerEvents {
   "instance:output": [instanceId: string, message: OutputMessage];
@@ -2981,6 +3001,7 @@ export class InstanceManager extends EventEmitter {
       this.watchIntervals.delete(id);
     }
     this.staleCounts.delete(id);
+    void this.reconcileTurnWorktree(instance);
 
     this.setStatus(instance, "stopped");
     this.dbSave(instance);
@@ -3730,6 +3751,15 @@ export class InstanceManager extends EventEmitter {
       instanceId: id,
       internal,
     };
+    // Turn-start worktree baseline, before the provider sees the message. A
+    // dispatch into a turn that is still tracked (queued drain, interrupt-to-
+    // send, a request reply) keeps the existing baseline.
+    if (instance.turnWorktreeBaseline === undefined) {
+      instance.turnWorktreeBaseline = await captureWorktreeSnapshot(
+        instance.actualCwd || instance.info.workingDirectory,
+        { timeoutMs: TURN_BASELINE_TIMEOUT_MS },
+      );
+    }
     this.noteManagedProcessActivity(instance);
     // Emit a model-switch divider above this turn if the model changed since the
     // previous user turn. Skipped for internal (system-injected) messages, which
@@ -4278,7 +4308,10 @@ export class InstanceManager extends EventEmitter {
       instance.providerBinding?.transcriptPath ??
       instance.externalState?.jsonlPath;
     if (!transcriptPath || !existsSync(transcriptPath)) {
-      return this.buildHistoryView(instance.history, instance.files);
+      return this.buildHistoryView(
+        instance.history,
+        this.withDetectedFileChanges(id, instance.files),
+      );
     }
 
     const hydrateStartedAt = Date.now();
@@ -4291,10 +4324,13 @@ export class InstanceManager extends EventEmitter {
     );
 
     const history = this.mergeSessionEvents(id, parsed.history);
-    const files = this.withAgentFileChanges(
-      instance,
-      parsed.files,
-      this.foldInstanceAgents(history, instance.process ? instance.agents : undefined),
+    const files = this.withDetectedFileChanges(
+      id,
+      this.withAgentFileChanges(
+        instance,
+        parsed.files,
+        this.foldInstanceAgents(history, instance.process ? instance.agents : undefined),
+      ),
     );
 
     if (instance.hydrated) {
@@ -4595,7 +4631,10 @@ export class InstanceManager extends EventEmitter {
       instance.history = this.mergeSessionEvents(id, parsed.history);
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
       this.rebuildInstanceAgents(instance, instance.history);
-      instance.files = this.withAgentFileChanges(instance, parsed.files, instance.agents);
+      instance.files = this.withDetectedFileChanges(
+        id,
+        this.withAgentFileChanges(instance, parsed.files, instance.agents),
+      );
       instance.fileStateRevision += 1;
 
       const parsedStats = hasSessionStats(parsed.stats) ? parsed.stats : undefined;
@@ -4621,6 +4660,8 @@ export class InstanceManager extends EventEmitter {
           // ignore — transcript may disappear between existsSync/statSync
         }
       }
+    } else {
+      instance.files = this.withDetectedFileChanges(id, instance.files);
     }
 
     instance.hydrated = true;
@@ -4651,6 +4692,8 @@ export class InstanceManager extends EventEmitter {
 
     const merged = [...history];
     for (const row of rows) {
+      // Bookkeeping rows (git-detected files) fold into file state, not history.
+      if (row.event === FILES_DETECTED_EVENT) continue;
       let payload: Record<string, unknown> | undefined;
       if (row.payload_json) {
         try {
@@ -7743,6 +7786,9 @@ export class InstanceManager extends EventEmitter {
         const output = msg as OutputMessage;
         if (output.isWaiting) {
           this.checkWorktreeChanges(instance);
+          // No reconcileTurnWorktree here: a watched (external/terminal) chat
+          // has no observed turn start, so there is no baseline to diff
+          // against — it keeps tool-tracked files only.
           this.onTurnEndGitRefresh(instance);
           this.setStatus(instance, "idle");
           this.doRefreshTitle(instance);
@@ -9138,6 +9184,9 @@ export class InstanceManager extends EventEmitter {
             this.setStatus(live, "processing");
             live.process?.send(retryText);
           } else if (live.pendingMessages?.length) {
+            // The finished turn's end snapshot doubles as the next turn's
+            // baseline, so reconcile inline before dispatching.
+            await this.reconcileTurnWorktreeLocked(id, live);
             // Drain queued user messages as the next turn
             const coalesced = this.coalescePendingMessages(live);
             live.pendingMessages = undefined;
@@ -9154,6 +9203,7 @@ export class InstanceManager extends EventEmitter {
           } else {
             this.checkWorktreeChanges(live);
             this.onTurnEndGitRefresh(live);
+            void this.reconcileTurnWorktree(live);
             this.refreshPendingPlan(live);
             this.setStatus(live, "idle");
             this.doRefreshTitle(live);
@@ -9210,6 +9260,12 @@ export class InstanceManager extends EventEmitter {
               additions: file.additions ?? known?.additions,
               deletions: file.deletions ?? known?.deletions,
             });
+          }
+          // The provider's list only knows tool edits; keep git-detected ones.
+          if (previous) {
+            for (const [path, file] of previous) {
+              if (file.origin === "worktree" && !live.files.has(path)) live.files.set(path, file);
+            }
           }
           message.files = Array.from(live.files.values()).map((file) => ({ ...file }));
           this.fileStatsDebouncer.schedule(id);
@@ -9588,6 +9644,8 @@ export class InstanceManager extends EventEmitter {
         } else {
           this.setStatus(live, "stopped");
         }
+        // A turn cut short by an exit still changed whatever it changed.
+        void this.reconcileTurnWorktree(live);
         // Clear any orphaned queue on non-interrupt exits and broadcast the update
         if (live.pendingMessages?.length) {
           live.pendingMessages = undefined;
@@ -10355,6 +10413,147 @@ export class InstanceManager extends EventEmitter {
       this.fileStatsDebouncer.schedule(instance.info.id, { immediate: true });
     }
     invalidateRepoStatus(instance.actualCwd || instance.info.workingDirectory);
+  }
+
+  /**
+   * Turn end: attribute files the turn changed per git (Bash edits, scripts,
+   * formatters, commits — anything the edit-tool tracking can't see). Diffs
+   * the dispatch-time baseline against a fresh snapshot outside the mutation
+   * queue, then applies inside it. Chained per chat so reconciles never
+   * overlap. Managed chats only: external chats never get a baseline.
+   */
+  private reconcileTurnWorktree(instance: Instance): Promise<void> {
+    const baseline = instance.turnWorktreeBaseline;
+    instance.turnWorktreeBaseline = undefined;
+    if (!baseline || this.shuttingDown) return Promise.resolve();
+    const id = instance.info.id;
+    const dir = instance.actualCwd || instance.info.workingDirectory;
+    const run = (instance.worktreeReconcile ?? Promise.resolve())
+      .then(async () => {
+        if (this.shuttingDown) return;
+        const after = await captureWorktreeSnapshot(dir);
+        if (!after || this.shuttingDown) return;
+        const detected = await detectTurnWorktreeChanges(dir, baseline, after);
+        if (detected.length === 0) return;
+        await this.enqueueInstanceMutation(id, (live) => {
+          if (this.shuttingDown) return;
+          this.applyDetectedFileChanges(id, live, detected);
+        });
+      })
+      .catch((err) => this.logQueuedMutationError("worktree reconcile", id, err))
+      .finally(() => {
+        if (instance.worktreeReconcile === run) instance.worktreeReconcile = undefined;
+      });
+    instance.worktreeReconcile = run;
+    return run;
+  }
+
+  /**
+   * Queue-drain variant, run inside the mutation queue: the finished turn's
+   * end snapshot becomes the next turn's baseline (one git status, not two).
+   */
+  private async reconcileTurnWorktreeLocked(id: string, live: Instance): Promise<void> {
+    const baseline = live.turnWorktreeBaseline;
+    live.turnWorktreeBaseline = undefined;
+    if (!baseline || this.shuttingDown) return;
+    const dir = live.actualCwd || live.info.workingDirectory;
+    const after = await captureWorktreeSnapshot(dir, { timeoutMs: TURN_BASELINE_TIMEOUT_MS });
+    if (after) {
+      const detected = await detectTurnWorktreeChanges(dir, baseline, after);
+      if (detected.length > 0 && !this.shuttingDown) {
+        this.applyDetectedFileChanges(id, live, detected);
+      }
+    }
+    // null → the next dispatch tries its own baseline.
+    live.turnWorktreeBaseline = after ?? undefined;
+  }
+
+  /**
+   * Test helper: resolves once `id`'s mutation queue (which runs the inline
+   * queue-drain reconcile) and any detached worktree reconcile have settled.
+   */
+  async worktreeReconcileIdle(id: string): Promise<void> {
+    for (;;) {
+      const chain = this.instanceMutationChains.get(id);
+      const pending = this.instances.get(id)?.worktreeReconcile;
+      if (!chain && !pending) return;
+      await chain;
+      await pending;
+    }
+  }
+
+  /**
+   * Add git-detected files the chat doesn't already list (a tool entry always
+   * wins), as `file_stats` — never a `file_list` activity, which would mark the
+   * chat processing — and persist them for replay.
+   */
+  private applyDetectedFileChanges(
+    id: string,
+    live: Instance,
+    detected: DetectedFileChange[],
+  ): void {
+    const added: FileChange[] = [];
+    const next = new Map(live.files);
+    for (const { path, type } of detected) {
+      if (next.has(path)) continue;
+      const file: FileChange = { path, editCount: 1, type, origin: "worktree" };
+      next.set(path, file);
+      added.push({ ...file });
+    }
+    if (added.length === 0) return;
+    live.files = next;
+    live.fileStateRevision += 1;
+    try {
+      this.db.insertSessionEvent(
+        id,
+        Date.now(),
+        FILES_DETECTED_EVENT,
+        JSON.stringify({ files: added }),
+      );
+    } catch (err) {
+      this.baseConfig.logger.warn(`[InstanceManager] Failed to persist detected files: ${err}`);
+    }
+    this.emit("instance:file_stats", id, {
+      type: "file_stats",
+      files: Array.from(next.values()).map((file) => ({ ...file })),
+    } satisfies FileStatsMessage);
+    this.fileStatsDebouncer.schedule(id, { immediate: true });
+    invalidateRepoStatus(live.actualCwd || live.info.workingDirectory);
+  }
+
+  /** Replay: fold persisted `files_detected` rows into a chat's file set (tool entries win). */
+  private withDetectedFileChanges(
+    id: string,
+    files: Map<string, FileChange> | undefined,
+  ): Map<string, FileChange> | undefined {
+    let rows: SessionEventRow[];
+    try {
+      rows = this.db.getSessionEvents(id);
+    } catch {
+      return files;
+    }
+    let result = files;
+    for (const row of rows) {
+      if (row.event !== FILES_DETECTED_EVENT || !row.payload_json) continue;
+      let list: unknown;
+      try {
+        list = (JSON.parse(row.payload_json) as { files?: unknown }).files;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(list)) continue;
+      for (const entry of list as Array<Partial<FileChange>>) {
+        if (typeof entry?.path !== "string" || result?.has(entry.path)) continue;
+        if (result === files) result = new Map(files);
+        result!.set(entry.path, {
+          path: entry.path,
+          editCount: typeof entry.editCount === "number" ? entry.editCount : 1,
+          type: entry.type === "added" ? "added" : "edited",
+          origin: "worktree",
+        });
+      }
+    }
+    return result;
   }
 
   /** Refresh `hasChanges` for a worktree chat in the background; emits status on change. */
