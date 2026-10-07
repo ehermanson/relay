@@ -1882,6 +1882,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
   /** Map the SDK's background-task lifecycle events onto agent_update. */
   private handleTaskEvent(subtype: string, msg: Record<string, unknown>): void {
+    // SDK >= 0.3.247: ambient tasks are routine housekeeping that hosts should
+    // suppress from user-facing activity indicators (task panel, sidecar).
+    if (msg.ambient === true) return;
     const taskId = typeof msg.task_id === "string" ? msg.task_id : undefined;
     const toolUseId =
       typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
