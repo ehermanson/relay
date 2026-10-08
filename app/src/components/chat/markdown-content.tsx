@@ -9,6 +9,7 @@ import { FileIcon } from "@/components/ui/file-icon";
 import { TASK_ID_PATTERN_SOURCE } from "@/lib/task-links";
 import { isBareLink, matchLinkSource, type LinkSource } from "@/lib/link-sources";
 import { videoContentType } from "@shared/video-attachments";
+import { localImageSrc } from "@/lib/local-file-url";
 
 interface MarkdownContentProps {
   text: string;
@@ -565,6 +566,15 @@ const MD_COMPONENTS = {
   table: TableBlock,
 };
 
+function transformUrl(url: string, key: string): string {
+  if (url.startsWith("relay-")) return url;
+  if (key === "src") {
+    const local = localImageSrc(url);
+    if (local) return local;
+  }
+  return defaultUrlTransform(url);
+}
+
 export const MarkdownContent = memo(function MarkdownContent({ text }: MarkdownContentProps) {
   const processed = useMemo(() => preprocessAttachments(text), [text]);
 
@@ -573,7 +583,7 @@ export const MarkdownContent = memo(function MarkdownContent({ text }: MarkdownC
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         components={MD_COMPONENTS}
-        urlTransform={(url) => (url.startsWith("relay-") ? url : defaultUrlTransform(url))}
+        urlTransform={transformUrl}
       >
         {processed}
       </ReactMarkdown>
