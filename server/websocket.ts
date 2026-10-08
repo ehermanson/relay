@@ -35,6 +35,7 @@ import type {
   AgentUpdateMessage,
   UserMessage,
   QueuedRemovedMessage,
+  QueuedReorderedMessage,
   FileStatsMessage,
   RepoStatusTarget,
   ProviderGlobalState,
@@ -129,6 +130,7 @@ export function createWebSocketServer(
     | AgentUpdateMessage
     | UserMessage
     | QueuedRemovedMessage
+    | QueuedReorderedMessage
     | FileStatsMessage;
   type ReplayEntry = { sequence: number; message: ReplayableServerMessage };
   type ReplayBuffer = { nextSequence: number; events: ReplayEntry[] };
@@ -383,6 +385,13 @@ export function createWebSocketServer(
   instanceManager.on(
     "instance:queued_removed",
     (instanceId: string, message: QueuedRemovedMessage) => {
+      sendToSubscribers(instanceId, appendReplayEvent(instanceId, message));
+    },
+  );
+
+  instanceManager.on(
+    "instance:queued_reordered",
+    (instanceId: string, message: QueuedReorderedMessage) => {
       sendToSubscribers(instanceId, appendReplayEvent(instanceId, message));
     },
   );
@@ -817,7 +826,10 @@ export function createWebSocketServer(
 
           case "instance_interrupt_and_send": {
             try {
-              await instanceManager.interruptAndSend(message.instanceId);
+              await instanceManager.interruptAndSend(
+                message.instanceId,
+                typeof message.queuedId === "string" ? message.queuedId : undefined,
+              );
             } catch (err) {
               sendMessage(ws, {
                 type: "error",
@@ -835,6 +847,24 @@ export function createWebSocketServer(
               sendMessage(ws, {
                 type: "error",
                 message: err instanceof Error ? err.message : "Failed to remove queued message",
+                instanceId: message.instanceId,
+              });
+            }
+            break;
+          }
+
+          case "reorder_queued_messages": {
+            try {
+              const queuedIds = Array.isArray(message.queuedIds)
+                ? message.queuedIds.filter(
+                    (queuedId): queuedId is string => typeof queuedId === "string",
+                  )
+                : [];
+              await instanceManager.reorderQueuedMessages(message.instanceId, queuedIds);
+            } catch (err) {
+              sendMessage(ws, {
+                type: "error",
+                message: err instanceof Error ? err.message : "Failed to reorder queued messages",
                 instanceId: message.instanceId,
               });
             }

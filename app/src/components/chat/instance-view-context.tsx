@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
 import type { MouseEvent, ReactNode, RefObject } from "react";
 import type { ChatItem, LiveActivity } from "@/hooks/use-instance-messages";
-import type { QueuedRestore, UserRow } from "@/lib/chat-types";
+import type { QueuedRestore, UserChatItem } from "@/lib/chat-types";
 import type { OutboxAttachment } from "@/lib/outbox-store";
 import type { SidecarTab } from "@/stores/sidecar-store";
 import type {
@@ -117,9 +117,11 @@ export type InstanceViewContextValue = {
     handleAnswerUserInput: (requestId: string, answers: Record<string, UserInputAnswer>) => void;
     handleTakeover: () => void;
     handleCancel: () => void;
-    handleInterruptAndSend: () => void;
-    handleEditQueued: (row: UserRow) => void;
+    /** Interrupt the turn and send this queued message now (the rest stay queued). */
+    handleInterruptAndSend: (queuedId: string) => void;
+    handleEditQueued: (row: UserChatItem) => void;
     handleRemoveQueued: (queuedId: string) => void;
+    handleReorderQueued: (queuedIds: string[]) => void;
     /** Called by the composer after it has applied a queuedRestore. */
     clearQueuedRestore: () => void;
     handleSwitchProvider: (

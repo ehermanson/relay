@@ -372,6 +372,8 @@ interface Instance {
   }>;
   /** Set when interrupt was triggered specifically to deliver queued messages */
   interruptedToSend?: boolean;
+  /** "Send now" on one queued message: the next drain delivers only this one. */
+  sendNowQueuedId?: string;
   /** Last plan file path detected from Edit/Write activity while in plan mode */
   planFilePath?: string;
   /** Path to the git worktree (if this instance runs in isolation) */
@@ -429,6 +431,10 @@ export interface InstanceManagerEvents {
   "instance:queued_removed": [
     instanceId: string,
     message: import("#core/types.js").QueuedRemovedMessage,
+  ];
+  "instance:queued_reordered": [
+    instanceId: string,
+    message: import("#core/types.js").QueuedReorderedMessage,
   ];
   /** Sparse upsert of a delegated agent (replayable, broadcast like activity). */
   "instance:agent_update": [instanceId: string, message: AgentUpdateMessage];
@@ -3668,6 +3674,7 @@ export class InstanceManager extends EventEmitter {
     images?: string[],
     internal?: boolean,
     attachments?: string[],
+    dequeuedIds?: string[],
   ): Promise<InstanceInfo | undefined> {
     this.hydrateInstance(id, instance);
     this.assertSpaceWritable(instance);
@@ -3750,6 +3757,7 @@ export class InstanceManager extends EventEmitter {
       attachments,
       instanceId: id,
       internal,
+      ...(dequeuedIds?.length ? { dequeuedIds } : {}),
     };
     // Turn-start worktree baseline, before the provider sees the message. A
     // dispatch into a turn that is still tracked (queued drain, interrupt-to-
@@ -4008,11 +4016,17 @@ export class InstanceManager extends EventEmitter {
    * The queued messages will be drained by the normal output/exit handler
    * once the process responds to the interrupt.
    */
-  async interruptAndSend(id: string): Promise<void> {
+  async interruptAndSend(id: string, queuedId?: string): Promise<void> {
     await this.enqueueInstanceMutation(id, (instance) => {
       if (instance.info.external) throw new Error("Cannot interrupt external instances");
       if (!instance.process) throw new Error("Instance is not running");
       if (!instance.pendingMessages?.length) throw new Error("No queued messages to send");
+      if (queuedId && !instance.pendingMessages.some((m) => m.id === queuedId)) {
+        throw new Error("Message is no longer queued");
+      }
+      // With a queuedId only that message is delivered; the rest stay queued
+      // and drain after its turn as usual.
+      instance.sendNowQueuedId = queuedId;
       // Use interruptedToSend so the exit handler knows to drain the queue
       // (distinct from cancelledByUser which is a plain cancel)
       instance.interruptedToSend = true;
@@ -4021,16 +4035,39 @@ export class InstanceManager extends EventEmitter {
   }
 
   /**
-   * Coalesce all pending queued messages into a single message for dispatch.
+   * Take the next queued delivery off the queue: just the "Send now" message
+   * when one was picked, otherwise the whole queue coalesced into one message.
+   * Updates the queue count; the caller dispatches the result.
+   */
+  private takeQueuedForDispatch(instance: Instance): {
+    text: string;
+    images?: string[];
+    attachments?: string[];
+    internal?: boolean;
+    dequeuedIds: string[];
+  } {
+    const queue = instance.pendingMessages ?? [];
+    const pickedIndex = instance.sendNowQueuedId
+      ? queue.findIndex((m) => m.id === instance.sendNowQueuedId)
+      : -1;
+    instance.sendNowQueuedId = undefined;
+    const taken = pickedIndex === -1 ? queue : queue.splice(pickedIndex, 1);
+    const coalesced = this.coalescePendingMessages(taken);
+    instance.pendingMessages = pickedIndex === -1 || queue.length === 0 ? undefined : queue;
+    instance.info.queuedMessageCount = instance.pendingMessages?.length || undefined;
+    return { ...coalesced, dequeuedIds: taken.map((m) => m.id) };
+  }
+
+  /**
+   * Coalesce queued messages into a single message for dispatch.
    * Combines text with double-newline separators and merges image arrays.
    */
-  private coalescePendingMessages(instance: Instance): {
+  private coalescePendingMessages(msgs: NonNullable<Instance["pendingMessages"]>): {
     text: string;
     images?: string[];
     attachments?: string[];
     internal?: boolean;
   } {
-    const msgs = instance.pendingMessages ?? [];
     const texts = msgs.map((m) => m.text).filter(Boolean);
     const images = msgs.flatMap((m) => m.images ?? []);
     const attachments = msgs.flatMap((m) => m.attachments ?? []);
@@ -4593,6 +4630,34 @@ export class InstanceManager extends EventEmitter {
         queuedId,
       });
       this.emitInstanceStatus(instance);
+    });
+  }
+
+  /**
+   * Reorder the queued (not yet dispatched) messages. Unknown ids are ignored
+   * and queued ids the caller didn't list (queued after its snapshot) keep
+   * their relative order at the end, so a stale client can't drop messages.
+   */
+  async reorderQueuedMessages(id: string, queuedIds: string[]): Promise<void> {
+    await this.enqueueInstanceMutation(id, (instance) => {
+      const queue = instance.pendingMessages;
+      if (!queue?.length) throw new Error("No queued messages to reorder");
+      const rank = new Map(queuedIds.map((queuedId, index) => [queuedId, index]));
+      const next = queue
+        .map((message, index) => ({ message, index }))
+        .sort((a, b) => {
+          const ra = rank.get(a.message.id) ?? queuedIds.length + a.index;
+          const rb = rank.get(b.message.id) ?? queuedIds.length + b.index;
+          return ra - rb;
+        })
+        .map(({ message }) => message);
+      if (next.every((message, index) => message === queue[index])) return;
+      instance.pendingMessages = next;
+      this.emit("instance:queued_reordered", id, {
+        type: "queued_reordered",
+        instanceId: id,
+        queuedIds: next.map((message) => message.id),
+      });
     });
   }
 
@@ -9188,17 +9253,16 @@ export class InstanceManager extends EventEmitter {
             // baseline, so reconcile inline before dispatching.
             await this.reconcileTurnWorktreeLocked(id, live);
             // Drain queued user messages as the next turn
-            const coalesced = this.coalescePendingMessages(live);
-            live.pendingMessages = undefined;
-            live.info.queuedMessageCount = undefined;
+            const next = this.takeQueuedForDispatch(live);
             this.emitInstanceStatus(live);
             await this.dispatchUserMessageLocked(
               id,
               live,
-              coalesced.text,
-              coalesced.images,
-              coalesced.internal,
-              coalesced.attachments,
+              next.text,
+              next.images,
+              next.internal,
+              next.attachments,
+              next.dequeuedIds,
             );
           } else {
             this.checkWorktreeChanges(live);
@@ -9621,19 +9685,18 @@ export class InstanceManager extends EventEmitter {
         // If user interrupted specifically to deliver queued messages, dispatch them now
         // (this restarts the process via dispatchUserMessageLocked)
         if (wasInterruptedToSend && live.pendingMessages?.length) {
-          const coalesced = this.coalescePendingMessages(live);
-          live.pendingMessages = undefined;
-          live.info.queuedMessageCount = undefined;
+          const next = this.takeQueuedForDispatch(live);
           this.setStatus(live, "stopped");
           this.emitInstanceStatus(live);
           this.dbSave(live);
           await this.dispatchUserMessageLocked(
             id,
             live,
-            coalesced.text,
-            coalesced.images,
-            coalesced.internal,
-            coalesced.attachments,
+            next.text,
+            next.images,
+            next.internal,
+            next.attachments,
+            next.dequeuedIds,
           );
           return;
         }
@@ -9647,6 +9710,7 @@ export class InstanceManager extends EventEmitter {
         // A turn cut short by an exit still changed whatever it changed.
         void this.reconcileTurnWorktree(live);
         // Clear any orphaned queue on non-interrupt exits and broadcast the update
+        live.sendNowQueuedId = undefined;
         if (live.pendingMessages?.length) {
           live.pendingMessages = undefined;
           live.info.queuedMessageCount = undefined;

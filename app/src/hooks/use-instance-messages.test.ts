@@ -12,6 +12,7 @@ import type {
   InstanceStatusMessage,
   OutputMessage,
   QueuedRemovedMessage,
+  QueuedReorderedMessage,
   UserMessage,
 } from "@shared/types";
 
@@ -249,6 +250,64 @@ describe("useInstanceMessages message queue", () => {
     expect(userItems[0]).toEqual(
       expect.objectContaining({ queued: true, queuedId: "q2", text: "second queued" }),
     );
+  });
+
+  it("drops only the delivered placeholders when the user message names them", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-1"));
+
+    act(() => {
+      for (const id of ["q1", "q2", "q3"]) {
+        result.current.handleMessage("inst-1", {
+          type: "user",
+          instanceId: "inst-1",
+          text: id,
+          queued: true,
+          queuedId: id,
+        } as UserMessage);
+      }
+      result.current.handleMessage("inst-1", {
+        type: "user",
+        instanceId: "inst-1",
+        text: "q2",
+        dequeuedIds: ["q2"],
+      } as UserMessage);
+    });
+
+    expect(
+      result.current.items.map((i) => (i.kind === "user" ? (i.queuedId ?? "sent") : undefined)),
+    ).toEqual(["q1", "q3", "sent"]);
+  });
+
+  it("reorders queued placeholders on queued_reordered", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-1"));
+
+    act(() => {
+      for (const id of ["q1", "q2", "q3"]) {
+        result.current.handleMessage("inst-1", {
+          type: "user",
+          instanceId: "inst-1",
+          text: id,
+          queued: true,
+          queuedId: id,
+        } as UserMessage);
+      }
+    });
+
+    act(() => {
+      result.current.handleMessage("inst-1", {
+        type: "queued_reordered",
+        instanceId: "inst-1",
+        queuedIds: ["q3", "q1"],
+      } as QueuedReorderedMessage);
+    });
+
+    expect(result.current.items.map((i) => (i.kind === "user" ? i.queuedId : undefined))).toEqual([
+      "q3",
+      "q1",
+      "q2",
+    ]);
   });
 
   it("carries queued metadata (id, source text, attachments) on queued items", () => {

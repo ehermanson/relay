@@ -882,12 +882,21 @@ export interface InstanceCancelPayload {
 export interface InstanceInterruptAndSendPayload {
   type: "instance_interrupt_and_send";
   instanceId: string;
+  /** Deliver only this queued message (the rest stay queued). Absent = the whole queue. */
+  queuedId?: string;
 }
 
 export interface RemoveQueuedMessagePayload {
   type: "remove_queued_message";
   instanceId: string;
   queuedId: string;
+}
+
+export interface ReorderQueuedMessagesPayload {
+  type: "reorder_queued_messages";
+  instanceId: string;
+  /** Desired order of queued ids. Ids omitted (queued since) keep their relative order at the end. */
+  queuedIds: string[];
 }
 
 export interface InstanceTakeoverPayload {
@@ -1040,6 +1049,7 @@ export type ClientMessage =
   | InstanceCancelPayload
   | InstanceInterruptAndSendPayload
   | RemoveQueuedMessagePayload
+  | ReorderQueuedMessagesPayload
   | InstanceTakeoverPayload
   | RespondToRequestPayload
   | RenameInstancePayload
@@ -1131,6 +1141,11 @@ export interface UserMessage {
   queuedId?: string;
   /** Raw text as typed (no attachment markers) — used to restore into the composer on edit. */
   queuedSourceText?: string;
+  /**
+   * Queued ids this dispatch delivered — the client drops exactly those
+   * placeholders. Absent on older servers: treat as "the whole queue".
+   */
+  dequeuedIds?: string[];
 }
 
 /** A queued (not yet dispatched) user message was removed before delivery. */
@@ -1138,6 +1153,14 @@ export interface QueuedRemovedMessage {
   type: "queued_removed";
   instanceId: string;
   queuedId: string;
+  eventSequence?: number;
+}
+
+/** The queued (not yet dispatched) messages were reordered; `queuedIds` is the full new order. */
+export interface QueuedReorderedMessage {
+  type: "queued_reordered";
+  instanceId: string;
+  queuedIds: string[];
   eventSequence?: number;
 }
 
@@ -1634,6 +1657,7 @@ export type ServerMessage =
   | OutputMessage
   | UserMessage
   | QueuedRemovedMessage
+  | QueuedReorderedMessage
   | ExitMessage
   | ErrorMessage
   | NotificationMessage

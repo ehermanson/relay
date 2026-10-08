@@ -18,7 +18,7 @@ import { UserMessage } from "@/components/chat/user-message";
 import { buildRows, estimateRowHeight } from "@/components/chat/build-rows";
 import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { ChatItem, LiveActivity, RenderRow, UserRow } from "@/lib/chat-types";
+import type { ChatItem, LiveActivity, RenderRow } from "@/lib/chat-types";
 import type { AgentInfo, ProviderKind, ProviderRequest, UserInputAnswer } from "@shared/types";
 import { buildAgentAnchorIndex, findRequestAgentId } from "@/lib/agents";
 import { computeBubbleShrinkwrap, onFontReady } from "@/lib/pretext";
@@ -59,11 +59,6 @@ interface MessageListProps {
   pendingInteraction?: boolean;
   planChildId?: string;
   planChildName?: string;
-  onInterruptAndSend?: () => void;
-  /** Pull a queued message back into the composer for editing. */
-  onEditQueued?: (row: UserRow) => void;
-  /** Remove a queued message without sending it. */
-  onRemoveQueued?: (queuedId: string) => void;
   /** Delegated agents (Relay key → info) for in-chat cards. */
   agents?: Record<string, AgentInfo>;
   /** Nested transcripts keyed by Relay agent key. */
@@ -94,9 +89,6 @@ export function MessageList({
   pendingInteraction,
   planChildId,
   planChildName,
-  onInterruptAndSend,
-  onEditQueued,
-  onRemoveQueued,
   agents = EMPTY_AGENTS,
   agentItems = EMPTY_AGENT_ITEMS,
   instanceId,
@@ -159,22 +151,20 @@ export function MessageList({
   useEffect(() => onFontReady(() => setFontTick((t) => t + 1)), []);
 
   // ── Build render rows ────────────────────────────────────────────
-  // Queued user messages are rendered in a dedicated section at the bottom,
-  // not interleaved with the live stream — otherwise they get buried as the
-  // agent emits assistant text and tool calls.
+  // Queued user messages live in the tray docked above the composer
+  // (QueuedMessagesTray), not in the transcript.
   const allRows = useMemo(() => buildRows(items), [items]);
-  const { rows, queuedRows } = useMemo(() => {
+  const rows = useMemo(() => {
     const main: RenderRow[] = [];
-    const queued: UserRow[] = [];
     for (const r of allRows) {
-      if (r.kind === "user" && r.queued) queued.push(r);
+      if (r.kind === "user" && r.queued) continue;
       // Inserted cards whose agent isn't in `agents` (the provider doesn't
       // support agent activity, so the view resolved it to empty) render
       // nothing — drop the row so it doesn't leave an empty gap.
       else if (r.kind === "agent-card" && !agents[r.agentId]) continue;
       else main.push(r);
     }
-    return { rows: main, queuedRows: queued };
+    return main;
   }, [allRows, agents]);
   const searchTargetIndex = useMemo(() => {
     if (!searchFocus?.query) return -1;
@@ -486,16 +476,6 @@ export function MessageList({
                 : computeBubbleShrinkwrap(row.text, containerWidthRef.current)
             }
             renderMode={row.renderMode}
-            queued={row.queued}
-            onInterruptAndSend={row.queued ? onInterruptAndSend : undefined}
-            onEditQueued={
-              row.queued && row.queuedId && onEditQueued ? () => onEditQueued(row) : undefined
-            }
-            onRemoveQueued={
-              row.queued && row.queuedId && onRemoveQueued
-                ? () => onRemoveQueued(row.queuedId!)
-                : undefined
-            }
           />
         );
       case "assistant": {
@@ -566,7 +546,7 @@ export function MessageList({
   const virtualRows = rowVirtualizer.getVirtualItems();
   const nonVirtualizedRows = rows.slice(virtualizedRowCount);
   const hasVirtual = virtualizedRowCount > 0;
-  const hasNonVirtual = nonVirtualizedRows.length > 0 || showThinking || queuedRows.length > 0;
+  const hasNonVirtual = nonVirtualizedRows.length > 0 || showThinking;
 
   return (
     <AgentCardsProvider value={agentCardsValue}>
@@ -638,23 +618,6 @@ export function MessageList({
                         instanceStatus={instanceStatus}
                         isCompacting={isCompactingTurn}
                       />
-                    )}
-                    {queuedRows.length > 0 && (
-                      <div className="mt-2 flex flex-col gap-3 border-t border-dashed border-border/30 pt-3">
-                        <div className="px-1 text-[0.625rem] uppercase tracking-wider text-muted/50">
-                          Queued
-                          {queuedRows.length > 1 ? ` · ${queuedRows.length}` : ""}
-                        </div>
-                        {queuedRows.map((row) => (
-                          <div
-                            key={row.id}
-                            data-row-id={row.id}
-                            className="flex animate-fade-in flex-col"
-                          >
-                            {renderRow(row)}
-                          </div>
-                        ))}
-                      </div>
                     )}
                   </div>
                 )}

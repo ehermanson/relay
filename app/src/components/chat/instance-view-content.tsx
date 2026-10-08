@@ -9,6 +9,8 @@ import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { InputArea } from "@/components/chat/input-area";
 import type { OutboxAttachment } from "@/lib/outbox-store";
 import { MessageList } from "@/components/chat/message-list";
+import { QueuedMessagesTray, isQueuedChatItem } from "@/components/chat/queued-messages-tray";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   MessageRelayProvider,
   type InlineReplyFragment,
@@ -418,6 +420,9 @@ export function InstanceViewContent() {
     [instanceId, inlineReplyFragments, handleSendWithSpinOff],
   );
 
+  const isMobile = useMediaQuery("(max-width: 768px)");
+  const queuedItems = useMemo(() => shared.items.filter(isQueuedChatItem), [shared.items]);
+
   const handleQueueWithContext = useCallback(
     async (text: string, attachments: OutboxAttachment[]) => {
       const attributed = spinOffMeta
@@ -727,9 +732,6 @@ export function InstanceViewContent() {
               pendingInteraction={!!shared.instance.pendingPlan || !!shared.pendingUserInput}
               planChildId={shared.planChild?.id}
               planChildName={shared.planChild?.name}
-              onInterruptAndSend={actions.handleInterruptAndSend}
-              onEditQueued={actions.handleEditQueued}
-              onRemoveQueued={actions.handleRemoveQueued}
               agents={shared.agents}
               agentItems={shared.agentItems}
               instanceId={shared.id}
@@ -855,6 +857,16 @@ export function InstanceViewContent() {
               onQueuedRestoreApplied={actions.clearQueuedRestore}
               onDraftChange={setComposerHasContent}
               mode={isReviewMode ? "review" : "default"}
+              aboveComposer={
+                <QueuedMessagesTray
+                  items={queuedItems}
+                  isMobile={isMobile}
+                  onSendNow={shared.isActive ? actions.handleInterruptAndSend : undefined}
+                  onEdit={actions.handleEditQueued}
+                  onRemove={actions.handleRemoveQueued}
+                  onReorder={actions.handleReorderQueued}
+                />
+              }
               topSlot={
                 <>
                   {shared.instance.review ? (

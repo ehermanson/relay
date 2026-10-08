@@ -3,13 +3,9 @@ import {
   TerminalSquare,
   ChevronDown,
   ChevronRight,
-  Clock,
   FileText,
   Forward,
   ArrowRightFromLine,
-  Pencil,
-  X,
-  Zap,
   Slash,
   MessageSquareReply,
 } from "lucide-react";
@@ -22,59 +18,7 @@ interface UserMessageProps {
   text: string;
   timestamp?: number;
   shrinkwrapWidth?: number;
-  queued?: boolean;
   renderMode?: LargeUserRenderMode;
-  onInterruptAndSend?: () => void;
-  /** Pull this queued message back into the composer for editing. */
-  onEditQueued?: () => void;
-  /** Remove this queued message without sending it. */
-  onRemoveQueued?: () => void;
-}
-
-/** Action chips shown under a queued (not yet dispatched) message bubble. */
-function QueuedActions({
-  onEditQueued,
-  onRemoveQueued,
-  onInterruptAndSend,
-}: Pick<UserMessageProps, "onEditQueued" | "onRemoveQueued" | "onInterruptAndSend">) {
-  return (
-    <>
-      <span className="flex items-center gap-1 text-[0.625rem] text-muted/60">
-        <Clock size={10} />
-        queued
-      </span>
-      {onEditQueued && (
-        <button
-          type="button"
-          onClick={onEditQueued}
-          className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium max-[768px]:min-h-10 max-[768px]:px-2.5 text-muted transition-colors hover:bg-hover-highlight hover:text-text"
-        >
-          <Pencil size={10} />
-          Edit
-        </button>
-      )}
-      {onRemoveQueued && (
-        <button
-          type="button"
-          onClick={onRemoveQueued}
-          className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium max-[768px]:min-h-10 max-[768px]:px-2.5 text-muted transition-colors hover:bg-error-dim hover:text-error"
-        >
-          <X size={10} />
-          Remove
-        </button>
-      )}
-      {onInterruptAndSend && (
-        <button
-          type="button"
-          onClick={onInterruptAndSend}
-          className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium max-[768px]:min-h-10 max-[768px]:px-2.5 text-warning transition-colors hover:bg-warning/10"
-        >
-          <Zap size={10} />
-          Send now
-        </button>
-      )}
-    </>
-  );
 }
 
 // ── Extractors ───────────────────────────────────────────────────────
@@ -296,16 +240,7 @@ function CollapsedJsonMessage({
   );
 }
 
-export function UserMessage({
-  text,
-  timestamp,
-  shrinkwrapWidth,
-  queued,
-  renderMode,
-  onInterruptAndSend,
-  onEditQueued,
-  onRemoveQueued,
-}: UserMessageProps) {
+export function UserMessage({ text, timestamp, shrinkwrapWidth, renderMode }: UserMessageProps) {
   const effectiveRenderMode = useMemo(() => {
     if (renderMode && renderMode.kind !== "markdown") return renderMode;
     if (text.length < 1_500) return renderMode;
@@ -314,9 +249,7 @@ export function UserMessage({
 
   if (effectiveRenderMode?.kind === "json" || effectiveRenderMode?.kind === "text") {
     return (
-      <div
-        className={`flex max-w-[80%] flex-col items-end gap-1.5 self-end ${queued ? "opacity-60" : ""}`}
-      >
+      <div className={`flex max-w-[80%] flex-col items-end gap-1.5 self-end`}>
         <div className="w-full rounded-2xl rounded-br-sm border border-border/50 bg-user-bg p-2 text-user-text">
           <CollapsedJsonMessage
             text={effectiveRenderMode.formattedText ?? text}
@@ -328,13 +261,6 @@ export function UserMessage({
           />
         </div>
         <div className="flex items-center gap-1.5 px-1">
-          {queued && (
-            <QueuedActions
-              onEditQueued={onEditQueued}
-              onRemoveQueued={onRemoveQueued}
-              onInterruptAndSend={onInterruptAndSend}
-            />
-          )}
           {timestamp && (
             <span className="text-[0.625rem] text-muted/45">{formatTimestamp(timestamp)}</span>
           )}
@@ -390,9 +316,7 @@ export function UserMessage({
   }
 
   return (
-    <div
-      className={`flex max-w-[80%] flex-col items-end gap-1.5 self-end ${queued ? "opacity-60" : ""}`}
-    >
+    <div className={`flex max-w-[80%] flex-col items-end gap-1.5 self-end`}>
       {hasTerminal && (
         <div className="flex w-full flex-col gap-1.5">
           {terminalBlocks.map((block, i) => (
@@ -409,11 +333,7 @@ export function UserMessage({
       )}
       {hasInlineReplies ? (
         <div
-          className={`rounded-2xl rounded-br-sm border p-2 text-sm leading-relaxed max-[768px]:text-[16px] ${
-            queued
-              ? "border-border/30 border-dashed bg-user-bg/60 text-user-text/70"
-              : "border-border/50 bg-user-bg text-user-text"
-          }`}
+          className={`rounded-2xl rounded-br-sm border p-2 text-sm leading-relaxed max-[768px]:text-[16px] ${"border-border/50 bg-user-bg text-user-text"}`}
           style={shrinkwrapWidth ? { maxWidth: shrinkwrapWidth } : undefined}
         >
           <div className="flex flex-col gap-2.5">
@@ -434,11 +354,7 @@ export function UserMessage({
         <SlashCommandChip command={slashParsed.command} />
       ) : hasText && slashParsed?.rest ? (
         <div
-          className={`rounded-2xl rounded-br-sm border p-2 text-sm leading-relaxed max-[768px]:text-[16px] ${
-            queued
-              ? "border-border/30 border-dashed bg-user-bg/60 text-user-text/70"
-              : "border-border/50 bg-user-bg text-user-text"
-          }`}
+          className={`rounded-2xl rounded-br-sm border p-2 text-sm leading-relaxed max-[768px]:text-[16px] ${"border-border/50 bg-user-bg text-user-text"}`}
           style={shrinkwrapWidth ? { maxWidth: shrinkwrapWidth } : undefined}
         >
           <div className="mb-1.5">
@@ -451,9 +367,7 @@ export function UserMessage({
           className={`rounded-2xl rounded-br-sm border p-2 text-sm leading-relaxed max-[768px]:text-[16px] ${
             relaySource
               ? "border-accent/30 bg-accent/5 text-user-text"
-              : queued
-                ? "border-border/30 border-dashed bg-user-bg/60 text-user-text/70"
-                : "border-border/50 bg-user-bg text-user-text"
+              : "border-border/50 bg-user-bg text-user-text"
           }`}
           style={shrinkwrapWidth ? { maxWidth: shrinkwrapWidth } : undefined}
         >
@@ -462,13 +376,6 @@ export function UserMessage({
       ) : null}
       {hasImages && <ImageRow images={images} />}
       <div className="flex items-center gap-1.5 px-1">
-        {queued && (
-          <QueuedActions
-            onEditQueued={onEditQueued}
-            onRemoveQueued={onRemoveQueued}
-            onInterruptAndSend={onInterruptAndSend}
-          />
-        )}
         {timestamp && (
           <span className="text-[0.625rem] text-muted/45">{formatTimestamp(timestamp)}</span>
         )}

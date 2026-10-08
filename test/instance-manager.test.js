@@ -1741,6 +1741,85 @@ describe("InstanceManager", () => {
       assert.equal(instance.pendingMessages, undefined);
     });
 
+    it("reorders queued messages, keeping unlisted ids at the end", async () => {
+      const info = manager.createInstance();
+      const instance = manager.instances.get(info.id);
+      attachProcessingProc(instance);
+
+      await manager.sendMessage(info.id, "first");
+      await manager.sendMessage(info.id, "second");
+      await manager.sendMessage(info.id, "third");
+      const [a, b, c] = manager.getPendingQueuedMessages(info.id).map((m) => m.queuedId);
+
+      const events = [];
+      manager.on("instance:queued_reordered", (id, message) => events.push(message));
+
+      // A stale client that only knew about two messages, plus an unknown id.
+      await manager.reorderQueuedMessages(info.id, [b, "unknown", a]);
+      assert.deepEqual(
+        manager.getPendingQueuedMessages(info.id).map((m) => m.text),
+        ["second", "first", "third"],
+      );
+      assert.deepEqual(events, [
+        { type: "queued_reordered", instanceId: info.id, queuedIds: [b, a, c] },
+      ]);
+
+      // Same order again is a no-op.
+      await manager.reorderQueuedMessages(info.id, [b, a, c]);
+      assert.equal(events.length, 1);
+    });
+
+    it("send now delivers only the picked message and keeps the rest queued", async () => {
+      const proc = new FakeProviderSession("codex");
+      manager.createProviderSession = () => proc;
+      const info = manager.createInstance();
+      await manager.sendMessage(info.id, "start");
+      await new Promise((resolve) => setImmediate(resolve));
+      const instance = manager.instances.get(info.id);
+      assert.equal(instance.process, proc);
+      proc.isProcessing = true;
+
+      await manager.sendMessage(info.id, "first");
+      await manager.sendMessage(info.id, "second");
+      await manager.sendMessage(info.id, "third");
+      const [a, b, c] = manager.getPendingQueuedMessages(info.id).map((m) => m.queuedId);
+
+      const users = [];
+      manager.on("instance:user", (_id, message) => users.push(message));
+
+      await assert.rejects(() => manager.interruptAndSend(info.id, "missing"), /no longer queued/);
+      await manager.interruptAndSend(info.id, b);
+      const waitForSend = async (count) => {
+        for (let i = 0; i < 200 && proc.sent.length < count; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      };
+      proc.isProcessing = false;
+      proc.emit("output", { type: "output", text: "", isWaiting: true });
+      await waitForSend(2);
+
+      assert.equal(proc.sent.at(-1), "second");
+      assert.deepEqual(users.at(-1).dequeuedIds, [b]);
+      assert.deepEqual(
+        manager.getPendingQueuedMessages(info.id).map((m) => m.text),
+        ["first", "third"],
+      );
+      assert.equal(instance.info.queuedMessageCount, 2);
+
+      // The next turn end drains the rest together.
+      proc.emit("output", { type: "output", text: "", isWaiting: true });
+      await waitForSend(3);
+      assert.equal(proc.sent.at(-1), "first\n\nthird");
+      assert.deepEqual(users.at(-1).dequeuedIds, [a, c]);
+      assert.equal(instance.info.queuedMessageCount, undefined);
+    });
+
+    it("rejects reordering an empty queue", async () => {
+      const info = manager.createInstance();
+      attachProcessingProc(manager.instances.get(info.id));
+      await assert.rejects(() => manager.reorderQueuedMessages(info.id, []), /No queued messages/);
+    });
+
     it("rejects removal of a message that is no longer queued", async () => {
       const info = manager.createInstance();
       const instance = manager.instances.get(info.id);

@@ -30,6 +30,7 @@ import {
   ListChecks,
   FileCode,
   AtSign,
+  ListOrdered,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { InstanceHeader } from "@/components/chat/instance-header";
@@ -39,6 +40,7 @@ import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { PermissionBanner } from "@/components/chat/permission-banner";
 import { TerminalInputBanner } from "@/components/chat/terminal-input-banner";
 import { MessageList } from "@/components/chat/message-list";
+import { QueuedMessagesTray, type QueuedChatItem } from "@/components/chat/queued-messages-tray";
 import { PlanReviewPanel, type PlanComment } from "@/components/chat/plan-review-card";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
 import { Button } from "@/components/ui/button";
@@ -268,17 +270,6 @@ const TEMPLATES: MessageTemplate[] = [
       kind: "user" as const,
       text: `This is a sample user message (#${nextId()}).`,
       timestamp: Date.now(),
-    }),
-  },
-  {
-    label: "User (queued)",
-    icon: UserIcon,
-    description: "Queued message while agent is busy",
-    create: () => ({
-      kind: "user" as const,
-      text: `This queued message (#${nextId()}) was sent while the agent was processing.`,
-      timestamp: Date.now(),
-      queued: true,
     }),
   },
   {
@@ -1151,6 +1142,7 @@ export function ChatSandbox() {
   const [agentItems, setAgentItems] = useState<Record<string, ChatItem[]>>({});
   const [agentRequest, setAgentRequest] = useState<ProviderRequest | null>(null);
   const [showAgentsPanel, setShowAgentsPanel] = useState(false);
+  const [queuedItems, setQueuedItems] = useState<QueuedChatItem[]>([]);
   const agentsCount = Object.keys(agents).length;
 
   const instance = useMemo<InstanceInfo>(
@@ -1177,6 +1169,7 @@ export function ChatSandbox() {
     setShowBranchBanner(false);
     setPlanComments([]);
     setSelectedAnswers({});
+    setQueuedItems([]);
   }, []);
 
   const clearPreset = useCallback(() => {
@@ -1343,6 +1336,26 @@ export function ChatSandbox() {
                   active={composerMode === "ask-user"}
                   onClick={() => toggleComposerMode("ask-user")}
                 />
+                <ComposerModeButton
+                  label="Queued messages"
+                  description="Tray above the composer — drag to reorder"
+                  icon={ListOrdered}
+                  active={queuedItems.length > 0}
+                  onClick={() =>
+                    setQueuedItems((prev) => (prev.length > 0 ? [] : buildSampleQueue()))
+                  }
+                />
+                {queuedItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQueuedItems((prev) => [...prev, sampleQueuedItem(prev.length)])
+                    }
+                    className="rounded-md px-2.5 py-1 text-left text-[0.6875rem] text-muted transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    + Add queued message
+                  </button>
+                )}
               </div>
             </Section>
 
@@ -1548,6 +1561,28 @@ export function ChatSandbox() {
               isProcessing={isProcessing}
               isStopped={instance.status === "stopped"}
               onDismiss={() => setComposerMode("idle")}
+              aboveComposer={
+                <QueuedMessagesTray
+                  items={queuedItems}
+                  isMobile={false}
+                  onSendNow={(queuedId) =>
+                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
+                  }
+                  onEdit={(item) =>
+                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== item.queuedId))
+                  }
+                  onRemove={(queuedId) =>
+                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
+                  }
+                  onReorder={(queuedIds) =>
+                    setQueuedItems((prev) =>
+                      queuedIds
+                        .map((id) => prev.find((q) => q.queuedId === id))
+                        .filter((q): q is QueuedChatItem => !!q),
+                    )
+                  }
+                />
+              }
               planComments={planComments}
               onPlanCommentsChange={setPlanComments}
               selectedAnswers={selectedAnswers}
@@ -1571,6 +1606,28 @@ export function ChatSandbox() {
 
 // ── Mock composer ───────────────────────────────────────────────────
 
+const SAMPLE_QUEUED_TEXTS = [
+  'then in the time rows, instead of just showing "X holes" show "~X holes before dark" - fine to estimate pace',
+  "also make sure the sunset time respects the course's timezone, not the browser's",
+  "and add a test for the edge case where the tee time is after sunset",
+  "one more: the empty state copy should mention twilight rates",
+];
+
+function sampleQueuedItem(index: number): QueuedChatItem {
+  return {
+    kind: "user",
+    text: SAMPLE_QUEUED_TEXTS[index % SAMPLE_QUEUED_TEXTS.length]!,
+    queued: true,
+    queuedId: `sandbox-queued-${nextId()}`,
+    queuedImages: index === 1 ? ["/tmp/screenshot.png"] : undefined,
+    timestamp: Date.now(),
+  };
+}
+
+function buildSampleQueue(): QueuedChatItem[] {
+  return [0, 1, 2].map(sampleQueuedItem);
+}
+
 function MockComposer({
   mode,
   isProcessing,
@@ -1580,6 +1637,7 @@ function MockComposer({
   onPlanCommentsChange,
   selectedAnswers,
   onSelectAnswer,
+  aboveComposer,
 }: {
   mode: ComposerMode;
   isProcessing: boolean;
@@ -1589,6 +1647,7 @@ function MockComposer({
   onPlanCommentsChange: (c: PlanComment[]) => void;
   selectedAnswers: Record<string, string[]>;
   onSelectAnswer: (qId: string, answer: string) => void;
+  aboveComposer?: React.ReactNode;
 }) {
   const [isQuestionPanelCollapsed, setIsQuestionPanelCollapsed] = useState(false);
   const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
@@ -1615,6 +1674,7 @@ function MockComposer({
   return (
     <div className="shrink-0">
       <div className="mx-auto max-w-3xl px-6 pb-4">
+        {aboveComposer}
         <div className="relative rounded-2xl border border-border/60 bg-surface">
           {mode === "plan-review" && (
             <div className="border-b border-border/60">

@@ -12,7 +12,7 @@ import type {
   InstanceStatus,
   UserMessage,
 } from "@shared/types";
-import type { ChatItem, LiveActivity, MergedActivity } from "@/lib/chat-types";
+import type { ChatItem, LiveActivity, MergedActivity, UserChatItem } from "@/lib/chat-types";
 import { classifyLargeUserText } from "@/lib/message-rendering";
 import { hasAnchorInItems, isMainStreamAgent } from "@/lib/agents";
 import { mergeAgentInfo } from "@shared/agent-info";
@@ -187,6 +187,38 @@ function buildUserChatItem(
     ...queuedMeta,
     renderMode: classifyLargeUserText(text),
   };
+}
+
+/**
+ * Reorder queued user items in place to match `queuedIds`. Queued items keep
+ * their slots in `items`; only which message fills each slot changes. Ids the
+ * list doesn't name keep their relative order after the named ones.
+ */
+export function reorderQueuedItems(items: ChatItem[], queuedIds: string[]): ChatItem[] {
+  const slots: number[] = [];
+  const queued: UserChatItem[] = [];
+  items.forEach((item, index) => {
+    if (item.kind === "user" && item.queued) {
+      slots.push(index);
+      queued.push(item);
+    }
+  });
+  if (queued.length < 2) return items;
+  const rank = new Map(queuedIds.map((id, index) => [id, index]));
+  const sorted = queued
+    .map((item, index) => ({ item, index }))
+    .sort(
+      (a, b) =>
+        (rank.get(a.item.queuedId ?? "") ?? queuedIds.length + a.index) -
+        (rank.get(b.item.queuedId ?? "") ?? queuedIds.length + b.index),
+    )
+    .map(({ item }) => item);
+  if (sorted.every((item, index) => item === queued[index])) return items;
+  const next = [...items];
+  slots.forEach((slot, index) => {
+    next[slot] = sorted[index];
+  });
+  return next;
 }
 
 function buildAgentNoteItem(
@@ -595,6 +627,7 @@ type Action =
       queuedSourceText?: string;
       queuedImages?: string[];
       queuedAttachments?: string[];
+      dequeuedIds?: string[];
       eventSequence?: number;
       author?: MessageAuthor;
       /** Delegated-agent attribution — routes to `agentItems[agentId]`. */
@@ -605,6 +638,7 @@ type Action =
   | { type: "file_stats"; files: FileChange[]; eventSequence?: number }
   | { type: "clear_queued" }
   | { type: "remove_queued"; queuedId: string; eventSequence?: number }
+  | { type: "reorder_queued"; queuedIds: string[]; eventSequence?: number }
   | { type: "exit"; code: number; signal?: string; stderr?: string; eventSequence?: number }
   | { type: "error"; message: string }
   | { type: "notification"; message: string }
@@ -957,17 +991,20 @@ function coreReducer(state: State, action: Action): State {
 
       const items = [...state.items];
 
-      // When the queue drains, the server sends one coalesced non-queued user
-      // message that replaces all the queued placeholders.  Strip the old
-      // placeholders so we don't show duplicates.
+      // When the queue drains, the server sends a non-queued user message that
+      // replaces the placeholders it delivered — `dequeuedIds` names them ("Send
+      // now" delivers one and leaves the rest). Without it (older server), the
+      // whole queue was delivered.
       if (!action.queued) {
-        const hadQueued = items.some((i) => i.kind === "user" && i.queued);
-        if (hadQueued) {
-          // Remove all queued placeholders — the real message replaces them
-          for (let i = items.length - 1; i >= 0; i--) {
-            if (items[i].kind === "user" && (items[i] as { queued?: boolean }).queued) {
-              items.splice(i, 1);
-            }
+        const delivered = action.dequeuedIds ? new Set(action.dequeuedIds) : null;
+        for (let i = items.length - 1; i >= 0; i--) {
+          const item = items[i];
+          if (
+            item.kind === "user" &&
+            item.queued &&
+            (!delivered || (item.queuedId !== undefined && delivered.has(item.queuedId)))
+          ) {
+            items.splice(i, 1);
           }
         }
       }
@@ -1029,6 +1066,11 @@ function coreReducer(state: State, action: Action): State {
           (i) => !(i.kind === "user" && i.queued && i.queuedId === action.queuedId),
         ),
       };
+    }
+
+    case "reorder_queued": {
+      const next = reorderQueuedItems(state.items, action.queuedIds);
+      return next === state.items ? state : { ...state, items: next };
     }
 
     case "exit": {
@@ -1141,6 +1183,7 @@ function getActionSequence(action: Action): number | undefined {
     case "output":
     case "user":
     case "remove_queued":
+    case "reorder_queued":
     case "exit":
     case "agent_update":
     case "file_stats":
@@ -1195,6 +1238,7 @@ function actionToHistoryEntry(action: Action): HistoryEntry | null {
           queuedSourceText: action.queuedSourceText,
           images: action.queuedImages,
           attachments: action.queuedAttachments,
+          dequeuedIds: action.dequeuedIds,
           author: action.author,
           agentId: action.agentId,
         } as ServerMessage,
@@ -1321,6 +1365,7 @@ export function useInstanceMessages() {
               queuedSourceText: message.queuedSourceText,
               queuedImages: message.queued ? message.images : undefined,
               queuedAttachments: message.queued ? message.attachments : undefined,
+              dequeuedIds: message.dequeuedIds,
               eventSequence: message.eventSequence,
               author: message.author,
               agentId: message.agentId,
@@ -1350,6 +1395,15 @@ export function useInstanceMessages() {
             dispatchAndRecord(instanceId, {
               type: "remove_queued",
               queuedId: message.queuedId,
+              eventSequence: message.eventSequence,
+            });
+          }
+          break;
+        case "queued_reordered":
+          if (message.instanceId === instanceId) {
+            dispatchAndRecord(instanceId, {
+              type: "reorder_queued",
+              queuedIds: message.queuedIds,
               eventSequence: message.eventSequence,
             });
           }

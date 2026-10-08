@@ -84,6 +84,8 @@ interface InputAreaProps {
   onRemoveInlineReply?: (id: string) => void;
   /** Extra content rendered inside the composer container, above the text input. */
   topSlot?: React.ReactNode;
+  /** Docked above the composer box (e.g. the queued-messages tray). */
+  aboveComposer?: React.ReactNode;
   /** When set, pre-fills the composer with this text (without sending). Cleared after applying. */
   pendingDraft?: string | null;
   /** Called after pendingDraft has been applied so the parent can clear it. */
@@ -214,6 +216,7 @@ export function InputArea({
   onRemoveInlineReply,
   onReconnect,
   topSlot,
+  aboveComposer,
   pendingDraft,
   onPendingDraftApplied,
   queuedRestore,
@@ -1123,6 +1126,7 @@ export function InputArea({
             }}
           />
 
+          {aboveComposer}
           <div
             ref={composerContainerRef}
             className="@container/toolbar relative rounded-2xl border border-border/60 bg-surface"

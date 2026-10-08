@@ -29,7 +29,7 @@ import {
   getAttachedReviewInstances,
 } from "@/lib/review-session";
 import { buildProviderSwitchHandoffPrompt } from "@shared/session-handoff";
-import type { ChatItem, QueuedRestore, UserRow } from "@/lib/chat-types";
+import type { ChatItem, QueuedRestore, UserChatItem } from "@/lib/chat-types";
 import { toast } from "sonner";
 import type {
   AgentInfo,
@@ -143,7 +143,9 @@ export function InstanceView({
    * chat switch (which clears this map and tears down the handler) can't leak
    * a restore into another chat's composer.
    */
-  const pendingQueuedEditsRef = useRef<Map<string, { row: UserRow; files: File[] }>>(new Map());
+  const pendingQueuedEditsRef = useRef<Map<string, { row: UserChatItem; files: File[] }>>(
+    new Map(),
+  );
   /** Latest chat id, for guarding async work started under a previous id. */
   const currentIdRef = useRef(id);
   currentIdRef.current = id;
@@ -346,9 +348,9 @@ export function InstanceView({
     send({ type: "instance_cancel", instanceId: id });
   };
 
-  const handleInterruptAndSend = () => {
+  const handleInterruptAndSend = (queuedId: string) => {
     if (!id || !isActive) return;
-    send({ type: "instance_interrupt_and_send", instanceId: id });
+    send({ type: "instance_interrupt_and_send", instanceId: id, queuedId });
   };
 
   const handleRemoveQueued = (queuedId: string) => {
@@ -356,12 +358,19 @@ export function InstanceView({
     send({ type: "remove_queued_message", instanceId: id, queuedId });
   };
 
+  const handleReorderQueued = (queuedIds: string[]) => {
+    if (!id) return;
+    // Optimistic: the server's queued_reordered echo is idempotent.
+    handleMessage(id, { type: "queued_reordered", instanceId: id, queuedIds });
+    send({ type: "reorder_queued_messages", instanceId: id, queuedIds });
+  };
+
   // Edit = unqueue + restore into the composer. Attachments are re-fetched
   // BEFORE the removal is requested — removal is irreversible, so if recovery
   // fails the message must stay queued. The restore itself then waits for the
   // server's queued_removed confirmation so a message that already dispatched
   // (queue drained between click and request) is never duplicated in the draft.
-  const handleEditQueued = async (row: UserRow) => {
+  const handleEditQueued = async (row: UserChatItem) => {
     if (!id || !row.queuedId) return;
     const paths = [...(row.queuedImages ?? []), ...(row.queuedAttachments ?? [])];
     let files: File[] = [];
@@ -872,6 +881,7 @@ export function InstanceView({
       handleInterruptAndSend,
       handleEditQueued,
       handleRemoveQueued,
+      handleReorderQueued,
       clearQueuedRestore: () => setQueuedRestore(null),
       handleSwitchProvider,
       setShowDebugPaste,
