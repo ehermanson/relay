@@ -100,7 +100,7 @@ export interface ConnectEndpoint {
   id: string;
   label: string;
   url: string;
-  kind: "tailscale" | "lan" | "localhost" | "browser";
+  kind: "tailscale" | "lan" | "localhost" | "browser" | "tunnel";
 }
 
 export async function createPairingCode(): Promise<PairingCodeResponse> {

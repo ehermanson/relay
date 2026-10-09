@@ -12,30 +12,37 @@ function isTailscaleAddress(address: string): boolean {
   return Number.isInteger(second) && second >= 64 && second <= 127;
 }
 
-function getConnectEndpoints(port: number): Array<{
+function getConnectEndpoints(
+  port: number,
+  tunnelUrl?: string | null,
+): Array<{
   id: string;
   label: string;
   url: string;
-  kind: "tailscale" | "lan" | "localhost";
+  kind: "tailscale" | "lan" | "localhost" | "tunnel";
 }> {
   const endpoints: Array<{
     id: string;
     label: string;
     url: string;
-    kind: "tailscale" | "lan" | "localhost";
+    kind: "tailscale" | "lan" | "localhost" | "tunnel";
   }> = [];
   const seen = new Set<string>();
 
   const addEndpoint = (
     url: string,
     label: string,
-    kind: "tailscale" | "lan" | "localhost",
+    kind: "tailscale" | "lan" | "localhost" | "tunnel",
     id: string,
   ) => {
     if (seen.has(url)) return;
     seen.add(url);
     endpoints.push({ id, label, url, kind });
   };
+
+  if (tunnelUrl) {
+    addEndpoint(tunnelUrl, `Remote URL (${new URL(tunnelUrl).host})`, "tunnel", "tunnel");
+  }
 
   addEndpoint(`http://localhost:${port}`, "This machine only", "localhost", "localhost");
 
@@ -63,7 +70,7 @@ function getConnectEndpoints(port: number): Array<{
   }
 
   return endpoints.sort((a, b) => {
-    const rank = { tailscale: 0, lan: 1, localhost: 2 };
+    const rank = { tunnel: 0, tailscale: 1, lan: 2, localhost: 3 };
     return rank[a.kind] - rank[b.kind] || a.label.localeCompare(b.label);
   });
 }
@@ -257,7 +264,7 @@ export function registerProtectedSystemRoutes(api: Hono<AppEnv>, deps: HttpDeps)
 
   api.get("/api/connect-endpoints", (c) => {
     return c.json({
-      endpoints: getConnectEndpoints(deps.config.port),
+      endpoints: getConnectEndpoints(deps.config.port, deps.getTunnelUrl?.()),
     });
   });
 }

@@ -30,6 +30,16 @@ describe("remote access helpers", () => {
     expect(choosePreferredEndpoint(endpoints)).toBe("browser");
   });
 
+  it("prefers a tunnel when the current browser is local", () => {
+    const endpoints = [
+      endpoint("browser", "browser", "http://localhost:7777"),
+      endpoint("tailscale", "tailscale", "http://100.99.1.2:7777"),
+      endpoint("tunnel", "tunnel", "https://relay.example.com"),
+    ];
+    expect(choosePreferredEndpoint(endpoints)).toBe("tunnel");
+    expect(endpointHint(endpoints[2])).toContain("any network");
+  });
+
   it("restores a persisted endpoint choice when it is still available", () => {
     const endpoints = [
       endpoint("browser", "browser", "http://localhost:7777"),

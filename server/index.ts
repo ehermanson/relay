@@ -69,6 +69,7 @@ export class Relay {
       {
         ...(options.updateManager ? { updateManager: options.updateManager } : {}),
         pushNotifications,
+        getTunnelUrl: options.getTunnelUrl,
       },
     );
     this.server = http.createServer(handler);

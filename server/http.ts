@@ -71,6 +71,7 @@ function getSelfGitInfo(): { branch: string; isWorktree: boolean; worktreePath?:
 const selfGitInfo = getSelfGitInfo();
 
 interface RequestHandlerOverrides {
+  getTunnelUrl?: () => string | null;
   getProviderModels?: (provider: ProviderKind) => Promise<ProviderModelOption[]>;
   getProviderCapabilities?: (provider: ProviderKind) => ProviderCapabilities;
   getAvailableProviders?: () => ProviderDescriptor[];
@@ -278,6 +279,7 @@ export function createRequestHandler(
     uiDistDir,
     indexHtmlPath,
     getConnectionCount,
+    getTunnelUrl: overrides.getTunnelUrl,
     getProviderModels,
     getProviderCapabilities:
       overrides.getProviderCapabilities ??

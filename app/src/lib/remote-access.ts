@@ -2,7 +2,7 @@ export type RemoteAccessEndpoint = {
   id: string;
   label: string;
   url: string;
-  kind: "tailscale" | "lan" | "localhost" | "browser";
+  kind: "tailscale" | "lan" | "localhost" | "browser" | "tunnel";
 };
 
 export function isLocalhostUrl(url: string): boolean {
@@ -14,6 +14,9 @@ export function choosePreferredEndpoint(endpoints: RemoteAccessEndpoint[]): stri
     (endpoint) => endpoint.kind === "browser" && !isLocalhostUrl(endpoint.url),
   );
   if (browserRemote) return browserRemote.id;
+
+  const tunnel = endpoints.find((endpoint) => endpoint.kind === "tunnel");
+  if (tunnel) return tunnel.id;
 
   const tailscale = endpoints.find((endpoint) => endpoint.kind === "tailscale");
   if (tailscale) return tailscale.id;
@@ -38,6 +41,9 @@ export function endpointHint(endpoint: Pick<RemoteAccessEndpoint, "url" | "kind"
   if (!endpoint) return "Waiting for Relay to report reachable addresses.";
   if (endpoint.kind === "localhost" || isLocalhostUrl(endpoint.url)) {
     return "Local only. This will not open from your phone unless the phone is on this same machine.";
+  }
+  if (endpoint.kind === "tunnel") {
+    return "Works from any network while this machine is awake and Relay is running.";
   }
   if (endpoint.kind === "tailscale") {
     return "Works from any device on your tailnet, including cellular, as long as Tailscale is connected.";

@@ -41,6 +41,8 @@ export type RelayOptions = Partial<RelayConfig> & {
   defaultWorkingDirectory?: string;
   /** Optional install/update manager used by the UI updater flow. */
   updateManager?: UpdateManager;
+  /** Current public tunnel origin, supplied by the connector owner. */
+  getTunnelUrl?: () => string | null;
 };
 
 /**

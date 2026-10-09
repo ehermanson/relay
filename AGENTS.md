@@ -106,6 +106,13 @@ Zero relative path navigation (`../`) in any server/cli import.
 - `RelayConfig extends CoreConfig` — adds server-specific options (port, auth, rate limiting, etc.)
 - Structural subtyping makes `RelayConfig` assignable to `CoreConfig`
 
+### Remote URLs and Tunnels
+
+- Named tunnels are user-owned Cloudflare infrastructure. `relay tunnel configure --url <https-origin> --token-file <file>` imports a connector credential into `RELAY_HOME`; `tunnel.json` stores only the origin and credential filename. Both files are owner-only and outside Projects. Never store tokens in task files, application settings, API responses, or connector argv.
+- `relay start` auto-starts a configured named tunnel; `--no-tunnel` skips it, and dev mode always skips tunnels. Without saved settings, `--tunnel`/`TUNNEL=true` starts a quick tunnel. Named ingress (including the local port) is configured in Cloudflare, not rewritten by Relay.
+- `server/tunnel.ts` owns connector processes and retry timers. A stopped supervisor never restarts; quick URLs are cleared on disconnect and refreshed on discovery, while named URLs remain the configured address (not an online-status assertion). Clear inherited `TUNNEL_TOKEN` for named connectors because cloudflared otherwise prioritizes it over `--token-file`.
+- The CLI passes a lazy `getTunnelUrl` through the server layer to `/api/connect-endpoints`; Open On Phone includes it without exposing credential state. Authentication remains Relay's same-origin password/cookie flow for HTTP and WebSocket. Changing configuration requires restarting Relay. No hosted account or machine directory is implied by a named tunnel.
+
 ### External Session Discovery
 
 - InstanceManager polls provider-specific external discovery every 30s; drivers currently use `ps` + `lsof` and exclude managed PIDs plus any descendant of the Relay server process (SDK-managed CLIs don't expose a PID, so `ppid` ancestry is the only reliable exclusion — without it, external instances get mispaired with managed subprocess PIDs and takeover SIGKILLs a managed session)

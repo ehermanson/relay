@@ -468,7 +468,8 @@ function RemoteAccessSettingsRow() {
   const { data: connectData } = useQuery({
     queryKey: ["connect-endpoints"],
     queryFn: fetchConnectEndpoints,
-    staleTime: 60_000,
+    staleTime: 10_000,
+    refetchInterval: 10_000,
   });
 
   const browserEndpoint =
@@ -602,11 +603,13 @@ function RemoteAccessSettingsRow() {
                   <span className="rounded bg-surface px-1.5 py-0.5 font-medium text-text">
                     {selectedEndpoint.kind === "browser"
                       ? "Current URL"
-                      : selectedEndpoint.kind === "tailscale"
-                        ? "Tailscale"
-                        : selectedEndpoint.kind === "lan"
-                          ? "LAN"
-                          : "Local Only"}
+                      : selectedEndpoint.kind === "tunnel"
+                        ? "Remote URL"
+                        : selectedEndpoint.kind === "tailscale"
+                          ? "Tailscale"
+                          : selectedEndpoint.kind === "lan"
+                            ? "LAN"
+                            : "Local Only"}
                   </span>
                   {!isLocalhostUrl(selectedEndpoint.url) ? (
                     <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-400">

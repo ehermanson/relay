@@ -8,6 +8,9 @@ import { createRelay } from "#server/index.js";
 import { startTunnel, stopTunnel } from "#server/tunnel.js";
 import { UpdateManager } from "#server/update-manager.js";
 import { runTasksCommand } from "#cli/tasks.js";
+import { runTunnelCommand } from "#cli/tunnel.js";
+import { readTunnelSettings } from "#server/tunnel-settings.js";
+import { readFile } from "node:fs/promises";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 
@@ -103,6 +106,9 @@ async function runRelayRuntime(argv: string[]): Promise<number> {
   if (command === "tasks") {
     return runTasksCommand(argv.slice(1));
   }
+  if (command === "tunnel") {
+    return runTunnelCommand(argv.slice(1));
+  }
   if (command && command !== "start") {
     console.error(`Unknown command: ${command}\n`);
     printUsage();
@@ -114,15 +120,18 @@ async function runRelayRuntime(argv: string[]): Promise<number> {
 
 function printUsage(): void {
   console.log(`Usage:
-  relay start [--port <number>] [--password <string>] [--tunnel]
+  relay start [--port <number>] [--password <string>] [--tunnel | --no-tunnel]
   relay tasks [--dir <path>] <command> [options]
+  relay tunnel <configure|status|disable>
 
 Options:
   --port <number>     Server port (default: 7777)
   --password <string> Require password for authentication
-  --tunnel            Start a cloudflared tunnel to this Relay server
+  --tunnel            Start a tunnel (uses a saved named tunnel when configured)
+  --no-tunnel         Skip tunnel startup for this run
 
 Run \`relay tasks --help\` for offline task-file commands.
+Run \`relay tunnel --help\` to configure a permanent HTTPS URL.
 
 Notes:
   - When no password is set, the server runs in open mode (no login required).
@@ -133,7 +142,25 @@ Notes:
 async function startServer(cliArgs: string[]): Promise<number> {
   const password = parseFlag(cliArgs, "--password") || process.env.RELAY_PASSWORD || undefined;
   const port = parseInt(parseFlag(cliArgs, "--port") || process.env.PORT || "7777");
-  const enableTunnel = hasFlag(cliArgs, "--tunnel") || process.env.TUNNEL === "true";
+  if (hasFlag(cliArgs, "--tunnel") && hasFlag(cliArgs, "--no-tunnel")) {
+    console.error("Use either --tunnel or --no-tunnel, not both.");
+    return 1;
+  }
+  const skipTunnel = hasFlag(cliArgs, "--no-tunnel") || Boolean(process.env.DEV);
+  let namedTunnel;
+  try {
+    namedTunnel = skipTunnel ? null : await readTunnelSettings();
+    if (namedTunnel) await readFile(namedTunnel.tokenFile, "utf8");
+  } catch {
+    console.error(
+      "Could not read saved tunnel settings or token. Run relay tunnel configure again, or start with --no-tunnel.",
+    );
+    return 1;
+  }
+  const enableTunnel =
+    !skipTunnel &&
+    (Boolean(namedTunnel) || hasFlag(cliArgs, "--tunnel") || process.env.TUNNEL === "true");
+  let tunnelUrl: string | null = enableTunnel ? (namedTunnel?.publicUrl ?? null) : null;
 
   if (enableTunnel && !password) {
     console.warn(
@@ -173,6 +200,7 @@ async function startServer(cliArgs: string[]): Promise<number> {
       codex: resolveCodexHomeDir(),
     },
     updateManager,
+    getTunnelUrl: () => tunnelUrl,
   });
 
   try {
@@ -180,7 +208,12 @@ async function startServer(cliArgs: string[]): Promise<number> {
     if (process.env.DEV) {
       console.log(`Relay UI at http://localhost:${process.env.VITE_PORT || "5173"}\n`);
     } else if (enableTunnel) {
-      startTunnel(port);
+      startTunnel(port, {
+        named: namedTunnel ?? undefined,
+        onUrl: (url) => {
+          tunnelUrl = url;
+        },
+      });
     }
   } catch (err) {
     console.error(`\n  Failed to start Relay: ${(err as Error).message}`);

@@ -113,6 +113,51 @@ If you use a tunnel, set a password.
 
 The UI also has an **Open On Phone** flow in settings. It can show a QR code, give you a better device-friendly URL, and generate a one-time pairing code when password auth is on.
 
+### Permanent remote URL
+
+A named Cloudflare tunnel gives this machine a permanent HTTPS address, such as
+`https://relay.example.com`. It works from other networks while the machine is awake
+and Relay is running. You need a domain managed by Cloudflare and `cloudflared`
+installed on this machine.
+
+1. In the [Cloudflare dashboard](https://dash.cloudflare.com/), create a named tunnel
+   under **Networking → Tunnels**.
+2. Add a **Published application** route for your hostname, with service URL
+   `http://localhost:7777` (or the port you use for Relay). Cloudflare manages the
+   hostname and HTTPS certificate; no router port forwarding is needed.
+3. Save the tunnel's **connector token** in a private local text file. Use the token
+   for this tunnel, not a Cloudflare account API token. Do not paste it into a chat.
+4. Import the file and start Relay:
+
+```bash
+relay tunnel configure --url https://relay.example.com --token-file /path/to/token-file
+relay start --password "your-secret"
+```
+
+Relay copies the credential into its state directory with owner-only permissions.
+After a successful import, you can delete the original token file. Configuration
+lives in `RELAY_HOME` (`~/.relay` by default); it is local machine state, not a Project
+file. Later `relay start` launches the saved tunnel automatically and reconnects if
+its connector exits. **Settings → General → Open On Phone** includes the configured
+URL and can generate a QR code with a one-time pairing code.
+
+```bash
+relay tunnel status      # show saved URL; does not check connectivity
+relay start --no-tunnel   # skip all tunnels for this run
+relay tunnel disable     # remove saved settings and imported credential
+```
+
+Restart Relay after configuring or disabling a named tunnel. Disabling it locally
+does not delete its hostname or tunnel from Cloudflare. If you change Relay's port,
+update the published route's service URL in Cloudflare too. A configured address is
+not a connectivity check: confirm the published route reaches Relay before using it
+from your phone. Local password login protects the UI, API, and WebSocket through
+the same HTTPS origin.
+
+Without saved configuration, `relay start --tunnel` still creates a temporary
+`trycloudflare.com` URL. The phone flow includes that URL once it is discovered;
+it can change after a connector restart. Dev mode does not start tunnels.
+
 ## Everyday Flow
 
 1. Start Relay.

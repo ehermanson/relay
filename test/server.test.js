@@ -46,6 +46,7 @@ describe("HTTP Server", () => {
   let auth;
   let manager;
   let tempDir;
+  let tunnelUrl;
 
   beforeEach((_, done) => {
     tempDir = mkdtempSync(join(tmpdir(), "relay-server-test-"));
@@ -65,7 +66,10 @@ describe("HTTP Server", () => {
     });
     auth = new AuthManager(config);
     manager = new InstanceManager(config);
-    const handler = createRequestHandler(config, auth, manager);
+    tunnelUrl = null;
+    const handler = createRequestHandler(config, auth, manager, undefined, {
+      getTunnelUrl: () => tunnelUrl,
+    });
     server = http.createServer(handler);
     server.listen(0, done);
   });
@@ -178,6 +182,32 @@ describe("HTTP Server", () => {
       });
       assert.equal(res.status, 401);
       assert.equal(res.body.error, "Invalid or expired pairing code");
+    });
+
+    it("includes the configured remote URL without exposing connector credentials", async () => {
+      tunnelUrl = "https://relay.example.com";
+      const session = auth.createSession();
+      const res = await request(server, "GET", "/api/connect-endpoints", {
+        headers: { Cookie: `session=${session.id}` },
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.endpoints[0], {
+        id: "tunnel",
+        label: "Remote URL (relay.example.com)",
+        url: tunnelUrl,
+        kind: "tunnel",
+      });
+      tunnelUrl = null;
+      const disconnected = await request(server, "GET", "/api/connect-endpoints", {
+        headers: { Cookie: `session=${session.id}` },
+      });
+      assert.ok(disconnected.body.endpoints.every((endpoint) => endpoint.kind !== "tunnel"));
+    });
+
+    it("requires authentication for remote connection addresses", async () => {
+      tunnelUrl = "https://relay.example.com";
+      const res = await request(server, "GET", "/api/connect-endpoints");
+      assert.equal(res.status, 401);
     });
 
     it("lists connect endpoints for authenticated users", async () => {

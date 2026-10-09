@@ -24,6 +24,7 @@ export interface HttpDeps {
   uiDistDir: string;
   indexHtmlPath: string;
   getConnectionCount?: () => number;
+  getTunnelUrl?: () => string | null;
   getProviderModels: (provider: ProviderKind) => Promise<ProviderModelOption[]>;
   getProviderCapabilities: (provider: ProviderKind) => ProviderCapabilities;
   getAvailableProviders: () => ProviderDescriptor[];
