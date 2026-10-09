@@ -16,6 +16,7 @@ import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { QueuedRestore } from "@/lib/chat-types";
 import { toggleAnswerSelection } from "@/lib/utils";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
+import { ComposerDock } from "@/components/chat/input-area/composer-dock";
 import { ComposerPanel } from "@/components/chat/input-area/composer-panel";
 import { AttachmentStrip } from "@/components/chat/input-area/attachment-strip";
 import { classifyAttachment } from "@/components/chat/input-area/shared";
@@ -1127,9 +1128,25 @@ export function InputArea({
           />
 
           {aboveComposer}
+          <AnimatePresence initial={false}>
+            {composerTopContent ? (
+              <motion.div
+                key="composer-top-content"
+                initial={{ opacity: 0, y: 18, height: 0, marginBottom: 0 }}
+                animate={{ opacity: 1, y: 0, height: "auto", marginBottom: -12 }}
+                exit={{ opacity: 0, y: 18, height: 0, marginBottom: 0 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="relative overflow-hidden"
+              >
+                <ComposerDock isMobile={isMobile} tucked={false}>
+                  {composerTopContent}
+                </ComposerDock>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
           <div
             ref={composerContainerRef}
-            className="@container/toolbar relative rounded-2xl border border-border/60 bg-surface"
+            className="@container/toolbar relative rounded-2xl border border-border/60 bg-surface shadow-(--shadow-composer)"
           >
             {composerTopSlot}
             {!isInSpecialMode ? (
@@ -1143,7 +1160,6 @@ export function InputArea({
               disabled={composerDisabled}
               value={composerValue}
               placeholder={composerPlaceholder}
-              topContent={composerTopContent}
               expanded={!hasMessages && !!composerValue}
               selectionOffset={isInSpecialMode ? null : pendingSelectionOffset}
               onSelectionApplied={clearPendingSelectionOffset}

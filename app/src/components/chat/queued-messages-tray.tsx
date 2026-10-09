@@ -3,6 +3,7 @@ import { Reorder, useDragControls } from "motion/react";
 import { ChevronDown, Zap, GripVertical, ListOrdered, Paperclip, Pencil, X } from "lucide-react";
 import type { UserChatItem } from "@/lib/chat-types";
 import { Tooltip } from "../ui/tooltip";
+import { ComposerDock } from "./input-area/composer-dock";
 
 export type QueuedChatItem = UserChatItem & { queued: true; queuedId: string };
 
@@ -72,11 +73,7 @@ export function QueuedMessagesTray({
   };
 
   return (
-    <div
-      className={`relative -mb-3 rounded-t-xl border border-b-0 border-border/60 bg-surface pb-3 ${
-        isMobile ? "mx-2" : "mx-4"
-      }`}
-    >
+    <ComposerDock isMobile={isMobile}>
       <button
         type="button"
         onClick={() => setCollapsed((value) => !value)}
@@ -115,7 +112,7 @@ export function QueuedMessagesTray({
           ))}
         </Reorder.Group>
       )}
-    </div>
+    </ComposerDock>
   );
 }
 

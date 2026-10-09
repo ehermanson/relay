@@ -168,7 +168,7 @@ function InlineCommentEditor({
   );
 }
 
-// ── Exported panel component (renders inside ComposerPanel as topContent) ──
+// ── Exported panel component (docked above the composer) ──
 
 interface PlanReviewPanelProps {
   plan: string;
@@ -282,7 +282,7 @@ export function PlanReviewPanel({ plan, onCommentsChange, comments }: PlanReview
   );
 
   return (
-    <div className="border-b border-border/80">
+    <div>
       {/* Header */}
       <div className="flex items-center gap-3 px-3.5 pt-3 pb-2">
         <p className="text-[0.625rem] font-semibold uppercase tracking-[0.18em] text-accent/70">

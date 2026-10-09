@@ -1,5 +1,4 @@
 import { useRef, type ReactNode } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import type { ComposerEditorHandle } from "../composer-editor";
 import { ComposerEditor } from "../composer-editor";
 import { ComposerTextarea } from "../composer-textarea";
@@ -16,7 +15,6 @@ interface ComposerPanelProps {
   disabled: boolean;
   value: string;
   placeholder: string;
-  topContent?: ReactNode;
   selectionOffset: number | null;
   onSelectionApplied: () => void;
   onChange: (value: string, selectionOffset: number) => void;
@@ -37,7 +35,6 @@ export function ComposerPanel({
   disabled,
   value,
   placeholder,
-  topContent,
   selectionOffset,
   onSelectionApplied,
   onChange,
@@ -61,20 +58,6 @@ export function ComposerPanel({
 
   return (
     <>
-      <AnimatePresence initial={false}>
-        {topContent ? (
-          <motion.div
-            key="composer-top-content"
-            initial={{ opacity: 0, y: 18, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
-            exit={{ opacity: 0, y: 18, height: 0 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            className="overflow-hidden"
-          >
-            {topContent}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
       <div ref={editorContainerRef}>
         <Editor
           ref={composerRef}

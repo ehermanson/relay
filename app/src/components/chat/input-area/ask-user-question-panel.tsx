@@ -40,7 +40,7 @@ export function AskUserQuestionPanel({
   }).length;
 
   return (
-    <div className="border-b border-border/80">
+    <div>
       {onToggleCollapse ? (
         <button
           type="button"

@@ -43,6 +43,7 @@ import { MessageList } from "@/components/chat/message-list";
 import { QueuedMessagesTray, type QueuedChatItem } from "@/components/chat/queued-messages-tray";
 import { PlanReviewPanel, type PlanComment } from "@/components/chat/plan-review-card";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
+import { ComposerDock } from "@/components/chat/input-area/composer-dock";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ViewHeader, ViewHeaderTitle, MobileSidebarToggle } from "@/components/ui/view-header";
@@ -1675,18 +1676,18 @@ function MockComposer({
     <div className="shrink-0">
       <div className="mx-auto max-w-3xl px-6 pb-4">
         {aboveComposer}
-        <div className="relative rounded-2xl border border-border/60 bg-surface">
-          {mode === "plan-review" && (
-            <div className="border-b border-border/60">
-              <PlanReviewPanel
-                plan={PLAN_SAMPLE}
-                comments={planComments}
-                onCommentsChange={onPlanCommentsChange}
-              />
-            </div>
-          )}
+        {mode === "plan-review" && (
+          <ComposerDock isMobile={false}>
+            <PlanReviewPanel
+              plan={PLAN_SAMPLE}
+              comments={planComments}
+              onCommentsChange={onPlanCommentsChange}
+            />
+          </ComposerDock>
+        )}
 
-          {mode === "ask-user" && (
+        {mode === "ask-user" && (
+          <ComposerDock isMobile={false}>
             <AskUserQuestionPanel
               questions={ASK_USER_QUESTIONS}
               selectedAnswers={selectedAnswers}
@@ -1698,8 +1699,9 @@ function MockComposer({
               collapsed={isQuestionPanelCollapsed}
               onToggleCollapse={() => setIsQuestionPanelCollapsed((v) => !v)}
             />
-          )}
-
+          </ComposerDock>
+        )}
+        <div className="relative rounded-2xl border border-border/60 bg-surface shadow-(--shadow-composer)">
           <div
             className={`min-h-[52px] max-h-[140px] overflow-y-auto px-4 pt-3 pb-1 text-sm ${isProcessing ? "opacity-40" : ""}`}
           >
