@@ -341,6 +341,12 @@ function MentionChip({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Compact pill for links rendered as chips (known services, file links). Solid
+// raised surface + hairline shadow so it lifts off both the agent prose and the
+// user bubble; `!` beats the `.markdown-content a` accent color/underline.
+const LINK_CHIP_CLASS =
+  "inline-flex max-w-full items-center gap-1 rounded-full border border-border/70 bg-surface-raised py-0 pl-1.5 pr-2 align-middle text-[0.8125rem] font-medium leading-[1.125rem] !text-text shadow-(--shadow-surface) transition-colors hover:border-border hover:bg-surface-hover hover:!no-underline";
+
 function textOf(node: React.ReactNode): string {
   return Children.toArray(node)
     .map((child) => {
@@ -398,13 +404,8 @@ function MarkdownLink({
       );
     }
     return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-surface-hover/40 px-2 py-1 align-middle text-[0.8125rem] font-medium text-text no-underline hover:border-border hover:bg-surface-hover"
-      >
-        <FileIcon path={path} size={14} className="h-3.5 w-3.5" />
+      <a href={url} target="_blank" rel="noopener noreferrer" className={LINK_CHIP_CLASS}>
+        <FileIcon path={path} size={14} className="h-3.5 w-3.5 shrink-0" />
         <span className="max-w-[16rem] truncate">{basename}</span>
       </a>
     );
@@ -503,7 +504,7 @@ function MarkdownLink({
           target="_blank"
           rel="noreferrer"
           title={`${source.name}: ${href}`}
-          className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-surface-hover/40 px-1.5 py-px align-middle text-[0.8125rem] font-medium leading-snug text-text no-underline hover:border-border hover:bg-surface-hover"
+          className={LINK_CHIP_CLASS}
         >
           <LinkSourceIcon source={source} className="h-3.5 w-3.5" />
           <span className="max-w-[20rem] truncate">{identifier}</span>
