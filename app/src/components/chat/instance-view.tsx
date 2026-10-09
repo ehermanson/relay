@@ -7,7 +7,6 @@ import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useOutbox } from "@/context/outbox-context";
 import type { OutboxAttachment } from "@/lib/outbox-store";
 import { useInstanceMessages } from "@/hooks/use-instance-messages";
-import { useRepoStatus } from "@/hooks/use-repo-status";
 import { useProviderModels } from "@/hooks/use-provider-models";
 import { useConnectionBanner } from "@/hooks/use-connection-banner";
 import { useDismissedBranchChanges } from "@/hooks/use-dismissed-branch-changes";
@@ -571,14 +570,10 @@ export function InstanceView({
   const hasTasksContent = tasksCount > 0;
   const hasFilesContent = filesCount > 0;
   const hasPlanContent = !!resolvedInstance?.planContent;
-  // Review is reachable whenever the chat's checkout has uncommitted changes,
-  // even before any file is attributed. Shares the header's ref-counted
-  // subscription (one wire subscription per target).
-  const repoStatus = useRepoStatus(
-    resolvedInstance?.id ? { kind: "instance", instanceId: resolvedInstance.id } : null,
-  );
-  const worktreeDirty = repoStatus?.status?.dirty === true;
-  const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent || worktreeDirty;
+  // Review only when this chat changed something (tool-tracked or detected by
+  // the per-turn worktree diff) or already has a review. Pre-existing dirt in
+  // a shared checkout must not open it.
+  const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent;
   // Capability gate, applied once at the source: when the provider doesn't
   // advertise `supportsAgentActivity`, the agent state handed to the chat is
   // EMPTY, so cards, notes, anchored substitution, badges, the header toggle
