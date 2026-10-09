@@ -34,8 +34,6 @@ import {
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { InstanceHeader } from "@/components/chat/instance-header";
-import { BranchChangeBanner } from "@/components/chat/branch-change-banner";
-import { ConnectionStatusBanner } from "@/components/chat/connection-status-banner";
 import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { PermissionBanner } from "@/components/chat/permission-banner";
 import { TerminalInputBanner } from "@/components/chat/terminal-input-banner";
@@ -43,7 +41,13 @@ import { MessageList } from "@/components/chat/message-list";
 import { QueuedMessagesTray, type QueuedChatItem } from "@/components/chat/queued-messages-tray";
 import { PlanReviewPanel, type PlanComment } from "@/components/chat/plan-review-card";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
-import { ComposerDock } from "@/components/chat/input-area/composer-dock";
+import { ComposerDock, ComposerDockStack } from "@/components/chat/input-area/composer-dock";
+import {
+  ComposerNotices,
+  branchChangeNotice,
+  connectionNotice,
+  type ComposerNotice,
+} from "@/components/chat/input-area/composer-notices";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ViewHeader, ViewHeaderTitle, MobileSidebarToggle } from "@/components/ui/view-header";
@@ -1212,6 +1216,27 @@ export function ChatSandbox() {
   const isApprovalRequest = pendingPermission?.kind === "approval";
   const isTerminalInput = pendingPermission?.kind === "terminal_input";
 
+  const dockedNotices: ComposerNotice[] = [];
+  if (connectionBanner) {
+    dockedNotices.push(
+      connectionNotice({
+        kind: connectionBanner,
+        onDismiss: () => setConnectionBanner(null),
+        onRetry: connectionBanner === "reconnecting" ? () => {} : undefined,
+        onContinue:
+          connectionBanner === "interrupted" ? () => setConnectionBanner(null) : undefined,
+      }),
+    );
+  }
+  if (showBranchBanner && instance.branchChanged) {
+    dockedNotices.push(
+      branchChangeNotice({
+        ...instance.branchChanged,
+        onDismiss: () => setShowBranchBanner(false),
+      }),
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Sandbox control header */}
@@ -1527,19 +1552,6 @@ export function ChatSandbox() {
               }
             />
           )}
-          {connectionBanner && (
-            <ConnectionStatusBanner
-              kind={connectionBanner}
-              onDismiss={() => setConnectionBanner(null)}
-            />
-          )}
-          {showBranchBanner && instance.branchChanged && (
-            <BranchChangeBanner
-              originalBranch={instance.branchChanged.originalBranch}
-              currentBranch={instance.branchChanged.currentBranch}
-              onDismiss={() => setShowBranchBanner(false)}
-            />
-          )}
           {instance.external && (
             <ExternalSessionBar
               isStopped={instance.status === "stopped"}
@@ -1552,6 +1564,8 @@ export function ChatSandbox() {
               }
               provider={instance.provider}
               model={instance.preferredModel}
+              isMobile={false}
+              notices={<ComposerNotices notices={dockedNotices} isMobile={false} />}
             />
           )}
 
@@ -1563,26 +1577,29 @@ export function ChatSandbox() {
               isStopped={instance.status === "stopped"}
               onDismiss={() => setComposerMode("idle")}
               aboveComposer={
-                <QueuedMessagesTray
-                  items={queuedItems}
-                  isMobile={false}
-                  onSendNow={(queuedId) =>
-                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
-                  }
-                  onEdit={(item) =>
-                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== item.queuedId))
-                  }
-                  onRemove={(queuedId) =>
-                    setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
-                  }
-                  onReorder={(queuedIds) =>
-                    setQueuedItems((prev) =>
-                      queuedIds
-                        .map((id) => prev.find((q) => q.queuedId === id))
-                        .filter((q): q is QueuedChatItem => !!q),
-                    )
-                  }
-                />
+                <>
+                  <ComposerNotices notices={dockedNotices} isMobile={false} />
+                  <QueuedMessagesTray
+                    items={queuedItems}
+                    isMobile={false}
+                    onSendNow={(queuedId) =>
+                      setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
+                    }
+                    onEdit={(item) =>
+                      setQueuedItems((prev) => prev.filter((q) => q.queuedId !== item.queuedId))
+                    }
+                    onRemove={(queuedId) =>
+                      setQueuedItems((prev) => prev.filter((q) => q.queuedId !== queuedId))
+                    }
+                    onReorder={(queuedIds) =>
+                      setQueuedItems((prev) =>
+                        queuedIds
+                          .map((id) => prev.find((q) => q.queuedId === id))
+                          .filter((q): q is QueuedChatItem => !!q),
+                      )
+                    }
+                  />
+                </>
               }
               planComments={planComments}
               onPlanCommentsChange={setPlanComments}
@@ -1675,32 +1692,34 @@ function MockComposer({
   return (
     <div className="shrink-0">
       <div className="mx-auto max-w-3xl px-6 pb-4">
-        {aboveComposer}
-        {mode === "plan-review" && (
-          <ComposerDock isMobile={false}>
-            <PlanReviewPanel
-              plan={PLAN_SAMPLE}
-              comments={planComments}
-              onCommentsChange={onPlanCommentsChange}
-            />
-          </ComposerDock>
-        )}
+        <ComposerDockStack isMobile={false}>
+          {aboveComposer}
+          {mode === "plan-review" && (
+            <ComposerDock isMobile={false}>
+              <PlanReviewPanel
+                plan={PLAN_SAMPLE}
+                comments={planComments}
+                onCommentsChange={onPlanCommentsChange}
+              />
+            </ComposerDock>
+          )}
 
-        {mode === "ask-user" && (
-          <ComposerDock isMobile={false}>
-            <AskUserQuestionPanel
-              questions={ASK_USER_QUESTIONS}
-              selectedAnswers={selectedAnswers}
-              onSelectOption={onSelectAnswer}
-              customAnswers={customAnswers}
-              onCustomAnswerChange={(qId, text) =>
-                setCustomAnswers((prev) => ({ ...prev, [qId]: text }))
-              }
-              collapsed={isQuestionPanelCollapsed}
-              onToggleCollapse={() => setIsQuestionPanelCollapsed((v) => !v)}
-            />
-          </ComposerDock>
-        )}
+          {mode === "ask-user" && (
+            <ComposerDock isMobile={false}>
+              <AskUserQuestionPanel
+                questions={ASK_USER_QUESTIONS}
+                selectedAnswers={selectedAnswers}
+                onSelectOption={onSelectAnswer}
+                customAnswers={customAnswers}
+                onCustomAnswerChange={(qId, text) =>
+                  setCustomAnswers((prev) => ({ ...prev, [qId]: text }))
+                }
+                collapsed={isQuestionPanelCollapsed}
+                onToggleCollapse={() => setIsQuestionPanelCollapsed((v) => !v)}
+              />
+            </ComposerDock>
+          )}
+        </ComposerDockStack>
         <div className="relative rounded-2xl border border-border/60 bg-surface shadow-(--shadow-composer)">
           <div
             className={`min-h-[52px] max-h-[140px] overflow-y-auto px-4 pt-3 pb-1 text-sm ${isProcessing ? "opacity-40" : ""}`}

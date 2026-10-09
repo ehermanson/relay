@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Eye, Terminal } from "lucide-react";
 import { Button } from "../ui/button";
+import { ComposerDockStack } from "./input-area/composer-dock";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { ProviderKind } from "@shared/types";
@@ -11,6 +12,9 @@ interface ExternalSessionBarProps {
   onTakeover: () => void;
   provider: ProviderKind;
   model?: string;
+  isMobile: boolean;
+  /** Status notices docked above the bar, as they are above the composer. */
+  notices?: ReactNode;
 }
 
 export function ExternalSessionBar({
@@ -19,6 +23,8 @@ export function ExternalSessionBar({
   onTakeover,
   provider,
   model,
+  isMobile,
+  notices,
 }: ExternalSessionBarProps) {
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -29,7 +35,8 @@ export function ExternalSessionBar({
     return (
       <div className="shrink-0 safe-area-bottom">
         <div className="mx-auto max-w-3xl px-6 pb-4 max-md:px-2 max-md:pb-1.5">
-          <div className="rounded-2xl border border-amber-500/40 bg-amber-500/[0.05] px-4 py-3">
+          <ComposerDockStack isMobile={isMobile}>{notices}</ComposerDockStack>
+          <div className="relative rounded-2xl border border-amber-500/40 bg-amber-500/[0.05] px-4 py-3">
             <div className="flex items-start gap-2">
               <Terminal size={16} className="mt-0.5 shrink-0 text-amber-500" />
               <div className="flex-1">
@@ -58,7 +65,8 @@ export function ExternalSessionBar({
   return (
     <div className="shrink-0 safe-area-bottom">
       <div className="mx-auto max-w-3xl px-6 pb-4 max-md:px-2 max-md:pb-1.5">
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface px-4 py-3 max-md:flex-col max-md:items-stretch max-md:gap-2">
+        <ComposerDockStack isMobile={isMobile}>{notices}</ComposerDockStack>
+        <div className="relative flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface px-4 py-3 max-md:flex-col max-md:items-stretch max-md:gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
             <Eye size={16} className="shrink-0 text-muted" />
             <div className="flex min-w-0 items-center gap-2">

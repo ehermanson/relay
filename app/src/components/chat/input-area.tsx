@@ -16,7 +16,7 @@ import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { QueuedRestore } from "@/lib/chat-types";
 import { toggleAnswerSelection } from "@/lib/utils";
 import { AskUserQuestionPanel } from "@/components/chat/input-area/ask-user-question-panel";
-import { ComposerDock } from "@/components/chat/input-area/composer-dock";
+import { ComposerDock, ComposerDockStack } from "@/components/chat/input-area/composer-dock";
 import { ComposerPanel } from "@/components/chat/input-area/composer-panel";
 import { AttachmentStrip } from "@/components/chat/input-area/attachment-strip";
 import { classifyAttachment } from "@/components/chat/input-area/shared";
@@ -85,7 +85,11 @@ interface InputAreaProps {
   onRemoveInlineReply?: (id: string) => void;
   /** Extra content rendered inside the composer container, above the text input. */
   topSlot?: React.ReactNode;
-  /** Docked above the composer box (e.g. the queued-messages tray). */
+  /**
+   * Docked above the composer box (status notices, the queued-messages tray).
+   * Rendered inside the shared `ComposerDockStack`, so each item should be a
+   * `ComposerDock` (or render nothing).
+   */
   aboveComposer?: React.ReactNode;
   /** When set, pre-fills the composer with this text (without sending). Cleared after applying. */
   pendingDraft?: string | null;
@@ -1127,23 +1131,23 @@ export function InputArea({
             }}
           />
 
-          {aboveComposer}
-          <AnimatePresence initial={false}>
-            {composerTopContent ? (
-              <motion.div
-                key="composer-top-content"
-                initial={{ opacity: 0, y: 18, height: 0, marginBottom: 0 }}
-                animate={{ opacity: 1, y: 0, height: "auto", marginBottom: -12 }}
-                exit={{ opacity: 0, y: 18, height: 0, marginBottom: 0 }}
-                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                className="relative overflow-hidden"
-              >
-                <ComposerDock isMobile={isMobile} tucked={false}>
-                  {composerTopContent}
-                </ComposerDock>
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
+          <ComposerDockStack isMobile={isMobile}>
+            {aboveComposer}
+            <AnimatePresence initial={false}>
+              {composerTopContent ? (
+                <motion.div
+                  key="composer-top-content"
+                  initial={{ opacity: 0, y: 18, height: 0 }}
+                  animate={{ opacity: 1, y: 0, height: "auto" }}
+                  exit={{ opacity: 0, y: 18, height: 0 }}
+                  transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                  className="relative overflow-hidden"
+                >
+                  <ComposerDock isMobile={isMobile}>{composerTopContent}</ComposerDock>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </ComposerDockStack>
           <div
             ref={composerContainerRef}
             className="@container/toolbar relative rounded-2xl border border-border/60 bg-surface shadow-(--shadow-composer)"

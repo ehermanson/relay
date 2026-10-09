@@ -2,11 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { ChatAccountMismatchBanner } from "@/components/chat/account-mismatch-banner";
-import { BranchChangeBanner } from "@/components/chat/branch-change-banner";
-import { ConnectionStatusBanner } from "@/components/chat/connection-status-banner";
 import { ChatDebug } from "@/components/chat/chat-debug";
 import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { InputArea } from "@/components/chat/input-area";
+import {
+  ComposerNotices,
+  DetachedComposerNotices,
+  branchChangeNotice,
+  connectionNotice,
+  type ComposerNotice,
+} from "@/components/chat/input-area/composer-notices";
 import type { OutboxAttachment } from "@/lib/outbox-store";
 import { MessageList } from "@/components/chat/message-list";
 import { QueuedMessagesTray, isQueuedChatItem } from "@/components/chat/queued-messages-tray";
@@ -423,6 +428,17 @@ export function InstanceViewContent() {
   const isMobile = useMediaQuery("(max-width: 768px)");
   const queuedItems = useMemo(() => shared.items.filter(isQueuedChatItem), [shared.items]);
 
+  const notices: ComposerNotice[] = [];
+  if (shared.connectionBanner) notices.push(connectionNotice(shared.connectionBanner));
+  if (!shared.isLoadingSession && shared.showBranchChangeBanner && shared.instance.branchChanged) {
+    notices.push(
+      branchChangeNotice({
+        ...shared.instance.branchChanged,
+        onDismiss: actions.dismissBranchChangeBanner,
+      }),
+    );
+  }
+
   const handleQueueWithContext = useCallback(
     async (text: string, attachments: OutboxAttachment[]) => {
       const attributed = spinOffMeta
@@ -798,24 +814,7 @@ export function InstanceViewContent() {
         />
       )}
 
-      {shared.connectionBanner && (
-        <ConnectionStatusBanner
-          kind={shared.connectionBanner.kind}
-          onContinue={shared.connectionBanner.onContinue}
-          onDismiss={shared.connectionBanner.onDismiss}
-          onRetry={shared.connectionBanner.onRetry}
-        />
-      )}
-
-      {!shared.isLoadingSession &&
-        shared.showBranchChangeBanner &&
-        shared.instance.branchChanged && (
-          <BranchChangeBanner
-            originalBranch={shared.instance.branchChanged.originalBranch}
-            currentBranch={shared.instance.branchChanged.currentBranch}
-            onDismiss={actions.dismissBranchChangeBanner}
-          />
-        )}
+      {shared.isLoadingSession && <DetachedComposerNotices notices={notices} />}
 
       {!shared.isLoadingSession &&
         (shared.instance.external ? (
@@ -825,6 +824,8 @@ export function InstanceViewContent() {
             onTakeover={actions.handleTakeover}
             provider={shared.instance.provider}
             model={shared.instance.stats?.model}
+            isMobile={isMobile}
+            notices={<ComposerNotices notices={notices} isMobile={isMobile} />}
           />
         ) : (
           <ErrorBoundary name="Input area" inline>
@@ -858,14 +859,17 @@ export function InstanceViewContent() {
               onDraftChange={setComposerHasContent}
               mode={isReviewMode ? "review" : "default"}
               aboveComposer={
-                <QueuedMessagesTray
-                  items={queuedItems}
-                  isMobile={isMobile}
-                  onSendNow={shared.isActive ? actions.handleInterruptAndSend : undefined}
-                  onEdit={actions.handleEditQueued}
-                  onRemove={actions.handleRemoveQueued}
-                  onReorder={actions.handleReorderQueued}
-                />
+                <>
+                  <ComposerNotices notices={notices} isMobile={isMobile} />
+                  <QueuedMessagesTray
+                    items={queuedItems}
+                    isMobile={isMobile}
+                    onSendNow={shared.isActive ? actions.handleInterruptAndSend : undefined}
+                    onEdit={actions.handleEditQueued}
+                    onRemove={actions.handleRemoveQueued}
+                    onReorder={actions.handleReorderQueued}
+                  />
+                </>
               }
               topSlot={
                 <>
