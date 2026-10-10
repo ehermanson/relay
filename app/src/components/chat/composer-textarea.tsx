@@ -115,6 +115,12 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
         disabled={disabled}
         rows={1}
         className={`block w-full resize-none ${className}`}
+        // Without an explicit autocomplete token iOS classifies the field from
+        // its placeholder and can latch onto a contact AutoFill type, which
+        // replaces QuickType predictions with contact suggestions. The neutral
+        // name keeps WebKit's field-name heuristics from matching too.
+        name="relay-prompt"
+        autoComplete="off"
         spellCheck
         autoCorrect="on"
         autoCapitalize="sentences"
