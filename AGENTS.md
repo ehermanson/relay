@@ -151,6 +151,8 @@ Settings → General has a per-browser, localStorage-backed toggle (`useNativeMo
 
 ### Mobile Type & Touch Targets
 
+The chat composer has a form-level `autocomplete="off"` in `ComposerPanel` plus an editor-level opt-out on both editor paths. The native textarea's field-only opt-out still showed contact AutoFill on iOS; keep spelling/autocorrect enabled and validate AutoFill changes on device (DOM attributes alone cannot prove suppression of system UI).
+
 Mobile (≤768px) sizing is centralized in `app/src/index.css` — don't fight it per-component:
 
 - A 17px root font plus a **mobile type ladder** that remaps the small rem utility classes (`text-[0.5625rem]`…`text-[0.8125rem]`, `text-xs`) up one step on phones. Use the rem scale for new text — never px sizes like `text-[11px]` (they silently opt out of the ladder). Deliberate px exceptions: the composer and chat message bodies are pinned to 16px (iOS anti-zoom parity), xterm and the diff drawer set their own mobile sizes.

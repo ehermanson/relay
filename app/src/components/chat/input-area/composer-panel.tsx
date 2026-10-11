@@ -58,29 +58,31 @@ export function ComposerPanel({
 
   return (
     <>
-      <div ref={editorContainerRef}>
-        <Editor
-          ref={composerRef}
-          value={value}
-          placeholder={placeholder}
-          placeholderClassName={
-            compact
-              ? "px-3 pt-2.5 pb-1.5 text-[15px] leading-snug"
-              : "px-4 pt-3 pb-1 text-[13px] leading-normal"
-          }
-          disabled={disabled}
-          selectionOffset={selectionOffset}
-          onSelectionApplied={onSelectionApplied}
-          onChange={onChange}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          className={
-            compact
-              ? `min-h-[44px] ${expanded ? "max-h-[50vh]" : "max-h-[88px]"} overflow-y-auto bg-transparent px-3 pt-2.5 pb-1.5 text-[16px] leading-snug text-text outline-none placeholder:text-muted ${disabled ? "opacity-40" : ""}`
-              : `min-h-[52px] ${expanded ? "max-h-[50vh]" : "max-h-[140px]"} overflow-y-auto bg-transparent px-4 pt-3 pb-1 text-sm leading-normal text-text outline-none placeholder:text-muted ${disabled ? "opacity-40" : ""}`
-          }
-        />
-      </div>
+      <form autoComplete="off" onSubmit={(event) => event.preventDefault()}>
+        <div ref={editorContainerRef}>
+          <Editor
+            ref={composerRef}
+            value={value}
+            placeholder={placeholder}
+            placeholderClassName={
+              compact
+                ? "px-3 pt-2.5 pb-1.5 text-[15px] leading-snug"
+                : "px-4 pt-3 pb-1 text-[13px] leading-normal"
+            }
+            disabled={disabled}
+            selectionOffset={selectionOffset}
+            onSelectionApplied={onSelectionApplied}
+            onChange={onChange}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            className={
+              compact
+                ? `min-h-[44px] ${expanded ? "max-h-[50vh]" : "max-h-[88px]"} overflow-y-auto bg-transparent px-3 pt-2.5 pb-1.5 text-[16px] leading-snug text-text outline-none placeholder:text-muted ${disabled ? "opacity-40" : ""}`
+                : `min-h-[52px] ${expanded ? "max-h-[50vh]" : "max-h-[140px]"} overflow-y-auto bg-transparent px-4 pt-3 pb-1 text-sm leading-normal text-text outline-none placeholder:text-muted ${disabled ? "opacity-40" : ""}`
+            }
+          />
+        </div>
+      </form>
       <TaskMentionPopoverOverlay popoverState={popoverState} onClose={closeTaskPopover} />
       {composerMenu}
       {toolbar}

@@ -575,6 +575,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           <PlainTextPlugin
             contentEditable={
               <ContentEditable
+                autoComplete="off"
+                aria-label="Chat prompt"
                 aria-placeholder={placeholder}
                 placeholder={() => null}
                 className={className}
