@@ -1,3 +1,5 @@
+import { DesktopCommands } from "@/components/layout/desktop-commands";
+import { getDesktop } from "@/lib/desktop";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { Toaster } from "sonner";
@@ -19,6 +21,7 @@ import { useWSState } from "@/context/websocket-context";
 
 export function AppLayout() {
   const search = useSearchDialog();
+  const desktopMac = getDesktop()?.platform === "darwin";
   const { providers, isLoading: providersLoading } = useInstalledProviders();
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 768px)");
@@ -26,6 +29,11 @@ export function AppLayout() {
   const SidebarComponent = sidebarLayout === "inbox" ? InboxSidebar : Sidebar;
   const { isConnected } = useWSState();
   const { theme } = useTheme();
+  useEffect(() => {
+    void getDesktop()
+      ?.setTheme(theme)
+      .catch(() => {});
+  }, [theme]);
   const {
     sidebarCollapsed: collapsed,
     sidebarWidth: storedWidth,
@@ -101,12 +109,23 @@ export function AppLayout() {
   );
 
   if (!providersLoading && providers.length === 0) {
-    return <NoProvidersLanding />;
+    return (
+      <>
+        <NoProvidersLanding />
+        {getDesktop() && (
+          <DesktopCommands
+            onSearch={() => search.setOpen(true)}
+            onToggleSidebar={toggleCollapsed}
+          />
+        )}
+        <SearchDialog open={search.open} onOpenChange={search.setOpen} />
+      </>
+    );
   }
 
   if (isMobile) {
     return (
-      <div className="app-shell">
+      <div className={`app-shell${collapsed ? " app-shell-sidebar-collapsed" : ""}`}>
         <div className="app-shell-inner">
           <main className="app-shell-content flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
             <Outlet />
@@ -126,6 +145,12 @@ export function AppLayout() {
             <SidebarComponent showLogo onSearchOpen={() => search.setOpen(true)} />
           </div>
         </SwipeableDrawer>
+        {getDesktop() && (
+          <DesktopCommands
+            onSearch={() => search.setOpen(true)}
+            onToggleSidebar={toggleCollapsed}
+          />
+        )}
         <SearchDialog open={search.open} onOpenChange={search.setOpen} />
         {toaster}
         <ProviderUpdateNotification />
@@ -135,18 +160,19 @@ export function AppLayout() {
 
   return (
     <>
-      <div className="app-shell">
+      <div className={`app-shell${collapsed ? " app-shell-sidebar-collapsed" : ""}`}>
         <div className="app-shell-inner">
           {/* Animated sidebar container */}
           <div
             ref={sidebarRef}
             className={`app-shell-sidebar relative overflow-hidden ${isResizing ? "" : "transition-[width] duration-200 ease-in-out"}`}
-            style={{ width: collapsed ? 48 : sidebarWidth }}
+            style={{ width: collapsed ? (desktopMac ? 80 : 48) : sidebarWidth }}
           >
             {showMini ? (
               <MiniSidebar onExpand={toggleCollapsed} />
             ) : (
               <SidebarComponent
+                showLogo={desktopMac}
                 onCollapse={toggleCollapsed}
                 onSearchOpen={() => search.setOpen(true)}
               />
@@ -154,7 +180,7 @@ export function AppLayout() {
             {/* Persistent logo – never unmounts, sits above both sidebars */}
             <Link
               to="/"
-              className="absolute left-0.5 top-1 z-20 flex w-12 items-center justify-center pt-2.5 transition-opacity hover:opacity-80"
+              className="persistent-sidebar-logo absolute left-0.5 top-1 z-20 flex w-12 items-center justify-center pt-2.5 transition-opacity hover:opacity-80"
             >
               <RelayLogo size={28} connected={isConnected} />
             </Link>
@@ -171,6 +197,9 @@ export function AppLayout() {
           </main>
         </div>
       </div>
+      {getDesktop() && (
+        <DesktopCommands onSearch={() => search.setOpen(true)} onToggleSidebar={toggleCollapsed} />
+      )}
       <SearchDialog open={search.open} onOpenChange={search.setOpen} />
       {toaster}
       <ProviderUpdateNotification />

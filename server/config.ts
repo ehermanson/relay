@@ -7,7 +7,7 @@
 import { join } from "node:path";
 import { relayDir, type CoreConfig } from "#core/config.js";
 import { defaultLogger } from "#core/logger.js";
-import type { UpdateManager } from "#server/update-manager.js";
+import type { UpdateService } from "#server/update-manager.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 
@@ -18,6 +18,10 @@ import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
 export interface RelayConfig extends CoreConfig {
   /** Port to run the server on */
   port: number;
+  /** Interface to bind. Undefined preserves the CLI's network-accessible listener. */
+  host?: string;
+  /** Stable local owner secret for desktop outbox recovery across ephemeral logins. */
+  outboxIdentity?: string;
   /** Password for authentication (undefined = open mode, no auth required) */
   password: string | undefined;
   /** Session lifetime in milliseconds */
@@ -40,9 +44,11 @@ export type RelayOptions = Partial<RelayConfig> & {
   /** Alias for workingDirectory */
   defaultWorkingDirectory?: string;
   /** Optional install/update manager used by the UI updater flow. */
-  updateManager?: UpdateManager;
+  updateManager?: UpdateService;
   /** Current public tunnel origin, supplied by the connector owner. */
   getTunnelUrl?: () => string | null;
+  /** Give an embedded renderer time to paint before the synchronous history scan. */
+  backgroundStartupDelayMs?: number;
 };
 
 /**
@@ -51,6 +57,8 @@ export type RelayOptions = Partial<RelayConfig> & {
 export function resolveConfig(options: RelayOptions): RelayConfig {
   return {
     port: options.port ?? 7777,
+    host: options.host,
+    outboxIdentity: options.outboxIdentity,
     password: options.password,
     sessionMaxAge: options.sessionMaxAge ?? 7 * 24 * 60 * 60 * 1000,
     defaultRuntimeMode: options.defaultRuntimeMode ?? "full-access",

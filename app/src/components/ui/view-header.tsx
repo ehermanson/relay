@@ -23,7 +23,7 @@ interface ViewHeaderProps {
 export function ViewHeader({ children, className, style }: ViewHeaderProps) {
   return (
     <div
-      className={`flex shrink-0 items-center gap-3 border-b border-border/70 px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
+      className={`desktop-window-header flex shrink-0 items-center gap-3 border-b border-border/70 px-4 py-2.5 max-[768px]:gap-2 max-[768px]:px-2 max-[768px]:py-2${className ? ` ${className}` : ""}`}
       style={style}
     >
       {children}

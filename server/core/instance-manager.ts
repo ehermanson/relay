@@ -1483,6 +1483,7 @@ export class InstanceManager extends EventEmitter {
   private _persistStateTimeout: ReturnType<typeof setTimeout> | null = null;
   private instances = new Map<string, Instance>();
   private instanceMutationChains = new Map<string, Promise<void>>();
+  private acceptingMessages = true;
   private missingRunnableCwdWarnings = new Map<string, string>();
   /** Space IDs we've already warned about for unusable worktrees — avoids N warnings for N sessions in the same space. */
   private warnedUnusableSpaces = new Set<string>();
@@ -2507,6 +2508,7 @@ export class InstanceManager extends EventEmitter {
     /** Account the chat is created in (`Account.id`); absent/unknown = the default account. */
     accountId?: string;
   }): InstanceInfo {
+    if (!this.acceptingMessages) throw new Error("Relay is restarting; retry after it reconnects");
     const activeCount = [...this.instances.values()].filter(
       (i) => i.process && !i.info.external,
     ).length;
@@ -3940,7 +3942,10 @@ export class InstanceManager extends EventEmitter {
     attachments?: string[],
     allowQueue = true,
   ): Promise<InstanceInfo | undefined> {
+    if (!this.acceptingMessages) throw new Error("Relay is restarting; retry after it reconnects");
     return this.enqueueInstanceMutation(id, (instance) => {
+      if (!this.acceptingMessages)
+        throw new Error("Relay is restarting; retry after it reconnects");
       if (
         !allowQueue &&
         (instance.info.pendingPermission || instance.info.pendingTool || instance.info.pendingPlan)
@@ -5740,6 +5745,38 @@ export class InstanceManager extends EventEmitter {
     }, DISCOVERY_INTERVAL);
     this.startTaskWatcher();
     this.baseConfig.logger.debug("[InstanceManager] Session discovery started");
+  }
+
+  /** Refresh external sessions after wake without creating another poll timer. */
+  reconcile(): Promise<void> {
+    return this.discoverExisting();
+  }
+
+  getRuntimeStatus(): { activeCount: number; pendingCount: number } {
+    let activeCount = 0;
+    let pendingCount = 0;
+    for (const instance of this.instances.values()) {
+      if (instance.info.external) continue;
+      if (instance.info.status === "processing" || instance.process?.isProcessing) activeCount++;
+      if (
+        instance.info.pendingPermission ||
+        instance.info.pendingTool ||
+        instance.info.pendingPlan ||
+        instance.pendingMessages?.length
+      )
+        pendingCount++;
+    }
+    // Commands already admitted to a per-Chat queue must finish before an update.
+    pendingCount += this.instanceMutationChains.size;
+    return { activeCount, pendingCount };
+  }
+
+  /** Synchronous gate: no new managed work can race an idle update decision. */
+  quiesceIfIdle(): boolean {
+    const { activeCount, pendingCount } = this.getRuntimeStatus();
+    if (activeCount || pendingCount) return false;
+    this.acceptingMessages = false;
+    return true;
   }
 
   stopDiscovery(): void {

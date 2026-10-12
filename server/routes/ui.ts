@@ -10,6 +10,7 @@ export function registerUiRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (deps.config.serveUI) {
       if (
         pathname.startsWith("/assets/") ||
+        pathname.startsWith("/fonts/") ||
         pathname === "/favicon.svg" ||
         pathname === "/favicon.ico" ||
         pathname === "/manifest.json" ||
@@ -20,7 +21,7 @@ export function registerUiRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ) {
         const filePath = path.join(deps.uiDistDir, pathname);
         const resolved = path.resolve(filePath);
-        if (!resolved.startsWith(deps.uiDistDir)) {
+        if (!resolved.startsWith(`${path.resolve(deps.uiDistDir)}${path.sep}`)) {
           return c.html("<h1>Forbidden</h1>", 403);
         }
         return fileResponse(resolved, pathname.startsWith("/assets/"));

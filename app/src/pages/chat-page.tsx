@@ -384,7 +384,7 @@ export function Dashboard() {
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-5xl px-4 py-4 sm:px-6 sm:py-8">
           {/* Desktop header */}
-          <div className="mb-6 hidden items-center justify-between gap-3 sm:flex">
+          <div className="desktop-window-header mb-6 hidden items-center justify-between gap-3 sm:flex">
             <div className="min-w-0 flex-1">
               <h1 className="text-[1.25rem] font-semibold tracking-tight text-text-bright">
                 Projects

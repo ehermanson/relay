@@ -46,7 +46,7 @@ import { registerRepoStatusRoutes } from "#server/routes/repo-status.js";
 import { registerSpinOffRoutes } from "#server/routes/spin-offs.js";
 import { registerSystemUpdateRoutes } from "#server/routes/system-update.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
-import { UpdateManager } from "#server/update-manager.js";
+import { UpdateManager, type UpdateService } from "#server/update-manager.js";
 
 // From dist: dist/server/http.js → ../../ = project root
 // From source: server/http.ts → ../ = project root
@@ -77,7 +77,7 @@ interface RequestHandlerOverrides {
   getAvailableProviders?: () => ProviderDescriptor[];
   getOpenTargets?: (targetPath: string) => Promise<NativeOpenTargetsResponse>;
   openNativePath?: (request: NativeOpenRequest) => Promise<void>;
-  updateManager?: UpdateManager;
+  updateManager?: UpdateService;
   pushNotifications?: import("#server/push-notifications.js").PushNotifications;
 }
 

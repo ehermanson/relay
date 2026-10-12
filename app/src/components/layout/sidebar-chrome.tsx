@@ -1,3 +1,4 @@
+import { getDesktop } from "@/lib/desktop";
 /**
  * Header, search trigger, and footer shared by both sidebar layouts.
  *
@@ -229,7 +230,7 @@ export function SidebarHeader({
             Relay
           </span>
           {(import.meta.env.DEV || health?.git?.isWorktree) && (
-            <span className="sidebar-logo-text flex items-center gap-1">
+            <span className="sidebar-build-badges sidebar-logo-text flex items-center gap-1">
               {import.meta.env.DEV && (
                 <Badge variant="default" size="xs">
                   Dev
@@ -377,7 +378,7 @@ export function SidebarFooter() {
               </Button>
             </Tooltip>
           )}
-          {isAuthenticated && (
+          {isAuthenticated && (!getDesktop() || getDesktop()?.capabilities?.attachedServer) && (
             <Button variant="ghost" size="sm" onClick={logout}>
               <LogOut size={13} />
               Sign out

@@ -1,0 +1,69 @@
+# Relay Desktop
+
+Relay Desktop uses Electron, the shared React product, and a separate Node utility process for Relay's server. Streaming stays on the existing HTTP/WebSocket path. The native bridge owns windowing, menus, file dialogs and OS integration.
+
+```sh
+pnpm desktop             # build and launch this source checkout
+pnpm desktop:pack        # unsigned local native app, no release credentials
+pnpm desktop:build       # local platform installers (not an update release)
+pnpm desktop:release     # signed/notarized release and GitHub publishing
+pnpm desktop:test        # native policy, supervisor, updater and recovery tests
+pnpm desktop:benchmark   # isolated sequential startup/restart benchmark
+node desktop/benchmark.mjs --runs 3 --chats 500 --messages 2000
+```
+
+macOS ARM builds appear at `desktop-release/mac-arm64/Relay.app`. Build Windows/Linux on their respective platforms. Local builds do not enable automatic binary updates. Release builds require signing/notarization credentials; they must be explicitly requested with `--publish` or `--signed`. Nothing is published by `desktop:pack` or `desktop:build`.
+
+## Native behavior
+
+- Native traffic lights share the sidebar header with the Chat header. Desktop is edge-to-edge with draggable header backgrounds, interactive controls, fullscreen-aware spacing, and matching native light/dark chrome. Windows/Linux caption controls occupy the trailing header edge.
+- App menus provide New Chat, Add Project, Search, Toggle Sidebar, Settings, New Window, and ordinary editing/zoom shortcuts. Text context menus support editing, spelling suggestions, copying links, and opening links in the browser.
+- Local mode provides folder selection and file actions: Reveal in Finder/Explorer and Open with Default App. Hosts validate canonical file paths against registered Projects, Space worktrees, or Relay uploads; symlink escapes and executable file types are rejected. Code files can use the existing configured editor integration.
+- Notifications and global Show Relay shortcut (`CommandOrControl+Shift+Space`) are opt-in in Settings → General. Unavailable shortcut registration is reported; no unrelated shortcut is displaced. Notifications are deduplicated across windows and focus the correct Chat without reloading the renderer.
+- Dock/taskbar badges and tray status reflect running Chats, input requests and failures through the existing WebSocket stream. Multiple windows share one backend. The tray provides Show, Search, New Chat, New Window and Quit.
+- Keep Running When Closed is configurable. The last screen and window position/size are saved atomically and clamped to connected displays. Quit shuts down the owned backend. A renderer crash offers reload while preserving the backend; unexpected backend exits recover with bounded backoff, refresh the cookie, and reload windows. Repeated failures stop retrying and surface an error.
+- Wake reconciliation refreshes discovery without adding polling timers. `relay://open?path=%2Fprojects%2F...` routes to a Chat; deep links normalize and restrict routes. Packaged installs register the protocol. Source registration requires `RELAY_REGISTER_PROTOCOL=1` so development does not replace the installed handler.
+
+## Desktop and web coexistence
+
+Default local mode owns isolated `~/.relay-desktop` state; override with absolute `RELAY_DESKTOP_HOME`. It uses existing Provider transcript roots but does not merge writable CLI settings or managed bindings from `~/.relay`. Desktop and CLI share an OS-backed exclusive state lock, so explicit attempts to point two servers at the same DB fail safely.
+
+Settings → General → Relay Server can instead connect to an existing Relay origin. `RELAY_DESKTOP_SERVER_URL` is a launch override. Only HTTPS or loopback HTTP is allowed; URLs cannot contain credentials, paths, queries or fragments. Existing mode starts no backend, uses the server's normal login in a separate persistent browser partition, and never stops that server on Quit. It restores web sharing/Sign Out controls and disables local folder/file actions so remote server paths cannot target this computer. Choose this mode to use the existing CLI server, settings, Projects and phone/tunnel access together. Switching mode saves configuration and relaunches; an owned busy backend must become idle first.
+
+The owned server restores the login-shell PATH with a bounded deadline, binds `127.0.0.1`, persists its port/origin, and uses a private per-launch password and cookie. Origin stability preserves localStorage and IndexedDB. Offline sends retain a stable desktop owner across launches. An occupied saved port fails explicitly instead of silently discarding browser state. No owned desktop tunnel or browser push subscription is started.
+
+## Seamless updates
+
+The existing sidebar/Settings Update UI and authenticated `/api/system/update` routes are shared. `UpdateService` supplies the same snapshot/check/install contract for three cases:
+
+1. **Web install:** existing git pull, dependency installation, build, restart, then browser Reload behavior.
+2. **Native source launch:** the existing git/install/build process followed by native relaunch using the newly installed Electron executable. Dirty or non-main source checkouts refuse updates instead of stashing active development work.
+3. **Native release:** `electron-updater` checks the bundled GitHub feed, explicitly downloads the platform release with progress, and installs/relaunches. Automatic installation on ordinary Quit is disabled.
+
+Before native restart, an atomic server gate checks owned managed work, pending approvals/plans/queued messages, and live terminals. It rejects new work and closes transports only when idle. Main then awaits graceful backend exit. Busy work defers the update with a retry message; downloaded artifacts remain ready. macOS installer signature verification can fail asynchronously: the app restores the current backend, authentication and windows on failure instead of leaving a dead shell. All validation uses an injected adapter; no signature checks are disabled.
+
+When attached to another server, the shared Update UI upgrades that server and retains its web Reload behavior. Help → Update Desktop Shell controls the native application separately.
+
+The GitHub feed targets `ehermanson/relay`. `.github/workflows/desktop.yml` packages and smoke-tests macOS/Windows/Linux. Release versions are `<package-major>.<package-minor>.<main-history-count>` with the source SHA recorded in the package, so main updates remain monotonic without changing the web package version. Manual dispatch can publish. Set repository variable `RELAY_DESKTOP_RELEASES=true` to publish after each main push once credentials are configured. It is disabled until configured; no workflow has been dispatched or remote release published by this implementation.
+
+Required GitHub secrets:
+
+- `RELAY_MAC_CERTIFICATE` (Developer ID P12 URL/base64) and `RELAY_MAC_CERTIFICATE_PASSWORD`.
+- `RELAY_APPLE_API_KEY` (private P8 key text), `RELAY_APPLE_API_KEY_ID`, and `RELAY_APPLE_API_ISSUER` for notarization.
+- `RELAY_WINDOWS_CERTIFICATE` and `RELAY_WINDOWS_CERTIFICATE_PASSWORD` for signed Windows releases.
+
+GitHub's scoped workflow token publishes artifacts; it is not embedded in the app. Local signed builds can use standard electron-builder signing environment variables and an Apple notarization keychain profile. Store credentials in secure stores/CI secrets, never Project files. macOS updates require a signed release. A genuine newer signed binary update remains unverified until the first two releases exist.
+
+## Performance and validation
+
+Backend work is isolated from the renderer/main process. Desktop delays the filesystem scan by two seconds so `/auth`, assets and first paint do not compete with synchronous history scanning; ordinary web startup is unchanged. The shared virtualized Chat UI and lazy modules remain intact. Fonts are bundled and served as binary assets.
+
+The benchmark creates only temporary Provider roots and a temporary git Project, sends no Provider prompts, verifies a real PTY and 1 MiB output, profiles a synthetic large Chat, and checks port/owner/browser-storage persistence across restarts. JSON reports live in ignored `desktop-release/`. `Help → Performance Diagnostics` exposes startup/process metrics; Export Diagnostics saves a local report with no transcript content or credentials.
+
+Measured on this Mac, three source launches with 500 Chats and a 4,000-message Chat: median visible startup 1.146s; median Chat opening 145ms; maximum measured scroll frame 28ms; no frames over50ms; peak33 mounted message rows; median native PTY throughput10.9MiB/s. These are synthetic measurements, not guarantees for every Project. Memory remains substantial: median summed process working sets789MiB (shared pages may be counted more than once), backend RSS336MiB, renderer JS heap23MiB. Startup CPU includes warmup/indexing, not settled idle.
+
+`RELAY_DESKTOP_SMOKE=1` validates boot, bridge, fonts, native terminal and state, then quits. `RELAY_DESKTOP_RECOVERY_SMOKE=1` additionally forces backend recovery. `RELAY_DESKTOP_UPDATE_SMOKE=1` simulates an asynchronous installer rejection through the real native lifecycle, verifies exactly one attempted install and preserved owner/storage, and restores the current backend. The fake adapter performs no download, binary modification or application installation. Use a temporary home and `RELAY_DESKTOP_BENCHMARK=1` to isolate Provider roots. CI runs policy/lifecycle/update tests; the platform workflow also runs packaged smoke. Actual Windows/Linux execution is pending that workflow.
+
+Packaging deploys locked production dependencies into `.desktop-stage` and rebuilds native modules there, keeping the CLI dependency ABI intact. Native libraries, PTY helpers and bundled Provider binaries are unpacked from ASAR. Renderer sandboxing, context isolation, exact main-frame IPC checks, restricted UI-only window routes, CSP, denied webviews and restricted permissions protect the native boundary. Trusted-origin sanitized clipboard writes preserve Copy actions; clipboard reads and media/location permissions remain denied. Attached older servers may load only the two standard Google Fonts hosts for font compatibility.
+
+References: [Electron performance](https://www.electronjs.org/docs/latest/tutorial/performance), [utility processes](https://www.electronjs.org/docs/latest/api/utility-process), [security](https://www.electronjs.org/docs/latest/tutorial/security), [electron-builder v26 updates](https://www.electron.build/v26/docs/features/auto-update/), [native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules), [Tauri webviews](https://v2.tauri.app/reference/webview-versions/).

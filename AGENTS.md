@@ -476,3 +476,23 @@ Subagents/teammates are represented through one shared contract in `types.ts`: `
 - **Build before test**: Tests import from `dist/`, not source. A stale build = confusing test failures.
 - **`import.meta.dirname`**: `server/http.ts` detects whether it's running from source or `dist/` to compute the project root. Avoid hardcoded `../..` traversals — use the `projectRoot` constant instead.
 - **No parameter properties**: Node's native TS type stripping doesn't support `constructor(private x: T)` syntax. Use explicit field declarations + assignment instead. (This is what enables `pnpm dev` to run without tsc.)
+
+## Electron Desktop
+
+- `desktop/main.mjs` owns native window/menu/tray APIs; `desktop/preload.cjs` exposes a narrow bridge; `desktop/backend.mjs` runs the existing server in an Electron utility process. Renderer streaming uses existing HTTP/WebSocket, never main IPC.
+- Desktop sets isolated `RELAY_HOME` before importing server modules. Bind loopback, keep the persisted port/origin stable (drafts/IndexedDB), use per-launch auth and stable desktop outbox identity. Never run the CLI under Electron's `process.execPath`.
+- Renderer stays sandboxed, context-isolated, without Node integration. Validate exact main-frame IPC origin, payloads, navigation, and external protocols. Keep desktop Logout/sharing hidden; desktop owns auth and does not expose a LAN listener.
+- Native modules are rebuilt only in `.desktop-stage`, from lockfile-deployed production dependencies. Unpack native libraries/executables from ASAR. Verify a real terminal spawn in packaged smoke tests. Root Node tests must remain usable after packaging.
+- `pnpm desktop:pack` creates the native app; `pnpm desktop:test` covers shell policy. `RELAY_DESKTOP_SMOKE=1` verifies boot/bridge/native terminal and quits; use a temporary `RELAY_DESKTOP_HOME`. See `desktop/README.md`.
+
+- Desktop chrome uses `--app-top-inset: 0`, fullbleed surfaces, and native traffic lights inside the sidebar header. Keep drag regions confined to header backgrounds, with interactive descendants marked no-drag. The collapsed macOS rail reserves 80px for native controls. Self-hosted `/fonts/` files must be served as assets, never the SPA HTML fallback; smoke checks load the actual font faces.
+
+### Desktop Lifecycle and Updates
+
+- Main supervises one utility backend with bounded recovery; windows share that backend. Refresh private auth cookies after recovery. An attached existing server retains normal auth and its lifecycle; never stop it or offer local file actions for its remote paths.
+- `server/state-lock.ts` uses an OS-backed SQLite exclusive transaction on a stable lock inode to prevent CLI/desktop co-writers. Never unlink a live lock database. Desktop origin and outbox identity stay stable across upgrades.
+- `UpdateService` is the structural server contract. Web/source git installs and native binary installs use the same `/api/system/update` UI/routes. Native source updates require a clean main checkout; relaunch the newly installed Electron binary, not a removed prior version. Packaged code never pulls Git into ASAR.
+- Native install must atomically quiesce idle managed work and terminals, await backend exit, and preserve an alive shell for asynchronous installer failure recovery. Disable auto-install-on-Quit. Separate `installing` from `quitting` so close-to-tray cannot block the native installer.
+- Only explicit signed/published builds advertise release updates. Configure signing/notarization secrets and the monotonic GitHub release feed before enabling `RELAY_DESKTOP_RELEASES`. Never embed publishing credentials or weaken signature checks. Local packaging never publishes.
+- Native windows accept normalized UI routes only; `/api/file` HTML must never get a privileged preload. Local file actions resolve real paths against Projects/Space worktrees; reject symlink escapes. Multiple-window notifications are deduplicated in main.
+- Benchmarks isolate Provider roots and create synthetic git Projects. Do not send paid Provider prompts to test the shell. Distinguish startup-window CPU from settled idle and report Electron memory costs honestly. Packaged crash/update recovery smoke performs no actual binary installation.

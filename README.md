@@ -302,3 +302,7 @@ pnpm test
 - Relay does not replace provider login or setup
 - Auth is single-password, not multi-user
 - Data stays on the machine running Relay
+
+### Native desktop application
+
+Relay also runs in an Electron shell with integrated native chrome, menus, Project folder selection, file actions, notifications, attention badges, multiple windows, background tray operation, optional global shortcut, and launch at login. Run `pnpm desktop` to launch or `pnpm desktop:pack` to build a native app. Desktop uses isolated `~/.relay-desktop` state and reuses the existing React UI and provider backend. Closing its window keeps agents running by default; Quit Relay shuts down its owned backend. Settings can attach to an existing CLI server for shared settings and phone access. The existing Update UI supports native release upgrades and source-launch git/build upgrades with idle restart checks and failure recovery; signed release credentials are required to activate binary updates. See [desktop setup and architecture](desktop/README.md).

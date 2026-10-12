@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Loader2, Search } from "lucide-react";
+import { getDesktop } from "@/lib/desktop";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchGitRepos } from "../../lib/api";
 
@@ -18,6 +20,9 @@ export function AddProjectForm({ onSubmit, onCancel, error, registeredDirs }: Ad
     isLoading: loading,
     isError: scanError,
   } = useQuery({ queryKey: ["gitRepos"], queryFn: fetchGitRepos });
+  const [choosing, setChoosing] = useState(false);
+  const [chooserError, setChooserError] = useState<string>();
+  const desktop = getDesktop();
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -93,6 +98,34 @@ export function AddProjectForm({ onSubmit, onCancel, error, registeredDirs }: Ad
         />
       </div>
 
+      {desktop?.capabilities?.localFiles && (
+        <Button
+          disabled={choosing}
+          onClick={async () => {
+            setChoosing(true);
+            setChooserError(undefined);
+            try {
+              const directory = await desktop.chooseDirectory();
+              if (directory) {
+                if (registeredDirs?.has(directory))
+                  setChooserError("This Project is already added.");
+                else onSubmit(directory);
+              }
+            } catch {
+              setChooserError("Could not open the folder chooser.");
+            } finally {
+              setChoosing(false);
+            }
+          }}
+        >
+          {choosing ? "Choosing…" : "Choose Project folder…"}
+        </Button>
+      )}
+      {chooserError && (
+        <p role="alert" className="text-[0.6875rem] text-red-400">
+          {chooserError}
+        </p>
+      )}
       {error && <p className="text-[0.6875rem] text-red-400">{error}</p>}
 
       <div

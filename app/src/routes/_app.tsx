@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { getDesktop } from "@/lib/desktop";
 import { createFileRoute, useParams, useRouter } from "@tanstack/react-router";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { WebSocketProvider } from "../context/websocket-context";
@@ -8,14 +10,32 @@ import { ActionToastProvider } from "@/context/action-toast-context";
 import { useTerminalPendingToasts } from "../hooks/use-terminal-pending-toasts";
 import { useTerminalScopes } from "../hooks/use-terminal-scopes";
 import { useTurnEndToasts } from "../hooks/use-turn-end-toasts";
+import { useDesktopAttention } from "@/hooks/use-desktop-attention";
 import { usePushPresence } from "../hooks/use-push-presence";
 
 function AppLayoutWithToasts() {
+  const router = useRouter();
+  useEffect(
+    () =>
+      getDesktop()?.onNavigate((path) => {
+        void router.navigate({ to: path });
+      }),
+    [router],
+  );
+  useEffect(() => {
+    const desktop = getDesktop();
+    if (!desktop) return;
+    const update = (fullscreen: boolean) =>
+      document.documentElement.classList.toggle("desktop-fullscreen", fullscreen);
+    update(!!desktop.fullscreen);
+    return desktop.onFullscreen(update);
+  }, []);
   const { chatId } = useParams({ strict: false }) as { chatId?: string };
   useTerminalPendingToasts(chatId);
   useTerminalScopes();
   useTurnEndToasts(chatId);
   usePushPresence(chatId);
+  useDesktopAttention();
   return <AppLayout />;
 }
 

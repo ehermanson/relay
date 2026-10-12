@@ -14,7 +14,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -39,3 +39,6 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Desktop policy and lifecycle tests
+        run: pnpm desktop:test

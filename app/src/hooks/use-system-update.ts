@@ -58,12 +58,15 @@ export function describeUpdateStage(
   status: UpdateStatus | undefined,
   stage: UpdateStage | null | undefined,
 ): string | null {
+  if (stage === "waiting") return "Waiting for active chats to finish…";
   if (status === "checking") return "Checking for updates…";
   if (status === "restart_pending" || stage === "restarting") {
     return "Restarting Relay…";
   }
   if (status === "updating") {
     switch (stage) {
+      case "downloading":
+        return "Downloading Relay…";
       case "pulling":
         return "Pulling latest code…";
       case "installing":
@@ -133,6 +136,8 @@ export function useSystemUpdate(): UseSystemUpdateResult {
     },
   });
 
+  const nativeRestart = snapshot?.distribution === "desktop" || snapshot?.distribution === "source";
+
   // Subscribe to module-level `pendingReload` so every mounted hook instance
   // re-renders together when install is triggered anywhere in the app.
   const pendingReload = useSyncExternalStore(subscribeReload, getPendingReload, getPendingReload);
@@ -142,14 +147,21 @@ export function useSystemUpdate(): UseSystemUpdateResult {
     mutationFn: installUpdate,
     onMutate: () => {
       modulePreInstallCommit = snapshot?.currentCommit ?? null;
-      setPendingReload(true);
+      setPendingReload(!nativeRestart);
       toast.loading("Starting Relay update…", {
         id: TOAST_ID,
-        description: "Pulling, installing, and building the new version.",
+        description:
+          snapshot?.distribution === "desktop"
+            ? "Downloading the verified desktop release. Relay will restart when chats are idle."
+            : "Pulling, installing, and building the new version.",
         duration: Infinity,
       });
     },
     onSuccess: () => {
+      if (nativeRestart) {
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+        return;
+      }
       toast.loading("Restarting Relay…", {
         id: TOAST_ID,
         description: "Reconnecting once the server comes back online.",
@@ -224,14 +236,36 @@ export function useSystemUpdate(): UseSystemUpdateResult {
 
     const label = describeUpdateStage(status, snapshot?.stage);
     if (!label) return;
-    const stageKey = `${status}:${snapshot?.stage ?? ""}`;
+    const percent = snapshot?.downloadPercent;
+    const stageKey = `${status}:${snapshot?.stage ?? ""}:${percent == null ? "" : Math.floor(percent)}`;
     if (lastToastStageRef.current === stageKey) return;
     lastToastStageRef.current = stageKey;
-    toast.loading(label, {
-      id: TOAST_ID,
-      duration: Infinity,
-    });
-  }, [anyInstallPending, snapshot?.status, snapshot?.stage]);
+    toast.loading(
+      snapshot?.stage === "downloading" && percent != null
+        ? `${label} ${Math.floor(percent)}%`
+        : label,
+      {
+        id: TOAST_ID,
+        duration: Infinity,
+      },
+    );
+  }, [anyInstallPending, snapshot?.status, snapshot?.stage, snapshot?.downloadPercent]);
+
+  useEffect(() => {
+    if (nativeRestart && snapshot?.stage === "waiting" && snapshot.status === "available") {
+      toast.info(snapshot.distribution === "desktop" ? "Update downloaded" : "Update ready", {
+        id: TOAST_ID,
+        description: snapshot.error ?? "Finish active chats, then choose Update and Restart.",
+        duration: 8000,
+      });
+    }
+  }, [nativeRestart, snapshot?.stage, snapshot?.status, snapshot?.error, snapshot?.distribution]);
+
+  useEffect(() => {
+    if (nativeRestart && snapshot?.status === "error") {
+      toast.error(snapshot.error ?? "Relay update failed", { id: TOAST_ID, duration: 8000 });
+    }
+  }, [nativeRestart, snapshot?.status, snapshot?.error]);
 
   // Post-restart toast: once we've cleared the busy states AND we see a commit
   // that differs from the one we captured before install, show the final

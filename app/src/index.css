@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Orbitron:wght@700;800;900&display=swap");
+@import "./fonts.css";
 @import "highlight.js/styles/github-dark.css";
 
 @theme {
@@ -375,6 +375,71 @@ body {
   pointer-events: none;
 }
 
+/* The desktop window uses Relay's own headers as chrome. Native macOS traffic
+   lights live in the sidebar's first row, with no extra title-bar strip. */
+html.relay-desktop {
+  --app-top-inset: 0px;
+}
+html.relay-desktop body {
+  overflow: hidden;
+}
+html.relay-desktop .app-shell {
+  padding: 0;
+}
+html.relay-desktop .app-shell-inner {
+  gap: 0;
+}
+html.relay-desktop .app-shell-sidebar,
+html.relay-desktop .app-shell-sidebar aside,
+html.relay-desktop .app-shell-content {
+  border-radius: 0;
+  box-shadow: none;
+  border: 0;
+}
+html.relay-desktop .app-shell-sidebar {
+  border-right: 1px solid var(--color-border);
+}
+html.relay-desktop .app-shell::before {
+  display: none;
+}
+html.relay-desktop[data-desktop-platform="darwin"] .persistent-sidebar-logo {
+  display: none;
+}
+html.relay-desktop[data-desktop-platform="darwin"]:not(.desktop-fullscreen) .sidebar-header {
+  min-height: 48px;
+  padding-left: 80px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+html.relay-desktop[data-desktop-platform="darwin"] .sidebar-build-badges {
+  display: none;
+}
+html.relay-desktop[data-desktop-platform="darwin"] .desktop-window-header {
+  min-height: 48px;
+}
+html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-rail {
+  width: 100%;
+}
+html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-title-slot {
+  width: 100%;
+}
+html.relay-desktop[data-desktop-platform="darwin"]
+  :is(.sidebar-header, .mini-sidebar-title-slot, .desktop-window-header) {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html.relay-desktop[data-desktop-platform="darwin"]
+  :is(.sidebar-header, .desktop-window-header)
+  :is(button, a, input, select, textarea, [role="button"], [role="tab"], [contenteditable="true"]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+@container sidebar (max-width: 280px) {
+  html.relay-desktop[data-desktop-platform="darwin"] .sidebar-header .sidebar-logo-text {
+    display: none;
+  }
+}
+
 html {
   scroll-behavior: smooth;
   /* Matches body — shows through briefly below the shell when the keyboard
@@ -471,12 +536,14 @@ html.light ::selection {
 }
 
 /* ── Scrollbars ────────────────────────────────────────────────────── */
-body, body * {
+body,
+body * {
   --sb-size: 8px;
   --scrollbar-thumb: hsl(0 0% 100% / 0.08);
   --scrollbar-thumb-hover: hsl(0 0% 100% / 0.2);
 }
-html.light body, html.light body * {
+html.light body,
+html.light body * {
   --scrollbar-thumb: hsl(0 0% 0% / 0.07);
   --scrollbar-thumb-hover: hsl(0 0% 0% / 0.15);
 }
@@ -516,7 +583,8 @@ body *::-webkit-scrollbar-thumb:hover {
 }
 
 @supports not selector(::-webkit-scrollbar) {
-  body, body * {
+  body,
+  body * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
@@ -786,7 +854,6 @@ body *::-webkit-scrollbar-thumb:hover {
     inset 0 0.5px 0 var(--color-glass-border);
 }
 
-
 /* ── Hidden Scrollbar (for scroll containers driven by wheel/drag) ── */
 .scrollbar-none {
   scrollbar-width: none;
@@ -901,4 +968,21 @@ html.light .app-shell::before {
    between touchmove events and during momentum, where JS can't intercept). */
 [data-swipeable-drawer] * {
   overscroll-behavior: contain;
+}
+
+/* Native Windows/Linux caption buttons occupy the trailing edge of the same
+   header row. Keep their hit area clear, and drag only header backgrounds. */
+html.relay-desktop:not([data-desktop-platform="darwin"]) .desktop-window-header {
+  min-height: 48px;
+  padding-right: 148px;
+}
+html.relay-desktop :is(.sidebar-header, .mini-sidebar-title-slot, .desktop-window-header) {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html.relay-desktop
+  :is(.sidebar-header, .desktop-window-header)
+  :is(button, a, input, select, textarea, [role="button"], [role="tab"], [contenteditable="true"]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }

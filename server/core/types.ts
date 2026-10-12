@@ -1529,7 +1529,13 @@ export type UpdateStatus =
  * Sub-stage of the "updating" status, so the UI can surface finer-grained
  * progress (pull → install deps → build → restart). `null` when not installing.
  */
-export type UpdateStage = "pulling" | "installing" | "building" | "restarting";
+export type UpdateStage =
+  | "pulling"
+  | "installing"
+  | "building"
+  | "downloading"
+  | "waiting"
+  | "restarting";
 
 export interface UpdateCommit {
   commit: string;
@@ -1537,6 +1543,10 @@ export interface UpdateCommit {
 }
 
 export interface UpdateSnapshot {
+  /** Desktop releases replace the application; source installs rebuild the checkout. */
+  distribution?: "desktop" | "source";
+  latestVersion?: string | null;
+  downloadPercent?: number | null;
   enabled: boolean;
   installAction: "restart";
   status: UpdateStatus;

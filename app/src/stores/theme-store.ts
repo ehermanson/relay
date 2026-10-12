@@ -70,6 +70,18 @@ export const useThemeStore = create<ThemeState>()((set, get) => {
     });
   }
 
+  // Native windows and browser tabs share the same persisted preference.
+  if (typeof window !== "undefined") {
+    window.addEventListener("storage", (event) => {
+      if (event.key !== "relay-theme") return;
+      const preference = event.newValue;
+      if (preference === "dark" || preference === "light" || preference === "system") {
+        set({ preference, theme: resolveTheme(preference) });
+        applyTheme(resolveTheme(preference));
+      }
+    });
+  }
+
   return {
     preference: initial,
     theme: resolved,
