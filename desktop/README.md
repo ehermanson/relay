@@ -40,7 +40,7 @@ The existing sidebar/Settings Update UI and authenticated `/api/system/update` r
 2. **Native source launch:** the existing git/install/build process followed by native relaunch using the newly installed Electron executable. Dirty or non-main source checkouts refuse updates instead of stashing active development work.
 3. **Native release:** `electron-updater` checks the bundled GitHub feed, explicitly downloads the platform release with progress, and installs/relaunches. Automatic installation on ordinary Quit is disabled.
 
-Before native restart, an atomic server gate checks owned managed work, pending approvals/plans/queued messages, and live terminals. It rejects new work and closes transports only when idle. Main then awaits graceful backend exit. Busy work defers the update with a retry message; downloaded artifacts remain ready. macOS installer signature verification can fail asynchronously: the app restores the current backend, authentication and windows on failure instead of leaving a dead shell. All validation uses an injected adapter; no signature checks are disabled.
+Before native restart, an atomic server gate checks owned managed work, pending approvals/plans/queued messages, and live terminals. It rejects new work and closes transports only when idle. Main then awaits graceful backend exit. Busy work defers the update with a retry message; downloaded artifacts remain ready. macOS installer signature verification can fail asynchronously: the app restores the current backend, authentication and windows on failure instead of leaving a dead shell. Unit tests inject an adapter; the local signed integration test also exercises the real installer. No signature checks are disabled.
 
 When attached to another server, the shared Update UI upgrades that server and retains its web Reload behavior. Help → Update Desktop Shell controls the native application separately.
 
@@ -52,7 +52,7 @@ Required GitHub secrets:
 - `RELAY_APPLE_API_KEY` (private P8 key text), `RELAY_APPLE_API_KEY_ID`, and `RELAY_APPLE_API_ISSUER` for notarization.
 - `RELAY_WINDOWS_CERTIFICATE` and `RELAY_WINDOWS_CERTIFICATE_PASSWORD` for signed Windows releases.
 
-GitHub's scoped workflow token publishes artifacts; it is not embedded in the app. Local signed builds can use standard electron-builder signing environment variables and an Apple notarization keychain profile. Store credentials in secure stores/CI secrets, never Project files. macOS updates require a signed release. A genuine newer signed binary update remains unverified until the first two releases exist.
+GitHub's scoped workflow token publishes artifacts; it is not embedded in the app. Local signed builds can use standard electron-builder signing environment variables and an Apple notarization keychain profile. Store credentials in secure stores/CI secrets, never Project files. macOS updates require a signed release. A real local Developer ID signed upgrade from 3.0.0 to 3.0.1 passed download, Squirrel replacement, relaunch and state-preservation checks. Public GitHub update delivery and notarization remain unverified until release credentials are configured and releases published.
 
 ## Performance and validation
 
