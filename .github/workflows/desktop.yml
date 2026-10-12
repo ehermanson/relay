@@ -48,6 +48,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm desktop:test
       - run: pnpm desktop:pack
+      - name: Configure Chromium sandbox helper
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root desktop-release/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 desktop-release/linux-unpacked/chrome-sandbox
       - name: Smoke native runtime
         shell: bash
         env:
@@ -65,10 +70,13 @@ jobs:
           else
             desktop-release/win-unpacked/Relay.exe
           fi
+      - name: Archive executable permissions and framework symlinks
+        shell: bash
+        run: tar -czf "relay-native-$RUNNER_OS-$RUNNER_ARCH.tar.gz" -C desktop-release .
       - uses: actions/upload-artifact@v4
         with:
           name: relay-desktop-${{ runner.os }}-${{ runner.arch }}
-          path: desktop-release/
+          path: relay-native-*.tar.gz
           retention-days: 7
 
   release:

@@ -747,7 +747,7 @@ async function smoke() {
   await new Promise((resolve) => setTimeout(resolve, 3500));
   const target = window;
   const report = await target.webContents.executeJavaScript(
-    `(async()=>{await document.fonts.load('400 16px Outfit');await document.fonts.load('400 14px "JetBrains Mono"');const prior=localStorage.getItem('relay:desktop-smoke');localStorage.setItem('relay:desktop-smoke','persisted');return{title:document.title,bridge:!!window.relayDesktop,body:document.body.innerText.slice(0,150),outfit:document.fonts.check('400 16px Outfit'),mono:document.fonts.check('400 14px "JetBrains Mono"'),prior,identity:await fetch('/api/outbox/identity').then(r=>r.json()),preferences:await window.relayDesktop.getPreferences(),updates:await fetch('/api/system/update').then(r=>r.json())}})()`,
+    `(async()=>{const outfit=await document.fonts.load('400 16px Outfit');const mono=await document.fonts.load('400 14px "JetBrains Mono"');const prior=localStorage.getItem('relay:desktop-smoke');localStorage.setItem('relay:desktop-smoke','persisted');return{title:document.title,bridge:!!window.relayDesktop,body:document.body.innerText.slice(0,150),outfit:outfit.length>0&&outfit.every(face=>face.status==='loaded'),mono:mono.length>0&&mono.every(face=>face.status==='loaded'),prior,identity:await fetch('/api/outbox/identity').then(r=>r.json()),preferences:await window.relayDesktop.getPreferences(),updates:await fetch('/api/system/update').then(r=>r.json())}})()`,
   );
   if (!report.bridge || !report.body.trim() || !report.outfit || !report.mono)
     throw new Error("Desktop renderer/font smoke failed");
