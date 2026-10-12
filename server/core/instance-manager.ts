@@ -9,6 +9,12 @@
  */
 
 import { EventEmitter } from "events";
+import {
+  TranscriptReader,
+  TranscriptHistory,
+  readTranscriptLines,
+  readTranscriptFirstLine,
+} from "#core/transcript-reader.js";
 import { randomUUID } from "crypto";
 import { constants as osConstants } from "os";
 import {
@@ -179,6 +185,7 @@ import {
   resolveAgentTranscriptPathForProvider,
   resolveManagedTranscriptPathForProvider,
 } from "#core/provider-registry.js";
+import { estimateRetainedBytes } from "#core/retained-size.js";
 import {
   buildAgentResultInfo,
   buildAgentSpawnInfo,
@@ -316,6 +323,7 @@ interface TranscriptParseResult {
 interface TranscriptCacheEntry {
   cacheKey: string;
   parsed: TranscriptParseResult;
+  estimatedBytes: number;
 }
 
 function isUsableStoredWorktreePath(
@@ -469,6 +477,7 @@ export interface InstanceManager {
 
 const MAX_HISTORY = 1000;
 const MAX_TRANSCRIPT_CACHE_ENTRIES = 100;
+const MAX_TRANSCRIPT_CACHE_BYTES = 32 * 1024 * 1024;
 const DISCOVERY_INTERVAL = 30_000; // 30s
 const SLOW_DISCOVERY_WARN_MS = 1_000;
 /** Git branch refresh runs at most this often (multiple of discovery interval) */
@@ -918,12 +927,10 @@ function extractUserInputRequest(activity: ActivityMessage): ProviderRequest | n
  */
 function extractTranscriptResult(filePath: string): { title: string; result: string } | null {
   try {
-    const raw = readFileSync(filePath, "utf-8");
-    const lines = raw.split("\n").filter((l) => l.trim());
     let firstUserText: string | null = null;
     let lastAssistantText: string | null = null;
 
-    for (const line of lines) {
+    for (const line of readTranscriptLines(filePath)) {
       try {
         const entry = JSON.parse(line);
         if (entry.type === "user" && entry.message?.content && !firstUserText) {
@@ -1154,7 +1161,6 @@ function readModelFromJsonl(jsonlPath: string): string | null {
 
 function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
   try {
-    const content = readFileSync(jsonlPath, "utf-8");
     const stats: SessionStats = {
       inputTokens: 0,
       outputTokens: 0,
@@ -1162,7 +1168,7 @@ function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
       cacheReadTokens: 0,
     };
 
-    for (const line of content.split("\n")) {
+    for (const line of readTranscriptLines(jsonlPath)) {
       if (!line || !line.includes('"assistant"')) continue;
       try {
         const entry = JSON.parse(line) as {
@@ -1199,7 +1205,6 @@ function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
 
 function readCodexStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
   try {
-    const content = readFileSync(jsonlPath, "utf-8");
     const stats: SessionStats = {
       inputTokens: 0,
       outputTokens: 0,
@@ -1207,7 +1212,7 @@ function readCodexStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
       cacheReadTokens: 0,
     };
 
-    for (const line of content.split("\n")) {
+    for (const line of readTranscriptLines(jsonlPath)) {
       if (!line) continue;
       try {
         const entry = JSON.parse(line) as {
@@ -1532,6 +1537,7 @@ export class InstanceManager extends EventEmitter {
   private projectIconCache = new Map<string, string | null>();
   /** Parsed transcript cache keyed by provider + path + file metadata */
   private transcriptParseCache = new Map<string, TranscriptCacheEntry>();
+  private transcriptParseCacheBytes = 0;
   /** Files written by each delegated agent, keyed by child transcript path (mtime/size checked). */
   private agentFileChangeCache = new Map<
     string,
@@ -5311,7 +5317,7 @@ export class InstanceManager extends EventEmitter {
       if (jsonlFiles.length > 0) {
         jsonlFiles.sort((a, b) => b.mtime - a.mtime);
         try {
-          const head = readFileSync(jsonlFiles[0].path, "utf-8").split("\n")[0];
+          const head = readTranscriptFirstLine(jsonlFiles[0].path) ?? "";
           const parsed = JSON.parse(head);
           if (parsed.cwd && existsSync(parsed.cwd)) directory = parsed.cwd;
         } catch {
@@ -5435,11 +5441,19 @@ export class InstanceManager extends EventEmitter {
             for (const jsonlPath of jsonlFiles) {
               if (undiscovered.length === 0) break;
               try {
-                const raw = readFileSync(jsonlPath, "utf-8");
-                if (!raw.includes(`${claudeRoot}/plans/`)) continue;
+                let hasPlansDirectory = false;
+                const referencedSlugs = new Set<string>();
+                for (const line of readTranscriptLines(jsonlPath)) {
+                  if (line.includes(`${claudeRoot}/plans/`)) hasPlansDirectory = true;
+                  if (!line.includes("plans/")) continue;
+                  for (const slug of undiscovered) {
+                    if (line.includes(`plans/${slug}.md`)) referencedSlugs.add(slug);
+                  }
+                }
+                if (!hasPlansDirectory) continue;
                 for (let i = undiscovered.length - 1; i >= 0; i--) {
                   const planSlug = undiscovered[i];
-                  if (raw.includes(`plans/${planSlug}.md`)) {
+                  if (referencedSlugs.has(planSlug)) {
                     seenSlugs.add(planSlug);
                     undiscovered.splice(i, 1);
                     const planPath = join(plansDir, `${planSlug}.md`);
@@ -5677,6 +5691,8 @@ export class InstanceManager extends EventEmitter {
     this.instances.clear();
     this.instanceMutationChains.clear();
     this.staleCounts.clear();
+    this.transcriptParseCache.clear();
+    this.transcriptParseCacheBytes = 0;
     this.db.close();
   }
 
@@ -5725,6 +5741,8 @@ export class InstanceManager extends EventEmitter {
     this.instances.clear();
     this.instanceMutationChains.clear();
     this.staleCounts.clear();
+    this.transcriptParseCache.clear();
+    this.transcriptParseCacheBytes = 0;
     this.stopDiscovery();
     try {
       this.db.checkpointWal();
@@ -6581,133 +6599,92 @@ export class InstanceManager extends EventEmitter {
     stats: SessionStats;
   } {
     let cwd = "";
-    let history: HistoryEntry[] = [];
+    const history = new TranscriptHistory<HistoryEntry>(MAX_HISTORY);
     const zeroStats: SessionStats = {
       inputTokens: 0,
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
     };
-
-    let content: string;
+    let reader: TranscriptReader | undefined;
     try {
-      content = readFileSync(filePath, "utf-8");
-    } catch {
+      reader = new TranscriptReader(filePath);
+      // Locate the last boundary without retaining the file or its line array.
+      // Both passes share the same descriptor and initial length so appends do
+      // not change which records receive lightweight versus full replay.
+      let boundaryLineIdx = 0;
+      let lineIdx = 0;
+      for (const line of reader.lines()) {
+        if (line.includes('"compact_boundary"')) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "system" && entry.subtype === "compact_boundary")
+              boundaryLineIdx = lineIdx;
+          } catch {
+            // Skip malformed records, including an unfinished append.
+          }
+        }
+        lineIdx++;
+      }
+      const ctx: {
+        pendingTools: Map<string, string>;
+        pendingAskInputs: Map<string, string[]>;
+        pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
+        tasks: Map<string, TaskItem>;
+        files: Map<string, FileChange>;
+        stats: SessionStats;
+        cwd?: string;
+        transcriptPath: string;
+        agents: Map<string, AgentInfo>;
+      } = {
+        pendingTools: new Map<string, string>(),
+        pendingAskInputs: new Map<string, string[]>(),
+        pendingTaskCreates: new Map<string, { subject: string; activeForm?: string }>(),
+        tasks: new Map<string, TaskItem>(),
+        files: new Map<string, FileChange>(),
+        stats: { ...zeroStats },
+        transcriptPath: filePath,
+        agents: new Map<string, AgentInfo>(),
+      };
+
+      lineIdx = 0;
+      for (const line of reader.lines()) {
+        const lightweight = lineIdx++ < boundaryLineIdx;
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (!cwd && entry.cwd) {
+            cwd = entry.cwd;
+            ctx.cwd = cwd;
+          }
+          const converted = lightweight
+            ? this.convertJsonlEntryLightweight(entry, ctx)
+            : this.convertJsonlEntry(entry, ctx);
+          // Agent state must fold across the entire transcript, even when an
+          // older history entry falls outside the retained replay tail.
+          for (const converted_ of converted) {
+            if (converted_.message.type === "agent_update") {
+              const patch = converted_.message.agent;
+              ctx.agents.set(patch.agentId, mergeAgentInfo(ctx.agents.get(patch.agentId), patch));
+            }
+          }
+          history.append(converted);
+        } catch {
+          // Skip malformed lines.
+        }
+      }
       return {
         cwd,
-        history,
-        tasks: new Map(),
-        files: new Map(),
-        stats: zeroStats,
+        history: history.toArray(),
+        tasks: ctx.tasks,
+        files: ctx.files,
+        stats: ctx.stats,
       };
+    } catch {
+      return { cwd: "", history: [], tasks: new Map(), files: new Map(), stats: zeroStats };
+    } finally {
+      reader?.close();
     }
-
-    const lines = content.split("\n");
-
-    // Pre-scan backwards for the last compact_boundary. We still preserve the
-    // earlier conversation, but we only do full stateful parsing from the
-    // boundary forward; older history uses a lighter conversation-only pass.
-    let boundaryLineIdx = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (!line || !line.includes('"compact_boundary"')) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === "system" && entry.subtype === "compact_boundary") {
-          boundaryLineIdx = i;
-          break;
-        }
-      } catch {
-        // skip malformed lines
-      }
-    }
-
-    const ctx: {
-      pendingTools: Map<string, string>;
-      pendingAskInputs: Map<string, string[]>;
-      pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
-      tasks: Map<string, TaskItem>;
-      files: Map<string, FileChange>;
-      stats: SessionStats;
-      cwd?: string;
-      transcriptPath: string;
-      agents: Map<string, AgentInfo>;
-    } = {
-      pendingTools: new Map<string, string>(),
-      pendingAskInputs: new Map<string, string[]>(),
-      pendingTaskCreates: new Map<string, { subject: string; activeForm?: string }>(),
-      tasks: new Map<string, TaskItem>(),
-      files: new Map<string, FileChange>(),
-      stats: { ...zeroStats },
-      transcriptPath: filePath,
-      agents: new Map<string, AgentInfo>(),
-    };
-
-    const fullParseStart = boundaryLineIdx > 0 ? boundaryLineIdx : 0;
-
-    // Phase 1: pre-boundary lightweight parse. Preserve user/assistant
-    // conversation and usage/cwd, but skip expensive task/file/tool rebuilds.
-    for (let i = 0; i < fullParseStart; i++) {
-      const line = lines[i];
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (!cwd && entry.cwd) {
-          cwd = entry.cwd;
-          ctx.cwd = cwd;
-        }
-        const converted = this.convertJsonlEntryLightweight(entry, ctx);
-        // Fold agent state as we go so later pre-boundary entries (and the
-        // post-boundary pass) can resolve provider ids / tool-use ids to keys.
-        for (const converted_ of converted) {
-          if (converted_.message.type === "agent_update") {
-            const patch = converted_.message.agent;
-            ctx.agents.set(patch.agentId, mergeAgentInfo(ctx.agents.get(patch.agentId), patch));
-          }
-        }
-        history.push(...converted);
-      } catch {
-        // skip malformed lines
-      }
-    }
-
-    // Phase 2: post-boundary full parse.
-    for (let i = fullParseStart; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (!cwd && entry.cwd) {
-          cwd = entry.cwd;
-          ctx.cwd = cwd;
-        }
-        const converted = this.convertJsonlEntry(entry, ctx);
-        // Fold agent state as we go so later entries (task notifications
-        // without a tool-use id) can resolve provider ids to Relay keys.
-        for (const converted_ of converted) {
-          if (converted_.message.type === "agent_update") {
-            const patch = converted_.message.agent;
-            ctx.agents.set(patch.agentId, mergeAgentInfo(ctx.agents.get(patch.agentId), patch));
-          }
-        }
-        history.push(...converted);
-      } catch {
-        // skip malformed lines
-      }
-    }
-
-    // Trim to MAX_HISTORY as a safety net
-    if (history.length > MAX_HISTORY) {
-      history = history.slice(-MAX_HISTORY);
-    }
-
-    return {
-      cwd,
-      history,
-      tasks: ctx.tasks,
-      files: ctx.files,
-      stats: ctx.stats,
-    };
   }
 
   private cloneParsedTranscript(parsed: TranscriptParseResult): TranscriptParseResult {
@@ -6737,34 +6714,72 @@ export class InstanceManager extends EventEmitter {
     provider: ProviderKind,
     filePath: string,
   ): { parsed: TranscriptParseResult; cacheHit: boolean } {
+    // One version per provider/path: changing an active transcript must not
+    // retain every prior parse under a new mtime/size key.
+    const identity = `${provider}:${filePath}`;
     const cacheKey = this.buildTranscriptCacheKey(provider, filePath);
-    if (cacheKey) {
-      const cached = this.transcriptParseCache.get(cacheKey);
-      if (cached) {
+    const cached = this.transcriptParseCache.get(identity);
+    if (cached) {
+      if (cacheKey && cached.cacheKey === cacheKey) {
         // Refresh insertion order so the oldest key is the least-recently-used one.
-        this.transcriptParseCache.delete(cacheKey);
-        this.transcriptParseCache.set(cacheKey, cached);
+        this.transcriptParseCache.delete(identity);
+        this.transcriptParseCache.set(identity, cached);
         return { parsed: this.cloneParsedTranscript(cached.parsed), cacheHit: true };
       }
+      // Remove invalid/deleted versions before parsing, including parse errors.
+      this.transcriptParseCache.delete(identity);
+      this.transcriptParseCacheBytes -= cached.estimatedBytes;
     }
 
     const parsed = parseTranscriptForProvider(provider, filePath, (path) => this.parseJsonl(path));
 
-    if (cacheKey) {
-      this.transcriptParseCache.set(cacheKey, {
+    const estimatedBytes = cacheKey
+      ? estimateRetainedBytes(parsed, MAX_TRANSCRIPT_CACHE_BYTES) +
+        128 +
+        (identity.length + cacheKey.length) * 2
+      : 0;
+    if (cacheKey && estimatedBytes <= MAX_TRANSCRIPT_CACHE_BYTES) {
+      this.transcriptParseCache.set(identity, {
         cacheKey,
         parsed,
+        estimatedBytes,
       });
+      this.transcriptParseCacheBytes += estimatedBytes;
 
-      if (this.transcriptParseCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
+      while (
+        this.transcriptParseCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES ||
+        this.transcriptParseCacheBytes > MAX_TRANSCRIPT_CACHE_BYTES
+      ) {
         const oldestKey = this.transcriptParseCache.keys().next().value;
-        if (oldestKey) {
-          this.transcriptParseCache.delete(oldestKey);
-        }
+        if (oldestKey === undefined) break;
+        const oldest = this.transcriptParseCache.get(oldestKey)!;
+        this.transcriptParseCache.delete(oldestKey);
+        this.transcriptParseCacheBytes -= oldest.estimatedBytes;
       }
+      return { parsed: this.cloneParsedTranscript(parsed), cacheHit: false };
     }
 
-    return { parsed: this.cloneParsedTranscript(parsed), cacheHit: false };
+    // Without a retained reference, this fresh parse belongs to the caller.
+    // Avoid a second full history allocation for an oversized transcript.
+    return { parsed, cacheHit: false };
+  }
+
+  getMemoryDiagnostics(): {
+    transcriptCache: {
+      entries: number;
+      estimatedBytes: number;
+      maxBytes: number;
+      maxEntries: number;
+    };
+  } {
+    return {
+      transcriptCache: {
+        entries: this.transcriptParseCache.size,
+        estimatedBytes: this.transcriptParseCacheBytes,
+        maxBytes: MAX_TRANSCRIPT_CACHE_BYTES,
+        maxEntries: MAX_TRANSCRIPT_CACHE_ENTRIES,
+      },
+    };
   }
 
   private parseProviderTranscript(provider: ProviderKind, filePath: string): TranscriptParseResult {
@@ -7758,7 +7773,6 @@ export class InstanceManager extends EventEmitter {
     if (!ws) return;
     ws.codexMappingsSeeded = true; // best-effort: never retry, even on failure
     try {
-      const content = readFileSync(ws.jsonlPath, "utf-8");
       const seedCtx = {
         pendingCalls: new Map<string, { name: string; arguments?: string }>(),
         commandIds: new Set<string>(),
@@ -7770,7 +7784,7 @@ export class InstanceManager extends EventEmitter {
         stats: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
         cwd: instance.actualCwd || instance.info.workingDirectory,
       };
-      for (const raw of content.split("\n")) {
+      for (const raw of readTranscriptLines(ws.jsonlPath)) {
         // Only collaboration/agent lines mutate the maps; skip the rest to avoid
         // JSON-parsing every line of a large rollout. "gent"/"ollab" match both
         // cases (SubAgentActivity, CollabAgentToolCall, agent_path, collaboration).
@@ -8306,7 +8320,7 @@ export class InstanceManager extends EventEmitter {
           }
 
           try {
-            const head = readFileSync(jsonlPath, "utf-8").split("\n")[0];
+            const head = readTranscriptFirstLine(jsonlPath) ?? "";
             const parsed = JSON.parse(head);
             if (parsed.timestamp) {
               const ts = new Date(parsed.timestamp).getTime();

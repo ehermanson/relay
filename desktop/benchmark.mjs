@@ -18,10 +18,23 @@ const runs = Number(argument("--runs", "3"));
 if (!Number.isInteger(runs) || runs < 2 || runs > 20)
   throw new Error("Benchmark runs must be between 2 and 20");
 const output = resolve(argument("--output", join(root, "desktop-release", "benchmark.json")));
+await mkdir(dirname(output), { recursive: true });
 const home = await mkdtemp(join(tmpdir(), "relay-desktop-benchmark-"));
 const results = [];
 const chats = Number(argument("--chats", "0"));
 const messages = Number(argument("--messages", "0"));
+const memoryBenchmark = process.argv.includes("--memory");
+const largeChats = Number(argument("--large-chats", "1"));
+const messageBytes = Number(argument("--message-bytes", "0"));
+if (
+  !Number.isInteger(largeChats) ||
+  largeChats < 1 ||
+  largeChats > 1000 ||
+  !Number.isInteger(messageBytes) ||
+  messageBytes < 0 ||
+  messageBytes > 65536
+)
+  throw new Error("Invalid memory fixture dimensions");
 if (
   !Number.isInteger(chats) ||
   chats < 0 ||
@@ -32,6 +45,10 @@ if (
 )
   throw new Error("Synthetic history limits: 0–10000 Chats and 0–50000 messages");
 if (messages && !chats) throw new Error("Synthetic messages require at least one Chat");
+if (memoryBenchmark && (!chats || !messages))
+  throw new Error("Memory profiling requires synthetic Chats and messages");
+if (Math.min(chats, largeChats) * messages * (messageBytes + 2048) > 256 * 1024 * 1024)
+  throw new Error("Synthetic transcript fixture exceeds the 256 MiB safety budget");
 if (chats) {
   const directory = join(home, "providers", "codex", "sessions", "2026", "01", "01");
   const project = join(home, "benchmark-project");
@@ -64,7 +81,7 @@ if (chats) {
         },
       },
     ];
-    for (let message = 0; message < (index === 0 ? Math.max(messages, 1) : 1); message++) {
+    for (let message = 0; message < (index < largeChats ? Math.max(messages, 1) : 1); message++) {
       if (message)
         lines.push({
           timestamp,
@@ -79,7 +96,7 @@ if (chats) {
         type: "event_msg",
         payload: {
           type: "agent_message",
-          message: `Message ${message + 1}: synthetic performance fixture.\n\nInspect files, run checks, and preserve Project and Space state.\n\n\`\`\`ts\nconst result = { chat: ${index}, message: ${message} };\n\`\`\`\n`,
+          message: `Message ${message + 1}: synthetic performance fixture.\n\nInspect files, run checks, and preserve Project and Space state.\n\n\`\`\`ts\nconst result = { chat: ${index}, message: ${message} };\n\`\`\`\n${"x".repeat(messageBytes)} memory-fixture-${index}`,
         },
       });
     }
@@ -97,8 +114,17 @@ async function run(index) {
     RELAY_DESKTOP_SMOKE: "1",
     RELAY_DESKTOP_BENCHMARK: "1",
     RELAY_DESKTOP_BENCHMARK_MESSAGES: String(messages),
+    RELAY_DESKTOP_MEMORY_BENCHMARK: memoryBenchmark ? "1" : "0",
+    RELAY_DESKTOP_HEAP_SNAPSHOT: process.argv.includes("--heap-snapshot")
+      ? `${output}.${index + 1}.heapsnapshot`
+      : "",
   };
   delete env.ELECTRON_RUN_AS_NODE;
+  delete env.RELAY_DESKTOP_SERVER_URL;
+  delete env.RELAY_DESKTOP_UPDATE_SMOKE;
+  delete env.RELAY_DESKTOP_RECOVERY_SMOKE;
+  delete env.RELAY_DESKTOP_SIGNED_UPDATE_TEST_URL;
+  delete env.RELAY_REGISTER_PROTOCOL;
   const child = spawn(executable, [join(root, "desktop", "main.mjs")], {
     cwd: root,
     env,
@@ -113,10 +139,13 @@ async function run(index) {
     errors = (errors + data).slice(-4096);
   });
   const code = await new Promise((resolveRun, reject) => {
-    const deadline = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`Benchmark launch ${index + 1} exceeded 60 seconds`));
-    }, 60000);
+    const deadline = setTimeout(
+      () => {
+        child.kill("SIGKILL");
+        reject(new Error(`Benchmark launch ${index + 1} timed out`));
+      },
+      memoryBenchmark ? 240000 : 60000,
+    );
     child.once("error", (error) => {
       clearTimeout(deadline);
       reject(error);
@@ -127,7 +156,7 @@ async function run(index) {
     });
   });
   if (code !== 0) {
-    console.error("Benchmark diagnostics:", stdout.slice(-4096));
+    console.error("Benchmark diagnostics:", stdout.slice(-4096), errors.slice(-4096));
     throw new Error(`Benchmark launch ${index + 1} failed (${code}): ${errors.slice(-500)}`);
   }
   const benchmark = stdout.split("\n").find((line) => line.startsWith("DESKTOP_METRICS "));
@@ -156,6 +185,9 @@ async function run(index) {
   const rendererLine = stdout
     .split("\n")
     .find((line) => line.startsWith("DESKTOP_RENDERER_BENCHMARK "));
+  const memoryLine = stdout
+    .split("\n")
+    .find((line) => line.startsWith("DESKTOP_MEMORY_BENCHMARK "));
   const cpuStart = metrics.backendStartup.cpu;
   const cpuEnd = metrics.backend.cpu;
   const idleSeconds = metrics.backend.uptimeSeconds - metrics.backendStartup.uptimeSeconds;
@@ -167,6 +199,9 @@ async function run(index) {
     rendererMemory: extra.rendererMemory ?? null,
     rendererProfile: rendererLine
       ? JSON.parse(rendererLine.slice("DESKTOP_RENDERER_BENCHMARK ".length))
+      : null,
+    memoryProfile: memoryLine
+      ? JSON.parse(memoryLine.slice("DESKTOP_MEMORY_BENCHMARK ".length))
       : null,
     backendStartupWindowCPUPercent:
       ((cpuEnd.user + cpuEnd.system - cpuStart.user - cpuStart.system) / (idleSeconds * 1000000)) *
@@ -193,8 +228,43 @@ try {
     platform: process.platform,
     arch: process.arch,
     runs,
-    syntheticHistory: { chats, largestChatMessages: messages },
+    syntheticHistory: {
+      chats,
+      largestChatMessages: messages,
+      largeChats,
+      messageBytes,
+      memoryBenchmark,
+    },
     summary: {
+      ...(memoryBenchmark
+        ? {
+            memoryPhases: results[0].memoryProfile.snapshots.map(({ phase, collectGarbage }) => {
+              const samples = results.map((result) =>
+                result.memoryProfile.snapshots.find((sample) => sample.phase === phase),
+              );
+              return {
+                phase,
+                collectGarbage,
+                medianBackendHeapUsedBytes: median(
+                  samples.map((sample) => sample.backend.memory.heapUsed),
+                ),
+                medianBackendRSSBytes: median(samples.map((sample) => sample.backend.rssBytes)),
+                medianRendererHeapUsedBytes: median(
+                  samples.map((sample) => sample.rendererHeap.usedSize),
+                ),
+                medianReportedWorkingSetMiB: median(
+                  samples.map(
+                    (sample) =>
+                      sample.processes.reduce(
+                        (sum, process) => sum + process.memory.workingSetSize,
+                        0,
+                      ) / 1024,
+                  ),
+                ),
+              };
+            }),
+          }
+        : {}),
       medianStartupMs: median(results.map((result) => result.startupMs)),
       medianBackendStartupMs: median(results.map((result) => result.backendStartup.startupMs)),
       medianBackendRSSBytes: median(results.map((result) => result.backend.rssBytes)),
@@ -241,5 +311,5 @@ try {
   await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   console.log(`Benchmark report: ${output}`);
 } finally {
-  await rm(home, { recursive: true, force: true });
+  await rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

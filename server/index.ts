@@ -51,6 +51,10 @@ export class Relay {
     };
   }
 
+  getMemoryDiagnostics() {
+    return this.instanceManager.getMemoryDiagnostics();
+  }
+
   reconcile(): Promise<void> {
     return this.instanceManager.reconcile();
   }

@@ -211,6 +211,8 @@ async function start(message) {
       metrics: {
         startupMs: performance.now() - bootAt,
         rssBytes: process.memoryUsage().rss,
+        memory: process.memoryUsage(),
+        caches: relay.getMemoryDiagnostics?.() ?? null,
         cpu: process.cpuUsage(),
         uptimeSeconds: process.uptime(),
         nativeTerminal: nativeTerminalMetrics,
@@ -237,7 +239,7 @@ async function stop() {
   }
 }
 
-parent.on("message", ({ data: message }) => {
+parent.on("message", async ({ data: message }) => {
   if (!message || typeof message !== "object") return;
   if (message.type === "start" && !starting && !stopping) {
     starting = start(message);
@@ -258,11 +260,19 @@ parent.on("message", ({ data: message }) => {
   } else if (message.type === "status" && relay && !stopping) {
     send({ type: "response", requestId: message.requestId, result: relay.getRuntimeStatus() });
   } else if (message.type === "metrics" && relay && !stopping) {
+    if (message.collectGarbage && process.env.RELAY_DESKTOP_BENCHMARK === "1") {
+      const { setFlagsFromString } = await import("node:v8");
+      const { runInNewContext } = await import("node:vm");
+      setFlagsFromString("--expose_gc");
+      runInNewContext("gc")();
+    }
     send({
       type: "response",
       requestId: message.requestId,
       result: {
         rssBytes: process.memoryUsage().rss,
+        memory: process.memoryUsage(),
+        caches: relay.getMemoryDiagnostics?.() ?? null,
         cpu: process.cpuUsage(),
         uptimeSeconds: process.uptime(),
       },

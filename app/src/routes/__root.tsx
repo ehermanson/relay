@@ -1,4 +1,5 @@
 import { createRootRoute, Outlet, useRouter } from "@tanstack/react-router";
+import { estimateRetainedBytes } from "@/lib/inactive-chat-cache";
 import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
@@ -14,6 +15,24 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+/** Counts/payload estimates only; never exposes query data to profiling hooks. */
+export function getQueryMemoryStats() {
+  const counts: Record<string, number> = {};
+  const queries = queryClient.getQueryCache().getAll();
+  for (const query of queries) {
+    const key = String(query.queryKey[0]);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return {
+    entries: queries.length,
+    counts,
+    estimatedBytes: estimateRetainedBytes(
+      queries.map((query) => query.state.data),
+      32 * 1024 * 1024,
+    ),
+  };
+}
 
 // Queries whose last-known data is safe to restore on the next load. Scoped to
 // the read-mostly metadata the entry screens render (projects, chat summaries,

@@ -7,6 +7,13 @@ const router = createRouter({
   defaultPendingMinMs: 200,
 });
 
+export function getRouterMemoryStats() {
+  return {
+    cachedMatches: router.stores.cachedMatchesSnapshot.state.length,
+    activeMatches: router.state.matches.length,
+  };
+}
+
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;

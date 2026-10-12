@@ -8,6 +8,7 @@
  */
 
 import { prepare, layout, clearCache, type PreparedText } from "@chenglou/pretext";
+import { estimateRetainedBytes } from "@/lib/inactive-chat-cache";
 import { shouldSkipShrinkwrapForText } from "@/lib/message-rendering";
 
 // ── Font constants matching CSS ─────────────────────────────────────
@@ -33,15 +34,41 @@ function isSimpleText(text: string): boolean {
 }
 
 // ── Prepare cache ───────────────────────────────────────────────────
-const cache = new Map<string, PreparedText>();
+const MAX_PREPARED_BYTES = 2 * 1024 * 1024;
+const MAX_PREPARED_ENTRIES = 1024;
+const cache = new Map<string, { prepared: PreparedText; bytes: number }>();
+let preparedBytes = 0;
+
+export function getTextLayoutCacheStats() {
+  return { preparedEntries: cache.size, estimatedBytes: preparedBytes };
+}
 
 function cachedPrepare(text: string): PreparedText {
-  let result = cache.get(text);
-  if (!result) {
-    result = prepare(text, TEXT_FONT);
-    cache.set(text, result);
+  const cached = cache.get(text);
+  if (cached) {
+    cache.delete(text);
+    cache.set(text, cached);
+    return cached.prepared;
   }
-  return result;
+  const prepared = prepare(text, TEXT_FONT);
+  const bytes = estimateRetainedBytes([text, prepared], MAX_PREPARED_BYTES);
+  if (bytes > MAX_PREPARED_BYTES) {
+    // Pretext also caches token metrics/analysis internally. An oversized
+    // one-off prompt must not remain there after its prepared result is used.
+    clearCache();
+    return prepared;
+  }
+  cache.set(text, { prepared, bytes });
+  preparedBytes += bytes;
+  let evicted = false;
+  while (cache.size > MAX_PREPARED_ENTRIES || preparedBytes > MAX_PREPARED_BYTES) {
+    const oldest = cache.keys().next().value!;
+    preparedBytes -= cache.get(oldest)!.bytes;
+    cache.delete(oldest);
+    evicted = true;
+  }
+  if (evicted) clearCache();
+  return prepared;
 }
 
 // ── Font readiness ──────────────────────────────────────────────────
@@ -53,6 +80,7 @@ export function onFontReady(cb: () => void): () => void {
     if (!fontReady) {
       fontReady = true;
       cache.clear();
+      preparedBytes = 0;
       clearCache();
       cb();
     }

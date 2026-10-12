@@ -833,6 +833,22 @@ async function smoke() {
       ),
     );
   }
+  if (
+    process.env.RELAY_DESKTOP_MEMORY_BENCHMARK === "1" &&
+    process.env.RELAY_DESKTOP_BENCHMARK === "1"
+  ) {
+    const { profileMemory } = await import("./memory-benchmark.mjs");
+    console.info(
+      "DESKTOP_MEMORY_BENCHMARK",
+      JSON.stringify(
+        await profileMemory({
+          window: target,
+          request: (type, payload) => supervisor.request(type, payload),
+          processMetrics: () => app.getAppMetrics(),
+        }),
+      ),
+    );
+  }
   if (updateSmoke) {
     const previous = supervisor.child;
     await updater.checkForUpdates({ force: true });
@@ -926,6 +942,7 @@ async function start() {
     if (error.code !== "ENOENT")
       console.warn("Desktop preferences could not be restored; using safe defaults");
   }
+  if (process.env.RELAY_DESKTOP_BENCHMARK === "1") lastPath = "/";
   if (process.env.RELAY_DESKTOP_SERVER_URL)
     connection = { mode: "existing", url: attachedServerURL(process.env.RELAY_DESKTOP_SERVER_URL) };
   if (!signedTest && app.isPackaged && ["darwin", "win32"].includes(process.platform))

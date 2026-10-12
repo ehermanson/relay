@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { chatGitStatusQueryOptions, chatSuggestionsQueryOptions } from "@/lib/chat-query-options";
 import { motion } from "motion/react";
 import { ChatAccountMismatchBanner } from "@/components/chat/account-mismatch-banner";
 import { ChatDebug } from "@/components/chat/chat-debug";
@@ -45,7 +46,6 @@ import { getProjectName } from "@/lib/project-route";
 import { buildReviewSendBackMessage, getReviewSourceInstance } from "@/lib/review-session";
 import { ArrowRightFromLine, X } from "lucide-react";
 import type { SpinOffPacket } from "@shared/types";
-import { fetchProjectSuggestions, fetchInstanceGitStatus } from "@/lib/api";
 import type { SuggestionCondition } from "@shared/types";
 
 const MotionLogo = motion.create(RelayLogo);
@@ -551,8 +551,7 @@ export function InstanceViewContent() {
 
   // Fetch resolved suggestions for this project
   const { data: resolvedSuggestions } = useQuery({
-    queryKey: ["project-suggestions", projectId],
-    queryFn: () => (projectId ? fetchProjectSuggestions(projectId) : Promise.resolve([])),
+    ...chatSuggestionsQueryOptions(projectId),
     staleTime: 60_000,
     enabled: !!projectId,
   });
@@ -571,8 +570,7 @@ export function InstanceViewContent() {
   // Per-instance dirty check — a space chat's worktree may differ from the project
   // root, so project-level branch data would give the wrong answer here.
   const { data: instanceGitStatus } = useQuery({
-    queryKey: ["instance-git-status", instanceId],
-    queryFn: () => fetchInstanceGitStatus(instanceId),
+    ...chatGitStatusQueryOptions(instanceId),
     staleTime: 15_000,
     enabled: isFreshChat && needsGitStatus,
   });
