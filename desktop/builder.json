@@ -44,7 +44,7 @@
       "provider": "github",
       "owner": "ehermanson",
       "repo": "relay",
-      "releaseType": "release"
+      "releaseType": "draft"
     }
   ],
   "protocols": [

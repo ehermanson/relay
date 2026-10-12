@@ -481,7 +481,7 @@ Subagents/teammates are represented through one shared contract in `types.ts`: `
 
 - `desktop/main.mjs` owns native window/menu/tray APIs; `desktop/preload.cjs` exposes a narrow bridge; `desktop/backend.mjs` runs the existing server in an Electron utility process. Renderer streaming uses existing HTTP/WebSocket, never main IPC.
 - Desktop sets isolated `RELAY_HOME` before importing server modules. Bind loopback, keep the persisted port/origin stable (drafts/IndexedDB), use per-launch auth and stable desktop outbox identity. Never run the CLI under Electron's `process.execPath`.
-- Renderer stays sandboxed, context-isolated, without Node integration. Validate exact main-frame IPC origin, payloads, navigation, and external protocols. Keep desktop Logout/sharing hidden; desktop owns auth and does not expose a LAN listener.
+- Renderer stays sandboxed, context-isolated, without Node integration. Validate exact main-frame IPC origin, payloads, navigation, and external protocols. Owned mode hides Logout/sharing and owns loopback authentication; attached mode preserves the existing server’s login and sharing.
 - Native modules are rebuilt only in `.desktop-stage`, from lockfile-deployed production dependencies. Unpack native libraries/executables from ASAR. Verify a real terminal spawn in packaged smoke tests. Root Node tests must remain usable after packaging.
 - `pnpm desktop:pack` creates the native app; `pnpm desktop:test` covers shell policy. `RELAY_DESKTOP_SMOKE=1` verifies boot/bridge/native terminal and quits; use a temporary `RELAY_DESKTOP_HOME`. See `desktop/README.md`.
 
@@ -496,3 +496,5 @@ Subagents/teammates are represented through one shared contract in `types.ts`: `
 - Only explicit signed/published builds advertise release updates. Configure signing/notarization secrets and the monotonic GitHub release feed before enabling `RELAY_DESKTOP_RELEASES`. Never embed publishing credentials or weaken signature checks. Local packaging never publishes.
 - Native windows accept normalized UI routes only; `/api/file` HTML must never get a privileged preload. Local file actions resolve real paths against Projects/Space worktrees; reject symlink escapes. Multiple-window notifications are deduplicated in main.
 - Benchmarks isolate Provider roots and create synthetic git Projects. Do not send paid Provider prompts to test the shell. Distinguish startup-window CPU from settled idle and report Electron memory costs honestly. Packaged crash/update recovery smoke performs no actual binary installation.
+
+- Native releases upload into a draft and publish only after all platform artifacts succeed; publishing is restricted to main. The local signed macOS upgrade runner uses unique temporary bundles and a loopback feed, preserving normal signature checks. It does not validate public notarization or distribution.

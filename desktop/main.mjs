@@ -16,9 +16,9 @@ import {
   clipboard,
 } from "electron";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, realpath } from "node:fs/promises";
 import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   isLocalURL,
   externalURL,
@@ -38,6 +38,27 @@ import { createBackendSupervisor, attachedServerURL } from "./runtime.mjs";
 import { createDesktopUpdater } from "./updater.mjs";
 import { sourceRelaunchExecutable } from "./source-relaunch.mjs";
 
+const manifest = JSON.parse(await readFile(join(import.meta.dirname, "../package.json"), "utf8"));
+const signedTest = manifest.desktopSignedUpdateTest;
+if (signedTest) {
+  if (
+    !app.isPackaged ||
+    typeof signedTest.root !== "string" ||
+    !(await realpath(signedTest.root)).startsWith(
+      join(await realpath(tmpdir()), "relay-signed-update-"),
+    ) ||
+    !(await realpath(app.getAppPath())).startsWith(
+      (await realpath(join(signedTest.root, "current", "Relay.app"))) + "/",
+    ) ||
+    !/^http:\/\/127\.0\.0\.1:\d+\/$/.test(signedTest.url) ||
+    signedTest.home !== join(signedTest.root, "home") ||
+    signedTest.resultPath !== join(signedTest.root, "result.json")
+  )
+    throw new Error("Invalid signed upgrade test configuration");
+  process.env.RELAY_DESKTOP_HOME = signedTest.home;
+  process.env.RELAY_DESKTOP_SMOKE = "1";
+  process.env.RELAY_DESKTOP_BENCHMARK = "1";
+}
 app.setName("Relay");
 app.setAppUserModelId("com.relay.desktop");
 const home = process.env.RELAY_DESKTOP_HOME || join(homedir(), ".relay-desktop");
@@ -64,7 +85,6 @@ let lastPath = "/";
 let switchingConnection = false;
 let pendingPath = process.argv.map(deepLinkPath).find(Boolean);
 let saveQueue = Promise.resolve();
-const manifest = JSON.parse(await readFile(join(import.meta.dirname, "../package.json"), "utf8"));
 const html = await readFile(join(import.meta.dirname, "../app/dist/index.html"), "utf8");
 const inlineHashes = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
   .filter((match) => match[1].trim())
@@ -751,6 +771,40 @@ async function smoke() {
   );
   if (!report.bridge || !report.body.trim() || !report.outfit || !report.mono)
     throw new Error("Desktop renderer/font smoke failed");
+  if (signedTest) {
+    const version = app.getVersion();
+    const identity = report.identity.identity;
+    if (version === signedTest.fromVersion) {
+      await writeFile(
+        join(signedTest.root, "before.json"),
+        JSON.stringify({ version, origin, identity, storage: "persisted", pid: process.pid }),
+      );
+      await updater.checkForUpdates({ force: true });
+      const result = await updater.installUpdate();
+      if (!result.ok) throw new Error(result.error || "Signed upgrade failed");
+      return;
+    }
+    const before = JSON.parse(await readFile(join(signedTest.root, "before.json"), "utf8"));
+    if (
+      version !== signedTest.toVersion ||
+      before.origin !== origin ||
+      before.identity !== identity ||
+      report.prior !== "persisted"
+    )
+      throw new Error("Signed upgrade did not preserve application state");
+    await writeFile(
+      signedTest.resultPath,
+      JSON.stringify({
+        ok: true,
+        version,
+        origin,
+        identity,
+        prior: report.prior,
+        oldVersion: before.version,
+        pid: process.pid,
+      }),
+    );
+  }
   const metrics = await diagnostics();
   console.info("DESKTOP_SMOKE", JSON.stringify(report));
   console.info("DESKTOP_METRICS", JSON.stringify(metrics));
@@ -874,7 +928,7 @@ async function start() {
   }
   if (process.env.RELAY_DESKTOP_SERVER_URL)
     connection = { mode: "existing", url: attachedServerURL(process.env.RELAY_DESKTOP_SERVER_URL) };
-  if (app.isPackaged && ["darwin", "win32"].includes(process.platform))
+  if (!signedTest && app.isPackaged && ["darwin", "win32"].includes(process.platform))
     preferences.launchAtLogin = app.getLoginItemSettings().openAtLogin;
   const { default: electronUpdater } = await import("electron-updater");
   updateSmoke =
@@ -882,11 +936,15 @@ async function start() {
   const adapter = updateSmoke
     ? (await import("./update-smoke-adapter.mjs")).createUpdateSmokeAdapter()
     : electronUpdater.autoUpdater;
+  if (signedTest) {
+    adapter.setFeedURL({ provider: "generic", url: signedTest.url });
+    adapter.disableDifferentialDownload = true;
+  }
   updateAdapter = adapter;
   updater = createDesktopUpdater({
     adapter,
     currentVersion: app.isPackaged ? app.getVersion() : manifest.version,
-    enabled: updateSmoke || (app.isPackaged && manifest.desktopRelease === true),
+    enabled: !!signedTest || updateSmoke || (app.isPackaged && manifest.desktopRelease === true),
     unavailableReason: "Automatic updates are available in installed release builds.",
     prepareInstall: async () => {
       const ready = await prepareInstall();
@@ -984,7 +1042,8 @@ app.on("open-url", (event, url) => {
   event.preventDefault();
   deepLink(url);
 });
-if (app.isPackaged) app.setAsDefaultProtocolClient("relay");
+if (app.isPackaged && !signedTest && process.env.RELAY_DESKTOP_SMOKE !== "1")
+  app.setAsDefaultProtocolClient("relay");
 else if (process.env.RELAY_REGISTER_PROTOCOL === "1")
   app.setAsDefaultProtocolClient("relay", process.execPath, [
     join(import.meta.dirname, "main.mjs"),

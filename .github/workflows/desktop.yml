@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish signed native updates (requires signing secrets)
+        description: Publish signed native updates from main (requires signing secrets)
         type: boolean
         default: false
 
@@ -79,9 +79,44 @@ jobs:
           path: relay-native-*.tar.gz
           retention-days: 7
 
-  release:
-    if: (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RELAY_DESKTOP_RELEASES == 'true')
+  prepare-release:
+    if: github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && vars.RELAY_DESKTOP_RELEASES == 'true'))
     needs: package
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      release-id: ${{ steps.prepare.outputs.release-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create or reuse an unpublished release for this main commit
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          VERSION="$BASE.$(git rev-list --count HEAD)"
+          TAG="v$VERSION"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[]' |
+            jq -s --arg tag "$TAG" 'map(select(.tag_name == $tag)) | first // null' > release.json
+          if [[ "$(jq -r '.id // empty' release.json)" != "" ]]; then
+            test "$(jq -r '.draft' release.json)" = true || { echo "This native version is already published; refusing to mutate it."; exit 1; }
+            test "$(jq -r '.target_commitish' release.json)" = "$GITHUB_SHA" || { echo "The existing draft belongs to a different commit."; exit 1; }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+              -f name="Relay $VERSION" -F draft=true -F prerelease=false > release.json
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release-id=$(jq -r '.id' release.json)" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: prepare-release
     permissions:
       contents: write
     strategy:
@@ -89,6 +124,9 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      RELAY_DESKTOP_VERSION: ${{ needs.prepare-release.outputs.version }}
+      RELAY_DESKTOP_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,12 +138,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - name: Derive monotonically increasing native version from main history
-        shell: bash
-        run: |
-          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
-          echo "RELAY_DESKTOP_VERSION=$BASE.$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
-          echo "RELAY_DESKTOP_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
       - name: Require signing credentials for distributed platforms
         shell: bash
         env:
@@ -132,11 +164,40 @@ jobs:
           chmod 600 "$RUNNER_TEMP/AuthKey.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
-      - name: Build and publish native release
+      - name: Build signed native artifacts and upload to the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ runner.os == 'macOS' && secrets.RELAY_MAC_CERTIFICATE || secrets.RELAY_WINDOWS_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.RELAY_MAC_CERTIFICATE_PASSWORD || secrets.RELAY_WINDOWS_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.RELAY_APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.RELAY_APPLE_API_ISSUER }}
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.RELAY_MAC_CERTIFICATE || runner.os == 'Windows' && secrets.RELAY_WINDOWS_CERTIFICATE || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.RELAY_MAC_CERTIFICATE_PASSWORD || runner.os == 'Windows' && secrets.RELAY_WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.RELAY_APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.RELAY_APPLE_API_ISSUER || '' }}
         run: pnpm desktop:release
+
+  publish-release:
+    if: github.ref == 'refs/heads/main' && needs.release.result == 'success'
+    needs: [prepare-release, release]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish only after every platform uploaded its complete release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release-id }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release.json
+          jq -e --arg tag "v$VERSION" --arg sha "$GITHUB_SHA" '
+            .draft == true and .tag_name == $tag and .target_commitish == $sha and
+            ([.assets[].name] as $names |
+              ($names | index("latest.yml") != null) and
+              ($names | index("latest-mac.yml") != null) and
+              ($names | index("latest-linux.yml") != null) and
+              any($names[]; endswith(".dmg")) and
+              any($names[]; endswith(".zip")) and
+              any($names[]; endswith(".exe")) and
+              any($names[]; endswith(".AppImage")))
+          ' release.json > /dev/null || { echo "The draft is incomplete or does not match this main commit; leaving it unpublished."; exit 1; }
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null

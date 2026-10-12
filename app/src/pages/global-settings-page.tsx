@@ -327,8 +327,8 @@ function UpdateSettingsRow() {
   useEffect(() => {
     if (
       installPending &&
-      snapshot?.distribution !== "desktop" &&
-      snapshot?.distribution !== "source"
+      (!getDesktop() ||
+        (snapshot?.distribution !== "desktop" && snapshot?.distribution !== "source"))
     ) {
       setRestartRequested(true);
     }

@@ -6,13 +6,13 @@ Relay Desktop uses Electron, the shared React product, and a separate Node utili
 pnpm desktop             # build and launch this source checkout
 pnpm desktop:pack        # unsigned local native app, no release credentials
 pnpm desktop:build       # local platform installers (not an update release)
-pnpm desktop:release     # signed/notarized release and GitHub publishing
+pnpm desktop:release     # signed/notarized artifacts uploaded to a GitHub draft
 pnpm desktop:test        # native policy, supervisor, updater and recovery tests
 pnpm desktop:benchmark   # isolated sequential startup/restart benchmark
 node desktop/benchmark.mjs --runs 3 --chats 500 --messages 2000
 ```
 
-macOS ARM builds appear at `desktop-release/mac-arm64/Relay.app`. Build Windows/Linux on their respective platforms. Local builds do not enable automatic binary updates. Release builds require signing/notarization credentials; they must be explicitly requested with `--publish` or `--signed`. Nothing is published by `desktop:pack` or `desktop:build`.
+macOS ARM builds appear at `desktop-release/mac-arm64/Relay.app`. Build Windows/Linux on their respective platforms. Local builds do not enable automatic binary updates. Release builds require signing/notarization credentials; they must be explicitly requested with `--publish` or `--signed`. Nothing is published by `desktop:pack` or `desktop:build`. Local `desktop:release` uploads to a draft; the main-only workflow publishes after the complete platform matrix succeeds.
 
 ## Native behavior
 
@@ -44,7 +44,7 @@ Before native restart, an atomic server gate checks owned managed work, pending 
 
 When attached to another server, the shared Update UI upgrades that server and retains its web Reload behavior. Help → Update Desktop Shell controls the native application separately.
 
-The GitHub feed targets `ehermanson/relay`. `.github/workflows/desktop.yml` packages and smoke-tests macOS/Windows/Linux. Release versions are `<package-major>.<package-minor>.<main-history-count>` with the source SHA recorded in the package, so main updates remain monotonic without changing the web package version. Manual dispatch can publish. Set repository variable `RELAY_DESKTOP_RELEASES=true` to publish after each main push once credentials are configured. It is disabled until configured; no workflow has been dispatched or remote release published by this implementation.
+The GitHub feed targets `ehermanson/relay`. `.github/workflows/desktop.yml` packages and smoke-tests macOS/Windows/Linux. Release versions are `<package-major>.<package-minor>.<main-history-count>` with the source SHA recorded in the package, so main updates remain monotonic without changing the web package version. Manual dispatch from main can publish. All platforms upload to a draft; a final job checks the platform feeds and installers before publishing the complete release. Set repository variable `RELAY_DESKTOP_RELEASES=true` to publish after each main push once credentials are configured. It is disabled until configured; no workflow has been dispatched or remote release published by this implementation.
 
 Required GitHub secrets:
 
@@ -62,8 +62,14 @@ The benchmark creates only temporary Provider roots and a temporary git Project,
 
 Measured on this Mac, three source launches with 500 Chats and a 4,000-message Chat: median visible startup 1.146s; median Chat opening 145ms; maximum measured scroll frame 28ms; no frames over50ms; peak33 mounted message rows; median native PTY throughput10.9MiB/s. These are synthetic measurements, not guarantees for every Project. Memory remains substantial: median summed process working sets789MiB (shared pages may be counted more than once), backend RSS336MiB, renderer JS heap23MiB. Startup CPU includes warmup/indexing, not settled idle.
 
-`RELAY_DESKTOP_SMOKE=1` validates boot, bridge, fonts, native terminal and state, then quits. `RELAY_DESKTOP_RECOVERY_SMOKE=1` additionally forces backend recovery. `RELAY_DESKTOP_UPDATE_SMOKE=1` simulates an asynchronous installer rejection through the real native lifecycle, verifies exactly one attempted install and preserved owner/storage, and restores the current backend. The fake adapter performs no download, binary modification or application installation. Use a temporary home and `RELAY_DESKTOP_BENCHMARK=1` to isolate Provider roots. CI runs policy/lifecycle/update tests; the platform workflow also runs packaged smoke. Actual Windows/Linux execution is pending that workflow.
+`RELAY_DESKTOP_SMOKE=1` validates boot, bridge, fonts, native terminal and state, then quits. `RELAY_DESKTOP_RECOVERY_SMOKE=1` additionally forces backend recovery. `RELAY_DESKTOP_UPDATE_SMOKE=1` simulates an asynchronous installer rejection through the real native lifecycle, verifies exactly one attempted install and preserved owner/storage, and restores the current backend. The fake adapter performs no download, binary modification or application installation. Use a temporary home and `RELAY_DESKTOP_BENCHMARK=1` to isolate Provider roots. CI runs policy/lifecycle/update tests; the platform workflow also runs packaged smoke. Packaged native smoke has passed on macOS, Windows and Linux through the platform workflow. Attached-server smoke also verifies that quitting the native app leaves an existing open or authenticated server alive.
 
 Packaging deploys locked production dependencies into `.desktop-stage` and rebuilds native modules there, keeping the CLI dependency ABI intact. Native libraries, PTY helpers and bundled Provider binaries are unpacked from ASAR. Renderer sandboxing, context isolation, exact main-frame IPC checks, restricted UI-only window routes, CSP, denied webviews and restricted permissions protect the native boundary. Trusted-origin sanitized clipboard writes preserve Copy actions; clipboard reads and media/location permissions remain denied. Attached older servers may load only the two standard Google Fonts hosts for font compatibility.
 
 References: [Electron performance](https://www.electronjs.org/docs/latest/tutorial/performance), [utility processes](https://www.electronjs.org/docs/latest/api/utility-process), [security](https://www.electronjs.org/docs/latest/tutorial/security), [electron-builder v26 updates](https://www.electron.build/v26/docs/features/auto-update/), [native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules), [Tauri webviews](https://v2.tauri.app/reference/webview-versions/).
+
+## Local signed macOS upgrade test
+
+After `pnpm desktop:pack`, run `node desktop/signed-update-test.mjs`. This requires an existing, valid **Developer ID Application** identity in the local macOS keychain. The runner creates two temporary copies of the app (3.0.0 and 3.0.1), gives them a unique test bundle ID, signs both with identical Electron entitlements and hardened runtime, and serves the newer ZIP from a loopback-only feed. It exercises the real `electron-updater`/Squirrel download, signature verification, app replacement and relaunch. The relaunched app checks that its version changed while its listener origin, outbox owner and browser storage survived.
+
+No GitHub release is published, no installed app is modified, and no Provider prompts are sent. Test app bundles and Relay state live under a temporary directory; native macOS update services may also create their ordinary system cache. Artifacts are retained at the printed `SIGNED_UPDATE_TEST_ROOT` for inspection. The machine-readable result is `desktop-release/signed-update-test.json`. The test does not disable signature verification, ASAR integrity or OS security checks. Timestamping is omitted for these ephemeral local signatures; this test does **not** verify notarization, public release delivery, or Windows/Linux installation.

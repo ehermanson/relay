@@ -1,3 +1,4 @@
+import { getDesktop } from "@/lib/desktop";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -136,7 +137,8 @@ export function useSystemUpdate(): UseSystemUpdateResult {
     },
   });
 
-  const nativeRestart = snapshot?.distribution === "desktop" || snapshot?.distribution === "source";
+  const nativeRestart =
+    !!getDesktop() && (snapshot?.distribution === "desktop" || snapshot?.distribution === "source");
 
   // Subscribe to module-level `pendingReload` so every mounted hook instance
   // re-renders together when install is triggered anywhere in the app.
