@@ -1362,6 +1362,10 @@ export interface AgentInfo {
   result?: string;
   resultIsError?: boolean;
   usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
+  /** Whether the agent is running in the background (non-blocking). A resumed subagent is always backgrounded. */
+  isBackgrounded?: boolean;
+  /** Nesting depth of the spawned agent: 1 for a top-level spawn, N+1 when spawned inside a depth-N agent. */
+  spawnDepth?: number;
 }
 
 /** Sparse upsert of one delegated agent. Replayable (part of history). */
