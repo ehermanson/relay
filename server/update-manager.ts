@@ -12,6 +12,13 @@ const execFileAsync = promisify(execFile);
 const CHECK_TTL_MS = 5 * 60 * 1000;
 const MAX_INCOMING_COMMITS = 20;
 
+/** Shared transport contract for source and native desktop updates. */
+export interface UpdateService {
+  getSnapshot(): UpdateSnapshot;
+  checkForUpdates(options?: { force?: boolean }): Promise<UpdateSnapshot>;
+  installUpdate(): Promise<UpdateInstallResult>;
+}
+
 export interface UpdateManagerOptions {
   installDir: string;
   currentVersion: string;
@@ -26,7 +33,7 @@ interface GitTarget {
   branch: string;
 }
 
-export class UpdateManager {
+export class UpdateManager implements UpdateService {
   private installDir: string;
   private logger: Logger;
   private requestRestart: () => void;

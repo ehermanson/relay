@@ -1,0 +1,57 @@
+{
+  "appId": "com.relay.desktop",
+  "productName": "Relay",
+  "directories": {
+    "app": ".desktop-stage",
+    "output": "desktop-release"
+  },
+  "files": [
+    "desktop/**/*",
+    "dist/**/*",
+    "app/dist/**/*",
+    "app/public/icon-192.png",
+    "package.json",
+    "!desktop/*.test.mjs",
+    "!desktop/build.mjs",
+    "!desktop/benchmark.mjs",
+    "!dist/**/*.map",
+    "!dist/**/*.d.ts",
+    "!dist/**/*.d.ts.map"
+  ],
+  "asarUnpack": [
+    "**/*.node",
+    "**/node-pty/**",
+    "**/@anthropic-ai/claude-agent-sdk/**",
+    "**/@anthropic-ai/claude-agent-sdk-*/**"
+  ],
+  "npmRebuild": true,
+  "mac": {
+    "category": "public.app-category.developer-tools",
+    "target": ["dmg", "zip"],
+    "hardenedRuntime": true,
+    "icon": "desktop/icon.icns",
+    "notarize": true
+  },
+  "win": {
+    "target": ["nsis"]
+  },
+  "linux": {
+    "target": ["AppImage"],
+    "category": "Development"
+  },
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "ehermanson",
+      "repo": "relay",
+      "releaseType": "draft"
+    }
+  ],
+  "protocols": [
+    {
+      "name": "Relay Chat",
+      "schemes": ["relay"]
+    }
+  ],
+  "artifactName": "Relay-${version}-${os}-${arch}.${ext}"
+}

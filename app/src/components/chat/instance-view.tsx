@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { chatSummaryQueryOptions } from "@/lib/chat-query-options";
 import { InstanceViewProvider } from "@/components/chat/instance-view-context";
 import { InstanceViewShell } from "@/components/chat/instance-view-shell";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
@@ -18,7 +19,7 @@ import { useTerminalStore } from "@/stores/terminal-store";
 import { useTerminalMessages } from "@/hooks/use-terminal-messages";
 import { useTerminalShortcut } from "@/hooks/use-terminal-shortcut";
 import { useVerticalResize } from "@/hooks/use-vertical-resize";
-import { createInstance, fetchInstanceHistory, fetchInstanceSummary } from "@/lib/api";
+import { createInstance, fetchInstanceHistory } from "@/lib/api";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { getInstanceChatRoute, getInstanceProjectRouteId } from "@/lib/project-route";
 import {
@@ -125,8 +126,7 @@ export function InstanceView({
     isFetched: hasFetchedSummary,
     refetch: refetchSummary,
   } = useQuery({
-    queryKey: ["instance-summary", id],
-    queryFn: () => fetchInstanceSummary(id!),
+    ...chatSummaryQueryOptions(id),
     enabled: !!id && !liveInstance,
     staleTime: 30_000,
     retry: 1,

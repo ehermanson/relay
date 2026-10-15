@@ -1,4 +1,5 @@
-import { useCallback, useReducer, useRef } from "react";
+import { InactiveChatCache, estimateRetainedBytes } from "@/lib/inactive-chat-cache";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import type {
   ServerMessage,
   ActivityMessage,
@@ -664,19 +665,38 @@ const MAX_CACHE_SIZE = 30;
  */
 const rawHistoryStore = new Map<string, HistoryEntry[]>();
 
-const stateCache = new Map<string, State>();
+// Views own active history. Only reloadable inactive snapshots consume this
+// budget; drafts, attachment blobs and the outbox have separate durable stores.
+const activeChats = new Map<string, number>();
+const MAX_INACTIVE_HISTORY_BYTES = 16 * 1024 * 1024;
+const stateCache = new InactiveChatCache<State>(
+  MAX_CACHE_SIZE,
+  MAX_INACTIVE_HISTORY_BYTES,
+  (id) => {
+    if (!activeChats.has(id)) rawHistoryStore.delete(id);
+  },
+);
 
 function setCacheEntry(id: string, state: State) {
-  // Evict oldest entries when cache exceeds limit. Also drop the matching
-  // rawHistory buffer so it doesn't outlive the state snapshot.
-  if (stateCache.size >= MAX_CACHE_SIZE && !stateCache.has(id)) {
-    const oldest = stateCache.keys().next().value;
-    if (oldest) {
-      stateCache.delete(oldest);
-      rawHistoryStore.delete(oldest);
-    }
-  }
-  stateCache.set(id, state);
+  stateCache.set(
+    id,
+    state,
+    estimateRetainedBytes([state, rawHistoryStore.get(id)], MAX_INACTIVE_HISTORY_BYTES),
+  );
+}
+
+/** Counts only; useful for profiling navigation without exposing transcript data. */
+export function getInstanceMessagesCacheStats() {
+  return {
+    inactiveEntries: stateCache.size,
+    estimatedBytes: stateCache.estimatedBytes,
+    activeChats: activeChats.size,
+    rawHistoryBuffers: rawHistoryStore.size,
+    rawHistoryEntries: [...rawHistoryStore.values()].reduce(
+      (total, entries) => total + entries.length,
+      0,
+    ),
+  };
 }
 
 const EMPTY_STATE: State = {
@@ -713,6 +733,7 @@ function canApplyDeltaReplay(
 }
 
 export function primeInstanceMessagesCache(instanceId: string): void {
+  if (activeChats.has(instanceId)) return;
   rawHistoryStore.set(instanceId, []);
   setCacheEntry(instanceId, {
     ...EMPTY_STATE,
@@ -1452,30 +1473,38 @@ export function useInstanceMessages() {
   );
 
   const setInstanceId = useCallback((id: string | null) => {
-    // Save outgoing instance's state to cache. The rawHistory buffer is
-    // already keyed by instance id in rawHistoryStore, so it persists across
-    // the switch without any explicit save — it only gets evicted when the
-    // matching stateCache entry is evicted (see setCacheEntry).
     const prevId = instanceIdRef.current;
-    if (prevId && stateRef.current.hasLoadedHistory) {
-      setCacheEntry(prevId, stateRef.current);
+    if (prevId === id) return;
+    if (prevId) {
+      const remaining = (activeChats.get(prevId) ?? 1) - 1;
+      if (remaining > 0) activeChats.set(prevId, remaining);
+      else {
+        activeChats.delete(prevId);
+        if (stateRef.current.hasLoadedHistory) setCacheEntry(prevId, stateRef.current);
+        else rawHistoryStore.delete(prevId);
+      }
     }
 
     instanceIdRef.current = id;
-
-    // Restore from cache if available (instant), otherwise reset.
-    // The WS history replay still arrives and silently updates to the latest.
+    historyReadyRef.current = false;
     if (id) {
-      const cached = stateCache.get(id);
+      activeChats.set(id, (activeChats.get(id) ?? 0) + 1);
+      const cached = stateCache.take(id);
       if (cached) {
-        historyReadyRef.current = false;
+        // The subscription effect reads its cursor in this same commit, before
+        // React applies the restore action. Keep the ref aligned immediately.
+        stateRef.current = { ...cached, hasSyncedHistory: false };
         dispatch({ type: "restore", cached });
         return;
       }
     }
-    historyReadyRef.current = false;
+    stateRef.current = EMPTY_STATE;
     dispatch({ type: "reset" });
   }, []);
+
+  // The hook owns its active reference even when a caller unmounts without
+  // explicitly clearing the selected Chat. Releasing twice is a no-op.
+  useEffect(() => () => setInstanceId(null), [setInstanceId]);
 
   const showThinking = useCallback(() => {
     dispatch({ type: "show_thinking" });
@@ -1501,8 +1530,7 @@ export function useInstanceMessages() {
 
   const getReplayCursor = useCallback((instanceId: string) => {
     const source =
-      stateCache.get(instanceId) ??
-      (instanceIdRef.current === instanceId ? stateRef.current : undefined);
+      instanceIdRef.current === instanceId ? stateRef.current : stateCache.peek(instanceId);
     if (!source || source.lastSeenSequence <= 0 || source.replayEpoch === undefined) {
       return undefined;
     }

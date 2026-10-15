@@ -10,6 +10,9 @@ import { createRequestHandler } from "../dist/server/http.js";
 import { AuthManager } from "../dist/server/auth.js";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
 import { resolveConfig } from "../dist/server/config.js";
+import { Hono } from "hono";
+import { registerOutboxRoutes } from "../dist/server/routes/outbox.js";
+import { createHash } from "node:crypto";
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} };
 const id = (last) => `00000000-0000-4000-8000-${String(last).padStart(12, "0")}`;
@@ -35,6 +38,28 @@ describe("outbox HTTP delivery", () => {
       manager.stopAll();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("desktop owner survives login rotation while web owners remain scoped to auth sessions", async () => {
+    async function identity(config, sessionId) {
+      const app = new Hono();
+      app.use(async (c, next) => {
+        c.set("session", sessionId ? { id: sessionId } : undefined);
+        await next();
+      });
+      registerOutboxRoutes(app, { config, instanceManager: { sessionDb: {} } });
+      return (await (await app.request("/api/outbox/identity")).json()).identity;
+    }
+    const owner = "private-desktop-owner-secret";
+    const config = resolveConfig({ outboxIdentity: owner });
+    const first = await identity(config, "first-ephemeral-login");
+    const second = await identity(config, "second-ephemeral-login");
+    assert.equal(first, second);
+    assert.equal(first, createHash("sha256").update(owner).digest("hex"));
+    assert.notEqual(first, owner, "the persisted owner secret never reaches the browser");
+    const web = resolveConfig({});
+    assert.notEqual(await identity(web, "login-a"), await identity(web, "login-b"));
+    assert.equal(await identity(web), "open");
   });
 
   it("dispatches each ID once and distinguishes busy, uncertain, invalid, and unauthenticated sends", async () => {

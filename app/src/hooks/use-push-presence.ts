@@ -1,9 +1,10 @@
 import { useEffect } from "react";
+import { getDesktop } from "@/lib/desktop";
 
 /** A visible Relay window gets its in-app state/toasts; push is for background. */
 export function usePushPresence(chatId?: string) {
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
+    if (getDesktop() || !("serviceWorker" in navigator)) return;
     let disposed = false;
     const update = async () => {
       try {

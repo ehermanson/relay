@@ -1,6 +1,12 @@
 import { describeCodexCommand } from "#core/providers/codex-command-label.js";
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import {
+  readTranscriptLines,
+  readTranscriptFirstLine,
+  TranscriptHistory,
+} from "#core/transcript-reader.js";
+import { estimateRetainedBytes } from "#core/retained-size.js";
 import type {
   ActivityMessage,
   AgentInfo,
@@ -115,7 +121,11 @@ function isCodexInjectedUserText(text: string): boolean {
 function agentUpdateEntry(timestamp: number, agent: AgentInfo, raw?: unknown): HistoryEntry {
   return {
     timestamp,
-    message: { type: "agent_update", agent, ...(raw !== undefined ? { raw } : {}) } as AgentUpdateMessage,
+    message: {
+      type: "agent_update",
+      agent,
+      ...(raw !== undefined ? { raw } : {}),
+    } as AgentUpdateMessage,
   };
 }
 
@@ -975,7 +985,7 @@ export function convertCodexTranscriptEntry(
 
 function fileMatchesSessionId(filePath: string, sessionId: string): boolean {
   try {
-    const firstLine = readFileSync(filePath, "utf-8").split("\n", 1)[0];
+    const firstLine = readTranscriptFirstLine(filePath);
     if (!firstLine) return false;
     const parsed = JSON.parse(firstLine) as {
       type?: string;
@@ -1025,23 +1035,10 @@ export function findCodexTranscriptPath(codexDir: string, sessionId: string): st
 }
 
 export function parseCodexTranscript(filePath: string): CodexTranscriptParseResult {
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    return {
-      cwd: "",
-      tasks: new Map(),
-      files: new Map(),
-      history: [],
-      stats: createZeroStats(),
-    };
-  }
-
   let cwd = "";
   let createdAt: number | undefined;
   let sessionMeta: Record<string, unknown> | undefined;
-  const history: HistoryEntry[] = [];
+  const history = new TranscriptHistory<HistoryEntry>(MAX_HISTORY);
   const ctx: CodexReplayContext = {
     pendingCalls: new Map(),
     tasks: new Map(),
@@ -1049,35 +1046,37 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
     stats: createZeroStats(),
   };
 
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as Record<string, unknown>;
-      if (!cwd && entry.type === "session_meta") {
-        const payload = asRecord(entry.payload);
-        if (payload && !sessionMeta) {
-          sessionMeta = payload;
-          ctx.isSubagent = isSubagentSessionMeta(payload);
+  try {
+    for (const line of readTranscriptLines(filePath)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        if (!cwd && entry.type === "session_meta") {
+          const payload = asRecord(entry.payload);
+          if (payload && !sessionMeta) {
+            sessionMeta = payload;
+            ctx.isSubagent = isSubagentSessionMeta(payload);
+          }
+          if (payload && typeof payload.cwd === "string") {
+            cwd = payload.cwd;
+            ctx.cwd = cwd;
+          }
+          const started = new Date(
+            typeof payload?.timestamp === "string"
+              ? payload.timestamp
+              : (entry.timestamp as string),
+          ).getTime();
+          if (!Number.isNaN(started)) createdAt = started;
         }
-        if (payload && typeof payload.cwd === "string") {
-          cwd = payload.cwd;
-          ctx.cwd = cwd;
-        }
-        const started = new Date(
-          typeof payload?.timestamp === "string" ? payload.timestamp : (entry.timestamp as string),
-        ).getTime();
-        if (!Number.isNaN(started)) createdAt = started;
+
+        const converted = convertCodexTranscriptEntry(entry, ctx);
+        history.append(converted);
+      } catch {
+        // Skip malformed lines.
       }
-
-      const converted = convertCodexTranscriptEntry(entry, ctx);
-      history.push(...converted);
-    } catch {
-      // Skip malformed lines.
     }
-  }
-
-  if (history.length > MAX_HISTORY) {
-    history.splice(0, history.length - MAX_HISTORY);
+  } catch {
+    return { cwd: "", tasks: new Map(), files: new Map(), history: [], stats: createZeroStats() };
   }
 
   return {
@@ -1087,7 +1086,7 @@ export function parseCodexTranscript(filePath: string): CodexTranscriptParseResu
     firstUserPrompt: ctx.firstUserPrompt,
     tasks: ctx.tasks,
     files: ctx.files,
-    history,
+    history: history.toArray(),
     stats: ctx.stats,
   };
 }
@@ -1134,19 +1133,80 @@ export function extractCodexSubagentMeta(
 const agentRolloutPathCache = new Map<string, string>();
 const agentHistoryCache = new Map<
   string,
-  { mtimeMs: number; size: number; history: HistoryEntry[] }
+  { mtimeMs: number; size: number; history: HistoryEntry[]; estimatedBytes: number }
 >();
 const AGENT_HISTORY_CACHE_MAX = 64;
+const AGENT_HISTORY_CACHE_BYTES = 16 * 1024 * 1024;
+const AGENT_PATH_CACHE_MAX = 512;
+const AGENT_PATH_CACHE_BYTES = 1024 * 1024;
+let agentHistoryCacheBytes = 0;
+let agentPathCacheBytes = 0;
 
-export function resolveCodexAgentRolloutPath(codexDir: string, threadId: string): string | undefined {
+function pathEntryBytes(key: string, path: string): number {
+  return 64 + 2 * (key.length + path.length);
+}
+
+function deleteAgentPath(key: string): void {
+  const path = agentRolloutPathCache.get(key);
+  if (path !== undefined) agentPathCacheBytes -= pathEntryBytes(key, path);
+  agentRolloutPathCache.delete(key);
+}
+
+function deleteAgentHistory(key: string): void {
+  const cached = agentHistoryCache.get(key);
+  if (cached) agentHistoryCacheBytes -= cached.estimatedBytes;
+  agentHistoryCache.delete(key);
+}
+
+export function getCodexAgentHistoryCacheDiagnostics(): {
+  histories: number;
+  historyBytes: number;
+  historyByteLimit: number;
+  paths: number;
+  pathBytes: number;
+  pathByteLimit: number;
+} {
+  return {
+    histories: agentHistoryCache.size,
+    historyBytes: agentHistoryCacheBytes,
+    historyByteLimit: AGENT_HISTORY_CACHE_BYTES,
+    paths: agentRolloutPathCache.size,
+    pathBytes: agentPathCacheBytes,
+    pathByteLimit: AGENT_PATH_CACHE_BYTES,
+  };
+}
+
+export function resolveCodexAgentRolloutPath(
+  codexDir: string,
+  threadId: string,
+): string | undefined {
   const key = `${codexDir}\0${threadId}`;
   const cached = agentRolloutPathCache.get(key);
   if (cached) {
-    if (existsSync(cached)) return cached;
-    agentRolloutPathCache.delete(key);
+    if (existsSync(cached)) {
+      // Refresh access order without changing retained-byte accounting.
+      agentRolloutPathCache.delete(key);
+      agentRolloutPathCache.set(key, cached);
+      return cached;
+    }
+    deleteAgentPath(key);
   }
   const found = findCodexTranscriptPath(codexDir, threadId);
-  if (found) agentRolloutPathCache.set(key, found);
+  if (found) {
+    const bytes = pathEntryBytes(key, found);
+    if (bytes <= AGENT_PATH_CACHE_BYTES) {
+      while (
+        agentRolloutPathCache.size >= AGENT_PATH_CACHE_MAX ||
+        agentPathCacheBytes + bytes > AGENT_PATH_CACHE_BYTES
+      ) {
+        const oldest = agentRolloutPathCache.keys().next().value;
+        if (oldest === undefined) break;
+        deleteAgentPath(oldest);
+      }
+      agentRolloutPathCache.set(key, found);
+      agentPathCacheBytes += bytes;
+    }
+  }
   return found;
 }
 
@@ -1154,6 +1214,8 @@ export function resolveCodexAgentRolloutPath(codexDir: string, threadId: string)
 export function clearCodexAgentHistoryCache(): void {
   agentRolloutPathCache.clear();
   agentHistoryCache.clear();
+  agentHistoryCacheBytes = 0;
+  agentPathCacheBytes = 0;
 }
 
 /**
@@ -1179,21 +1241,41 @@ export async function readCodexAgentHistory(
   try {
     stat = statSync(filePath);
   } catch {
-    agentRolloutPathCache.delete(`${codexDir}\0${threadId}`);
+    deleteAgentPath(`${codexDir}\0${threadId}`);
     return null;
   }
   const cacheKey = `${filePath}\0${options?.rootThreadId ?? ""}`;
   const cached = agentHistoryCache.get(cacheKey);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    agentHistoryCache.delete(cacheKey);
+    agentHistoryCache.set(cacheKey, cached);
+    // Shared cached reference — callers must never mutate it: the byte
+    // accounting assumes entries never grow. (InstanceManager's sibling
+    // transcript cache clones on hit; this one deliberately doesn't.)
     return cached.history;
   }
+  deleteAgentHistory(cacheKey);
 
   const history = buildCodexAgentHistory(filePath, threadId, options?.rootThreadId);
-  if (agentHistoryCache.size >= AGENT_HISTORY_CACHE_MAX) {
-    const oldest = agentHistoryCache.keys().next().value;
-    if (oldest !== undefined) agentHistoryCache.delete(oldest);
+  const estimatedBytes =
+    estimateRetainedBytes(history, AGENT_HISTORY_CACHE_BYTES) + 64 + cacheKey.length * 2;
+  if (estimatedBytes <= AGENT_HISTORY_CACHE_BYTES) {
+    while (
+      agentHistoryCache.size >= AGENT_HISTORY_CACHE_MAX ||
+      agentHistoryCacheBytes + estimatedBytes > AGENT_HISTORY_CACHE_BYTES
+    ) {
+      const oldest = agentHistoryCache.keys().next().value;
+      if (oldest === undefined) break;
+      deleteAgentHistory(oldest);
+    }
+    agentHistoryCache.set(cacheKey, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      history,
+      estimatedBytes,
+    });
+    agentHistoryCacheBytes += estimatedBytes;
   }
-  agentHistoryCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, history });
   return history;
 }
 

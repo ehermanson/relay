@@ -49,6 +49,8 @@ import {
 } from "@/components/settings/settings-shared";
 import { Switch } from "@/components/ui/switch";
 import { AccountsSettingsSection } from "@/components/settings/accounts-section";
+import { getDesktop } from "@/lib/desktop";
+import { DesktopSettings } from "@/components/settings/desktop-settings";
 import { BackgroundNotificationsSetting } from "@/components/settings/background-notifications";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { SuggestionSettings } from "@/components/settings/suggestion-settings";
@@ -138,8 +140,8 @@ export function GeneralSettingsSection() {
       <NativeMobileComposerSettingsRow />
       <MaxProcessesSettingsRow />
       <UpdateSettingsRow />
-      <RemoteAccessSettingsRow />
-      <BackgroundNotificationsSetting />
+      {(!getDesktop() || getDesktop()?.capabilities?.sharing) && <RemoteAccessSettingsRow />}
+      {getDesktop() ? <DesktopSettings /> : <BackgroundNotificationsSetting />}
     </SettingsSection>
   );
 }
@@ -280,7 +282,16 @@ function getUpdateStatus(snapshot: UpdateSnapshot | undefined): UpdateStatusDesc
     case "restart_pending":
       return { title: "Restarting Relay…", tone: "info", icon: Loader2, spin: true };
     case "available":
-      return { title: "Update available", tone: "warn", icon: DownloadCloud };
+      return {
+        title:
+          snapshot.stage === "waiting"
+            ? "Update ready; waiting for chats"
+            : snapshot.latestVersion
+              ? `Relay ${snapshot.latestVersion} available`
+              : "Update available",
+        tone: "warn",
+        icon: DownloadCloud,
+      };
     case "up_to_date":
       return { title: "Relay is up to date", tone: "success", icon: CheckCircle2 };
     case "error":
@@ -313,11 +324,15 @@ function UpdateSettingsRow() {
     checkPending,
   } = useSystemUpdate();
 
+  const snapshotLoaded = snapshot != null;
+  const distribution = snapshot?.distribution;
   useEffect(() => {
-    if (installPending) {
-      setRestartRequested(true);
-    }
-  }, [installPending]);
+    // Wait for the snapshot before deciding: with it still undefined, a native
+    // desktop/source install would wrongly arm the browser-reload flow.
+    if (!installPending || !snapshotLoaded) return;
+    if (getDesktop() && (distribution === "desktop" || distribution === "source")) return;
+    setRestartRequested(true);
+  }, [installPending, snapshotLoaded, distribution]);
 
   useEffect(() => {
     if (!restartRequested || !snapshot) return;
@@ -358,7 +373,11 @@ function UpdateSettingsRow() {
   return (
     <SettingRow
       label="Relay Updates"
-      description="Check whether this Relay checkout is behind GitHub and update it in place."
+      description={
+        snapshot?.distribution === "desktop"
+          ? "Download verified desktop releases and restart Relay when chats are idle."
+          : "Check whether this Relay checkout is behind GitHub and update it in place."
+      }
       vertical
     >
       <div className="overflow-hidden rounded-xl border border-border/70 bg-surface/30">
@@ -404,6 +423,19 @@ function UpdateSettingsRow() {
                 </>
               )}
             </div>
+            {snapshot?.stage === "downloading" && snapshot.downloadPercent != null && (
+              <progress
+                aria-label="Downloading update"
+                className="mt-2 w-full"
+                value={snapshot.downloadPercent}
+                max={100}
+              />
+            )}
+            {snapshot?.stage === "waiting" && (
+              <p className="mt-2 text-[0.75rem] text-muted">
+                {snapshot.error ?? "Finish active chats, then choose Update and Restart."}
+              </p>
+            )}
             <IncomingCommits commits={incomingCommits} total={incomingCommitCount} />
           </div>
         </div>

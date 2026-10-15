@@ -1,3 +1,4 @@
+import { getDesktop } from "@/lib/desktop";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -26,6 +27,17 @@ const CHECK_MUTATION_KEY = ["system-update", "check"] as const;
 // success toast still fires once the server reports the new commit.
 let modulePendingReload = false;
 let modulePreInstallCommit: string | null = null;
+// Whether the previously observed snapshot was mid-install (`updating` /
+// `restart_pending`) or an install request was in flight. The desktop updater
+// latches `status: "error"` on *any* adapter failure — including a failed
+// background update check — so the native "update failed" toast must fire only
+// when an install was actually running; check failures surface inline in
+// Settings instead. Module-level (like `modulePreInstallCommit`) so hook
+// remounts don't lose the signal.
+let moduleInstallWasInFlight = false;
+// Dedupe key for the native "Update downloaded/ready" info toast so it fires
+// once per downloaded update rather than on every hook remount.
+let moduleLastReadyToastKey: string | null = null;
 const reloadListeners = new Set<() => void>();
 
 function setPendingReload(next: boolean): void {
@@ -58,12 +70,15 @@ export function describeUpdateStage(
   status: UpdateStatus | undefined,
   stage: UpdateStage | null | undefined,
 ): string | null {
+  if (stage === "waiting") return "Waiting for active chats to finish…";
   if (status === "checking") return "Checking for updates…";
   if (status === "restart_pending" || stage === "restarting") {
     return "Restarting Relay…";
   }
   if (status === "updating") {
     switch (stage) {
+      case "downloading":
+        return "Downloading Relay…";
       case "pulling":
         return "Pulling latest code…";
       case "installing":
@@ -133,6 +148,9 @@ export function useSystemUpdate(): UseSystemUpdateResult {
     },
   });
 
+  const nativeRestart =
+    !!getDesktop() && (snapshot?.distribution === "desktop" || snapshot?.distribution === "source");
+
   // Subscribe to module-level `pendingReload` so every mounted hook instance
   // re-renders together when install is triggered anywhere in the app.
   const pendingReload = useSyncExternalStore(subscribeReload, getPendingReload, getPendingReload);
@@ -142,14 +160,21 @@ export function useSystemUpdate(): UseSystemUpdateResult {
     mutationFn: installUpdate,
     onMutate: () => {
       modulePreInstallCommit = snapshot?.currentCommit ?? null;
-      setPendingReload(true);
+      setPendingReload(!nativeRestart);
       toast.loading("Starting Relay update…", {
         id: TOAST_ID,
-        description: "Pulling, installing, and building the new version.",
+        description:
+          snapshot?.distribution === "desktop"
+            ? "Downloading the verified desktop release. Relay will restart when chats are idle."
+            : "Pulling, installing, and building the new version.",
         duration: Infinity,
       });
     },
     onSuccess: () => {
+      if (nativeRestart) {
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+        return;
+      }
       toast.loading("Restarting Relay…", {
         id: TOAST_ID,
         description: "Reconnecting once the server comes back online.",
@@ -224,14 +249,62 @@ export function useSystemUpdate(): UseSystemUpdateResult {
 
     const label = describeUpdateStage(status, snapshot?.stage);
     if (!label) return;
-    const stageKey = `${status}:${snapshot?.stage ?? ""}`;
+    const percent = snapshot?.downloadPercent;
+    const stageKey = `${status}:${snapshot?.stage ?? ""}:${percent == null ? "" : Math.floor(percent)}`;
     if (lastToastStageRef.current === stageKey) return;
     lastToastStageRef.current = stageKey;
-    toast.loading(label, {
-      id: TOAST_ID,
-      duration: Infinity,
-    });
-  }, [anyInstallPending, snapshot?.status, snapshot?.stage]);
+    toast.loading(
+      snapshot?.stage === "downloading" && percent != null
+        ? `${label} ${Math.floor(percent)}%`
+        : label,
+      {
+        id: TOAST_ID,
+        duration: Infinity,
+      },
+    );
+  }, [anyInstallPending, snapshot?.status, snapshot?.stage, snapshot?.downloadPercent]);
+
+  useEffect(() => {
+    if (nativeRestart && snapshot?.stage === "waiting" && snapshot.status === "available") {
+      const readyKey = `${snapshot.latestVersion ?? snapshot.latestCommit ?? ""}:${snapshot.stage}`;
+      if (moduleLastReadyToastKey === readyKey) return;
+      moduleLastReadyToastKey = readyKey;
+      toast.info(snapshot.distribution === "desktop" ? "Update downloaded" : "Update ready", {
+        id: TOAST_ID,
+        description: snapshot.error ?? "Finish active chats, then choose Update and Restart.",
+        duration: 8000,
+      });
+    }
+  }, [
+    nativeRestart,
+    snapshot?.stage,
+    snapshot?.status,
+    snapshot?.error,
+    snapshot?.distribution,
+    snapshot?.latestVersion,
+    snapshot?.latestCommit,
+  ]);
+
+  // Native error toast: only when an install was actually in flight. A failed
+  // update *check* also latches `status: "error"` on the desktop updater — that
+  // belongs inline in Settings, not in a launch toast.
+  useEffect(() => {
+    const status = snapshot?.status;
+    if (anyInstallPending || (status != null && INSTALL_BUSY_STATUSES.includes(status))) {
+      moduleInstallWasInFlight = true;
+      return;
+    }
+    if (status == null || status === "checking") return;
+    if (status === "error") {
+      if (moduleInstallWasInFlight && nativeRestart) {
+        toast.error(snapshot?.error ?? "Relay update failed", { id: TOAST_ID, duration: 8000 });
+      }
+      moduleInstallWasInFlight = false;
+      return;
+    }
+    // Any other settled status: no install is in flight anymore.
+    moduleInstallWasInFlight = false;
+  }, [nativeRestart, anyInstallPending, snapshot?.status, snapshot?.error]);
 
   // Post-restart toast: once we've cleared the busy states AND we see a commit
   // that differs from the one we captured before install, show the final

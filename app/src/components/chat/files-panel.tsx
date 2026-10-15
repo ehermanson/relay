@@ -3,6 +3,7 @@
  * and the space sidebar.
  */
 
+import { DesktopFileActions } from "@/components/chat/desktop-file-actions";
 import { memo, useMemo, useState } from "react";
 import { FileDiff } from "lucide-react";
 import { FileIcon } from "../ui/file-icon";
@@ -181,7 +182,9 @@ function TreeNodeView({
   collapsed,
   toggleDir,
   onFileClick,
+  cwd,
 }: {
+  cwd: string;
   node: TreeNode;
   depth: number;
   collapsed: Set<string>;
@@ -232,6 +235,13 @@ function TreeNodeView({
                 {(file.additions != null || file.deletions != null) && (
                   <DiffStats additions={file.additions} deletions={file.deletions} />
                 )}
+                <DesktopFileActions
+                  path={
+                    file.path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(file.path)
+                      ? file.path
+                      : `${cwd}/${file.path}`
+                  }
+                />
               </div>
             </Tooltip>
           ))}
@@ -239,6 +249,7 @@ function TreeNodeView({
           {node.children.map((child) => (
             <TreeNodeView
               key={child.fullPath}
+              cwd={cwd}
               node={child}
               depth={indent + (isRoot ? 0 : 1)}
               collapsed={collapsed}
@@ -321,6 +332,7 @@ export const FilesPanel = memo(function FilesPanel({
       {/* File tree */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         <TreeNodeView
+          cwd={cwd}
           node={tree}
           depth={0}
           collapsed={collapsed}

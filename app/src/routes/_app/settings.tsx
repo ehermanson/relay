@@ -100,7 +100,9 @@ function SettingsLayout() {
   return (
     <div className="flex h-full flex-1 overflow-hidden">
       <nav className="w-44 shrink-0 overflow-y-auto border-r border-border px-3 py-6">
-        <h1 className="mb-5 px-2 text-lg font-bold text-text-bright">Settings</h1>
+        <h1 className="desktop-window-header mb-5 px-2 text-lg font-bold text-text-bright">
+          Settings
+        </h1>
         <ul className="space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;

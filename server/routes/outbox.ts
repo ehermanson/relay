@@ -11,7 +11,8 @@ export function registerOutboxRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   const db = deps.instanceManager.sessionDb;
   app.get("/api/outbox/identity", (c) => {
     const session = c.get("session");
-    const identity = session ? createHash("sha256").update(session.id).digest("hex") : "open";
+    const owner = deps.config.outboxIdentity ?? session?.id;
+    const identity = owner ? createHash("sha256").update(owner).digest("hex") : "open";
     return c.json({ identity });
   });
   app.get("/api/outbox/:id", (c) => {

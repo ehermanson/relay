@@ -1,3 +1,4 @@
+import { getDesktop } from "@/lib/desktop";
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Link, useLocation } from "@tanstack/react-router";
 import { DownloadCloud, Loader2, LogOut, PanelLeftOpen, Plus, Settings } from "lucide-react";
@@ -489,9 +490,9 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
     >
       <div className="relative flex h-full shrink-0">
         {/* Narrow icon rail */}
-        <aside className="flex h-full w-12 flex-col items-center bg-surface py-3 rounded-xl">
+        <aside className="mini-sidebar-rail flex h-full w-12 flex-col items-center bg-surface py-3 rounded-xl">
           {/* Logo placeholder — the real logo is rendered persistently in app-layout */}
-          <div className="mb-3 h-7 w-7" aria-hidden />
+          <div className="mini-sidebar-title-slot mb-3 h-7 w-7" aria-hidden />
 
           {/* Expand button */}
           <Tooltip content="Expand sidebar" side="right">
@@ -582,7 +583,7 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
                 </Button>
               </Link>
             </Tooltip>
-            {isAuthenticated && (
+            {isAuthenticated && (!getDesktop() || getDesktop()?.capabilities?.attachedServer) && (
               <Tooltip content="Sign out" side="right">
                 <Button variant="icon" onClick={logout}>
                   <LogOut size={13} />

@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { chatGitStatusQueryOptions } from "@/lib/chat-query-options";
 import {
   AlertTriangle,
   Bot,
@@ -418,8 +419,7 @@ export function InstanceHeader({
     isLoading: gitStatusLoading,
     error: gitStatusError,
   } = useQuery({
-    queryKey: ["instance-git-status", instance.id],
-    queryFn: () => fetchInstanceGitStatus(instance.id),
+    ...chatGitStatusQueryOptions(instance.id),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     // Only fetch when we have a branch (instance is in a git repo)
