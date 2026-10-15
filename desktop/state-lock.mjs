@@ -2,6 +2,19 @@ import { mkdir, readFile, writeFile, rename, rm, realpath } from "node:fs/promis
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
+/** EPERM means the recorded PID was reused by another user's process: the
+ * signal probe cannot reach it, but it exists, so the lock reads as held. */
+export function lockOwnerAlive(pid, signal = (value) => process.kill(value, 0)) {
+  try {
+    signal(pid);
+    return true;
+  } catch (error) {
+    if (error.code === "EPERM") return true;
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 /** One desktop backend may write a home, even across Electron profiles. */
 export async function acquireStateLock(home) {
   const directory = join(await realpath(home), "desktop-backend.lock");
@@ -31,12 +44,8 @@ export async function acquireStateLock(home) {
       }
       if (!Number.isInteger(owner.pid) || owner.pid < 1)
         throw new Error("Desktop state lock is invalid; inspect its owner file");
-      try {
-        process.kill(owner.pid, 0);
+      if (lockOwnerAlive(owner.pid))
         throw new Error("Another Relay backend is already using this desktop home");
-      } catch (signalError) {
-        if (signalError.code !== "ESRCH") throw signalError;
-      }
       const stale = `${directory}.stale-${token}`;
       try {
         await rename(directory, stale);

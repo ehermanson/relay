@@ -195,7 +195,6 @@ async function run() {
       RELAY_DESKTOP_HOME: config.home,
       RELAY_DESKTOP_SMOKE: "1",
       RELAY_DESKTOP_BENCHMARK: "1",
-      RELAY_DESKTOP_SIGNED_UPDATE_TEST_URL: config.url,
     };
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.RELAY_DESKTOP_SERVER_URL;

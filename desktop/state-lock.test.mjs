@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireStateLock } from "./state-lock.mjs";
+import { acquireStateLock, lockOwnerAlive } from "./state-lock.mjs";
 
 test("one backend owns a desktop home and release permits the next writer", async () => {
   const home = await mkdtemp(join(tmpdir(), "relay-lock-test-"));
@@ -16,6 +16,21 @@ test("one backend owns a desktop home and release permits the next writer", asyn
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("a lock owner the probe cannot signal still counts as alive", () => {
+  const raise = (code) => () => {
+    const error = new Error(code);
+    error.code = code;
+    throw error;
+  };
+  assert.equal(
+    lockOwnerAlive(1234, () => {}),
+    true,
+  );
+  assert.equal(lockOwnerAlive(1234, raise("EPERM")), true);
+  assert.equal(lockOwnerAlive(1234, raise("ESRCH")), false);
+  assert.throws(() => lockOwnerAlive(1234, raise("EINVAL")), /EINVAL/);
 });
 
 test("dead owners are recovered; unfinished lock creation is treated conservatively", async () => {

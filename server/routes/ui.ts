@@ -24,6 +24,16 @@ export function registerUiRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         if (!resolved.startsWith(`${path.resolve(deps.uiDistDir)}${path.sep}`)) {
           return c.html("<h1>Forbidden</h1>", 403);
         }
+        if (pathname.startsWith("/fonts/")) {
+          // Fonts are stable but not content-hashed: cache for a day instead
+          // of revalidating ~100KB of woff2 on every launch (assets get
+          // immutable, everything else no-cache).
+          const response = fileResponse(resolved, false);
+          if (response.ok) {
+            response.headers.set("Cache-Control", "public, max-age=86400, must-revalidate");
+          }
+          return response;
+        }
         return fileResponse(resolved, pathname.startsWith("/assets/"));
       }
 

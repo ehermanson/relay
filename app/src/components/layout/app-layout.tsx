@@ -125,7 +125,7 @@ export function AppLayout() {
 
   if (isMobile) {
     return (
-      <div className={`app-shell${collapsed ? " app-shell-sidebar-collapsed" : ""}`}>
+      <div className="app-shell">
         <div className="app-shell-inner">
           <main className="app-shell-content flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
             <Outlet />
@@ -160,7 +160,7 @@ export function AppLayout() {
 
   return (
     <>
-      <div className={`app-shell${collapsed ? " app-shell-sidebar-collapsed" : ""}`}>
+      <div className="app-shell">
         <div className="app-shell-inner">
           {/* Animated sidebar container */}
           <div

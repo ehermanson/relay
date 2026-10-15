@@ -324,15 +324,15 @@ function UpdateSettingsRow() {
     checkPending,
   } = useSystemUpdate();
 
+  const snapshotLoaded = snapshot != null;
+  const distribution = snapshot?.distribution;
   useEffect(() => {
-    if (
-      installPending &&
-      (!getDesktop() ||
-        (snapshot?.distribution !== "desktop" && snapshot?.distribution !== "source"))
-    ) {
-      setRestartRequested(true);
-    }
-  }, [installPending]);
+    // Wait for the snapshot before deciding: with it still undefined, a native
+    // desktop/source install would wrongly arm the browser-reload flow.
+    if (!installPending || !snapshotLoaded) return;
+    if (getDesktop() && (distribution === "desktop" || distribution === "source")) return;
+    setRestartRequested(true);
+  }, [installPending, snapshotLoaded, distribution]);
 
   useEffect(() => {
     if (!restartRequested || !snapshot) return;

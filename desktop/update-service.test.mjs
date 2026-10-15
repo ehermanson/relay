@@ -53,6 +53,40 @@ async function source({ status = "", branch = "main", busy = false } = {}) {
   return { service, installations: () => installations };
 }
 
+test("a deferred source restart reports waiting and a retry re-requests the relaunch", async () => {
+  const parent = port();
+  let requestRestart;
+  const service = await createBackendUpdateService({
+    parent,
+    startMessage: { packaged: false, currentVersion: "3.0.0" },
+    installDir: "/isolated",
+    getRuntimeStatus: () => ({ activeCount: 0, pendingCount: 0, terminalCount: 0 }),
+    runCommand: async () => ({ stdout: "" }),
+    createSourceManager: async (options) => {
+      requestRestart = options.requestRestart;
+      return {
+        init: async () => {},
+        getSnapshot: () => ({ enabled: true, status: "idle" }),
+        checkForUpdates: async () => {},
+        installUpdate: async () => ({ ok: true, action: "restart" }),
+      };
+    },
+  });
+  const restarts = () => parent.sent.filter((m) => m.type === "source-update-restart").length;
+  requestRestart();
+  assert.equal(restarts(), 1);
+  parent.receive({ type: "source-update-deferred", error: "Chats are still running" });
+  const snapshot = service.getSnapshot();
+  assert.equal(snapshot.status, "available");
+  assert.equal(snapshot.stage, "waiting");
+  assert.equal(snapshot.updateAvailable, true);
+  assert.equal(snapshot.error, "Chats are still running");
+  assert.deepEqual(await service.installUpdate(), { ok: true, action: "restart" });
+  assert.equal(service.getSnapshot().status, "idle");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(restarts(), 2);
+});
+
 test("source updates refuse busy Chats, dirty working trees and feature Spaces", async () => {
   for (const options of [
     { busy: true },

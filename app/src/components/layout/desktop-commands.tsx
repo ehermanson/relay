@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { getDesktop } from "@/lib/desktop";
 import { useSidebarNavigationController } from "@/hooks/use-sidebar-navigation-controller";
@@ -19,9 +19,30 @@ export function DesktopCommands({
     useSidebarNavigationController();
   const [projectOpen, setProjectOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  // One stable preload subscription: `projectEntries` gets a new identity on
+  // every WS instance_list broadcast, so the handler reads the mutable inputs
+  // through a ref instead of re-subscribing to the native listener per render.
+  const context = {
+    onSearch,
+    onToggleSidebar,
+    navigate,
+    projectEntries,
+    currentProjectId,
+    createNewChat,
+  };
+  const contextRef = useRef(context);
+  contextRef.current = context;
   useEffect(
     () =>
       getDesktop()?.onCommand((command) => {
+        const {
+          onSearch,
+          onToggleSidebar,
+          navigate,
+          projectEntries,
+          currentProjectId,
+          createNewChat,
+        } = contextRef.current;
         if (command === "search") onSearch();
         if (command === "toggle-sidebar") onToggleSidebar();
         if (command === "settings") void navigate({ to: "/settings/general" });
@@ -35,7 +56,7 @@ export function DesktopCommands({
           else setProjectOpen(true);
         }
       }),
-    [onSearch, onToggleSidebar, navigate, projectEntries, currentProjectId, createNewChat],
+    [],
   );
   return (
     <>

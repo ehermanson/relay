@@ -189,8 +189,12 @@ async function open(path) {
   const error = await shell.openPath(await safeOpenPath(path, await projectRoots()));
   if (error) throw new Error(error);
 }
+let trayFailedCount = 0;
 function trayMenu(state) {
   if (!tray) return;
+  // Backend status reports running/pending only; the renderer's
+  // desktop:activity report owns the failed count.
+  if (state && typeof state.failedCount === "number") trayFailedCount = state.failedCount;
   const count = state?.activeCount || 0;
   tray.setToolTip(count ? `Relay · ${count} running Chat${count === 1 ? "" : "s"}` : "Relay");
   tray.setContextMenu(
@@ -198,7 +202,7 @@ function trayMenu(state) {
       ...(state
         ? [
             {
-              label: `${count} running · ${state.pendingCount || 0} need input · ${state.failedCount || 0} failed`,
+              label: `${count} running · ${state.pendingCount || 0} need input · ${trayFailedCount} failed`,
               enabled: false,
             },
             { type: "separator" },
@@ -508,7 +512,7 @@ async function createWindow(path = "/") {
     if (isLocalURL(url, origin)) {
       const local = new URL(url);
       if (local.pathname.startsWith("/api/")) target.webContents.downloadURL(url);
-      else void createWindow(local.pathname + local.search);
+      else createWindow(local.pathname + local.search).catch(() => {});
       return { action: "deny" };
     }
     const safe = externalURL(url);
@@ -537,12 +541,17 @@ async function createWindow(path = "/") {
       detail: `${details.reason}. Your backend remains running.`,
       buttons: ["Reload Window", "Close Window"],
     });
-    if (result.response === 0 && !target.isDestroyed())
-      void target.loadURL(origin + chatPath(path));
+    if (target.isDestroyed()) return;
+    if (result.response === 0) void target.loadURL(origin + chatPath(path)).catch(() => {});
     else target.destroy();
   });
   target.on("enter-full-screen", () => target.webContents.send("desktop:fullscreen", true));
   target.on("leave-full-screen", () => target.webContents.send("desktop:fullscreen", false));
+  // In-place reloads (backend recovery) re-run the preload, which initializes
+  // fullscreen as false; push the real state after every load.
+  target.webContents.on("did-finish-load", () =>
+    target.webContents.send("desktop:fullscreen", target.isFullScreen()),
+  );
   let geometryTimer;
   const saveGeometry = () => {
     clearTimeout(geometryTimer);
@@ -595,9 +604,16 @@ async function recoverBackend(ready) {
       sameSite: "strict",
     });
     for (const target of liveWindows()) {
-      const current = target.webContents.getURL();
-      const url = isLocalURL(current, origin) ? current : origin;
-      await target.loadURL(url);
+      // One window's failed or aborted reload must not reject onReady: the
+      // supervisor would treat that as a terminal backend failure.
+      try {
+        if (target.isDestroyed()) continue;
+        const current = target.webContents.getURL();
+        const url = isLocalURL(current, origin) ? current : origin;
+        await target.loadURL(url);
+      } catch (error) {
+        console.warn("Window reload after backend recovery failed:", error.message);
+      }
     }
   }
 }
@@ -623,19 +639,34 @@ function spawnBackend() {
         child.postMessage({ type: "update-result", id: message.id, error: error.message });
       }
     } else if (message.type === "source-update-restart") {
+      // Resolve the relaunch executable before quiescing: quiescence is
+      // one-way, so a missing or stale node_modules/electron must not leave
+      // the backend refusing every request with no relaunch scheduled.
+      let prepared = false;
       try {
+        const executable = await sourceRelaunchExecutable(join(import.meta.dirname, ".."));
         const ready = await prepareInstall();
         if (!ready.ok) {
           child.postMessage({ type: "source-update-deferred", error: ready.error });
           return;
         }
-        const executable = await sourceRelaunchExecutable(join(import.meta.dirname, ".."));
+        prepared = true;
         requestExit(() => {
           app.relaunch({ execPath: executable });
           app.exit(0);
         });
       } catch (error) {
-        child.postMessage({ type: "source-update-deferred", error: error.message });
+        try {
+          child.postMessage({ type: "source-update-deferred", error: error.message });
+        } catch {
+          /* The backend may already be gone; recovery below replaces it. */
+        }
+        if (prepared && !quitting) {
+          // A quiesced backend can no longer serve requests; replace it.
+          await supervisor?.stop();
+          supervisor = makeSupervisor();
+          await supervisor.start(bootstrapMessage()).catch(() => {});
+        }
       }
     }
   });
@@ -711,14 +742,35 @@ function registerIPC() {
       mode: value.mode,
       url: value.mode === "existing" ? attachedServerURL(value.url) : null,
     };
-    if (owned()) {
-      const ready = await prepareInstall();
-      if (!ready.ok) throw new Error(ready.error);
-    }
+    // Save the new connection before quiescing the backend: quiescence is
+    // one-way, so a failed save must not strand a quiesced backend with no
+    // relaunch scheduled.
+    const wasOwned = owned();
+    const previous = { connection, lastPath, switchingConnection };
+    const restore = async () => {
+      connection = previous.connection;
+      lastPath = previous.lastPath;
+      switchingConnection = previous.switchingConnection;
+      await saveState().catch(() => {});
+    };
     switchingConnection = true;
     lastPath = "/";
     connection = next;
-    await saveState();
+    try {
+      await saveState();
+    } catch (error) {
+      await restore();
+      throw error;
+    }
+    if (wasOwned) {
+      try {
+        const ready = await prepareInstall();
+        if (!ready.ok) throw new Error(ready.error);
+      } catch (error) {
+        await restore();
+        throw error;
+      }
+    }
     setTimeout(
       () =>
         requestExit(() => {

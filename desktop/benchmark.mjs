@@ -123,7 +123,6 @@ async function run(index) {
   delete env.RELAY_DESKTOP_SERVER_URL;
   delete env.RELAY_DESKTOP_UPDATE_SMOKE;
   delete env.RELAY_DESKTOP_RECOVERY_SMOKE;
-  delete env.RELAY_DESKTOP_SIGNED_UPDATE_TEST_URL;
   delete env.RELAY_REGISTER_PROTOCOL;
   const child = spawn(executable, [join(root, "desktop", "main.mjs")], {
     cwd: root,

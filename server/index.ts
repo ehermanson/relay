@@ -65,8 +65,25 @@ export class Relay {
     this.quiescing = true;
     // Stop transports synchronously with the idle decision. Main receives the
     // acknowledgement before requesting final graceful process shutdown.
-    for (const client of this.wss.clients) client.close(1001, "Relay is updating");
-    for (const socket of this.sockets) socket.destroy();
+    // WebSocket clients get a 1001 close frame ("Relay is updating") so they
+    // see a clean goodbye instead of an abnormal drop — destroying their TCP
+    // sockets immediately would discard the frame before it flushes. Plain
+    // HTTP sockets are destroyed now; a short unref'd fallback hard-kills any
+    // WS connection that hasn't completed the close handshake.
+    const clients = [...this.wss.clients];
+    const wsSockets = new Set<import("node:net").Socket>();
+    for (const client of clients) {
+      const socket = (client as unknown as { _socket?: import("node:net").Socket })._socket;
+      if (socket) wsSockets.add(socket);
+      client.close(1001, "Relay is updating");
+    }
+    for (const socket of this.sockets) {
+      if (!wsSockets.has(socket)) socket.destroy();
+    }
+    setTimeout(() => {
+      for (const client of clients) client.terminate();
+      for (const socket of wsSockets) if (!socket.destroyed) socket.destroy();
+    }, 1000).unref();
     this.wss.close();
     return true;
   }
@@ -146,6 +163,17 @@ export class Relay {
       this.wss.on("error", () => {});
       wsGetConnectionCount = wsHandle.getConnectionCount;
     } catch (error) {
+      // The InstanceManager opened the SQLite DB; close it before releasing
+      // the state lock so a failed construction leaves nothing behind. The
+      // cast is deliberate: the field is unassigned when construction failed
+      // before (or inside) `new InstanceManager`.
+      const instanceManager = (this as unknown as { instanceManager?: InstanceManager })
+        .instanceManager;
+      try {
+        instanceManager?.stopAll();
+      } catch {
+        // Best-effort cleanup — the construction error below is the real failure.
+      }
       this.releaseStateLock();
       throw error;
     }
@@ -238,11 +266,27 @@ export class Relay {
             return;
           }
 
-          this.terminalManager?.closeAll();
-          this.instanceManager.stopAllGracefully().then(() => {
+          // Release the state lock no matter how teardown goes — a failure in
+          // closeAll/stopAllGracefully must not leave the lock held.
+          let stopped: Promise<void>;
+          try {
+            this.terminalManager?.closeAll();
+            stopped = this.instanceManager.stopAllGracefully();
+          } catch (error) {
             this.releaseStateLock();
-            resolve();
-          }, reject);
+            reject(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+          stopped.then(
+            () => {
+              this.releaseStateLock();
+              resolve();
+            },
+            (error) => {
+              this.releaseStateLock();
+              reject(error);
+            },
+          );
         });
       });
     });

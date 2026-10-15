@@ -1249,6 +1249,9 @@ export async function readCodexAgentHistory(
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     agentHistoryCache.delete(cacheKey);
     agentHistoryCache.set(cacheKey, cached);
+    // Shared cached reference — callers must never mutate it: the byte
+    // accounting assumes entries never grow. (InstanceManager's sibling
+    // transcript cache clones on hit; this one deliberately doesn't.)
     return cached.history;
   }
   deleteAgentHistory(cacheKey);

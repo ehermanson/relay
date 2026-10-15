@@ -4,7 +4,7 @@ import { PatchDiff } from "@pierre/diffs/react";
 import { ChevronRight, WrapText, X } from "lucide-react";
 import type { FileChange } from "@shared/types";
 import { useTheme } from "@/stores/theme-store";
-import { fetchInstanceDiff } from "../../lib/api";
+import { chatDiffQueryOptions } from "@/lib/chat-query-options";
 import { useRepoStatus } from "@/hooks/use-repo-status";
 import { Button } from "../ui/button";
 import { FileIcon } from "../ui/file-icon";
@@ -85,14 +85,16 @@ export function DiffDrawer({
 }: DiffDrawerProps) {
   const { theme } = useTheme();
   const usesQuery = rawDiff == null && rawError == null && !!instanceId;
+  // Module-level queryFn (chat-query-options rule): an inline closure here
+  // would retain this render scope — including a potentially huge `rawDiff` —
+  // in the QueryCache even while the query is disabled.
   const {
     data: queriedDiff = null,
     isLoading: loading,
     error: queryError,
     refetch,
   } = useQuery({
-    queryKey: ["instanceDiff", instanceId],
-    queryFn: () => fetchInstanceDiff(instanceId!),
+    ...chatDiffQueryOptions(instanceId),
     enabled: usesQuery,
   });
   // Refetch while open only when the worktree actually changed (repo_status

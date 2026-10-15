@@ -3,13 +3,20 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   chatSummaryQueryOptions,
   chatGitStatusQueryOptions,
+  chatDiffQueryOptions,
   chatSuggestionsQueryOptions,
 } from "./chat-query-options";
-import { fetchInstanceSummary, fetchInstanceGitStatus, fetchProjectSuggestions } from "./api";
+import {
+  fetchInstanceSummary,
+  fetchInstanceGitStatus,
+  fetchInstanceDiff,
+  fetchProjectSuggestions,
+} from "./api";
 
 vi.mock("./api", () => ({
   fetchInstanceSummary: vi.fn(async (id) => ({ id })),
   fetchInstanceGitStatus: vi.fn(async (id) => ({ branch: id })),
+  fetchInstanceDiff: vi.fn(async (id) => `diff:${id}`),
   fetchProjectSuggestions: vi.fn(async (id) => [{ label: id }]),
 }));
 
@@ -32,6 +39,11 @@ describe("Chat query callbacks", () => {
         branch: "second",
       });
       expect(fetchInstanceGitStatus).toHaveBeenCalledWith("second");
+
+      expect(chatDiffQueryOptions("first").queryFn).toBe(chatDiffQueryOptions("second").queryFn);
+      expect(await client.fetchQuery(chatDiffQueryOptions("second"))).toBe("diff:second");
+      expect(fetchInstanceDiff).toHaveBeenCalledWith("second");
+
       expect(chatSuggestionsQueryOptions("project-a").queryFn).toBe(
         chatSuggestionsQueryOptions("project-b").queryFn,
       );

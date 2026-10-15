@@ -23,6 +23,7 @@ test("self-hosted fonts return binary assets rather than the SPA fallback", asyn
     const font = await app.request("/fonts/outfit.woff2");
     assert.equal(font.status, 200);
     assert.equal(font.headers.get("content-type"), "font/woff2");
+    assert.equal(font.headers.get("cache-control"), "public, max-age=86400, must-revalidate");
     assert.deepEqual(Buffer.from(await font.arrayBuffer()), bytes);
     assert.equal((await app.request("/fonts/missing.woff2")).status, 404);
     assert.equal(await (await app.request("/projects/example")).text(), "<html>Relay</html>");

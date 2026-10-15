@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopCommands } from "./desktop-commands";
 import type { DesktopCommand } from "@/lib/desktop";
 let callback: ((command: DesktopCommand) => void) | undefined;
+let subscribeCount = 0;
 const unsubscribe = vi.fn();
 const navigate = vi.fn();
 const createNewChat = vi.fn();
 vi.mock("@/lib/desktop", () => ({
   getDesktop: () => ({
     onCommand: (handler: typeof callback) => {
+      subscribeCount += 1;
       callback = handler;
       return unsubscribe;
     },
@@ -26,6 +28,7 @@ vi.mock("@/hooks/use-sidebar-navigation-controller", () => ({
 vi.mock("@/components/layout/sidebar-chrome", () => ({ AddProjectDialog: () => null }));
 beforeEach(() => {
   vi.clearAllMocks();
+  subscribeCount = 0;
 });
 afterEach(() => {
   callback = undefined;
@@ -34,7 +37,13 @@ describe("desktop commands", () => {
   it("reuses search, sidebar, settings and current Project chat actions", () => {
     const onSearch = vi.fn();
     const onToggleSidebar = vi.fn();
-    render(<DesktopCommands onSearch={onSearch} onToggleSidebar={onToggleSidebar} />);
+    const { rerender } = render(
+      <DesktopCommands onSearch={onSearch} onToggleSidebar={onToggleSidebar} />,
+    );
+    // Re-render (new prop identities, as a WS instance_list broadcast would
+    // produce) must not re-subscribe the native listener.
+    rerender(<DesktopCommands onSearch={onSearch} onToggleSidebar={onToggleSidebar} />);
+    expect(subscribeCount).toBe(1);
     act(() => {
       callback?.("search");
       callback?.("toggle-sidebar");

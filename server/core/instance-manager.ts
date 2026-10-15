@@ -6606,6 +6606,26 @@ export class InstanceManager extends EventEmitter {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
     };
+    const ctx: {
+      pendingTools: Map<string, string>;
+      pendingAskInputs: Map<string, string[]>;
+      pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
+      tasks: Map<string, TaskItem>;
+      files: Map<string, FileChange>;
+      stats: SessionStats;
+      cwd?: string;
+      transcriptPath: string;
+      agents: Map<string, AgentInfo>;
+    } = {
+      pendingTools: new Map<string, string>(),
+      pendingAskInputs: new Map<string, string[]>(),
+      pendingTaskCreates: new Map<string, { subject: string; activeForm?: string }>(),
+      tasks: new Map<string, TaskItem>(),
+      files: new Map<string, FileChange>(),
+      stats: { ...zeroStats },
+      transcriptPath: filePath,
+      agents: new Map<string, AgentInfo>(),
+    };
     let reader: TranscriptReader | undefined;
     try {
       reader = new TranscriptReader(filePath);
@@ -6626,26 +6646,6 @@ export class InstanceManager extends EventEmitter {
         }
         lineIdx++;
       }
-      const ctx: {
-        pendingTools: Map<string, string>;
-        pendingAskInputs: Map<string, string[]>;
-        pendingTaskCreates: Map<string, { subject: string; activeForm?: string }>;
-        tasks: Map<string, TaskItem>;
-        files: Map<string, FileChange>;
-        stats: SessionStats;
-        cwd?: string;
-        transcriptPath: string;
-        agents: Map<string, AgentInfo>;
-      } = {
-        pendingTools: new Map<string, string>(),
-        pendingAskInputs: new Map<string, string[]>(),
-        pendingTaskCreates: new Map<string, { subject: string; activeForm?: string }>(),
-        tasks: new Map<string, TaskItem>(),
-        files: new Map<string, FileChange>(),
-        stats: { ...zeroStats },
-        transcriptPath: filePath,
-        agents: new Map<string, AgentInfo>(),
-      };
 
       lineIdx = 0;
       for (const line of reader.lines()) {
@@ -6680,8 +6680,23 @@ export class InstanceManager extends EventEmitter {
         files: ctx.files,
         stats: ctx.stats,
       };
-    } catch {
-      return { cwd: "", history: [], tasks: new Map(), files: new Map(), stats: zeroStats };
+    } catch (err) {
+      // A mid-read failure (e.g. an I/O error after a successful boundary
+      // scan) must not masquerade as an empty transcript. Say why the read
+      // stopped and keep whatever was parsed before it did. A missing file
+      // is the normal "no transcript yet" read — no warning for that.
+      if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+        this.baseConfig?.logger?.warn(
+          `[InstanceManager] Transcript parse aborted for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return {
+        cwd,
+        history: history.toArray(),
+        tasks: ctx.tasks,
+        files: ctx.files,
+        stats: ctx.stats,
+      };
     } finally {
       reader?.close();
     }

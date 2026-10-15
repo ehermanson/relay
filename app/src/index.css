@@ -423,17 +423,6 @@ html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-rail {
 html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-title-slot {
   width: 100%;
 }
-html.relay-desktop[data-desktop-platform="darwin"]
-  :is(.sidebar-header, .mini-sidebar-title-slot, .desktop-window-header) {
-  -webkit-app-region: drag;
-  app-region: drag;
-}
-html.relay-desktop[data-desktop-platform="darwin"]
-  :is(.sidebar-header, .desktop-window-header)
-  :is(button, a, input, select, textarea, [role="button"], [role="tab"], [contenteditable="true"]) {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
 @container sidebar (max-width: 280px) {
   html.relay-desktop[data-desktop-platform="darwin"] .sidebar-header .sidebar-logo-text {
     display: none;
@@ -974,6 +963,12 @@ html.light .app-shell::before {
    header row. Keep their hit area clear, and drag only header backgrounds. */
 html.relay-desktop:not([data-desktop-platform="darwin"]) .desktop-window-header {
   min-height: 48px;
+}
+/* The caption-button reservation applies only to headers that actually reach
+   the window's top-right edge (main-view headers via ViewHeader) — not every
+   header-styled element (the Settings nav title sits in a narrow column and
+   the centered dashboard header never touches the edge). */
+html.relay-desktop:not([data-desktop-platform="darwin"]) .desktop-window-header-trailing {
   padding-right: 148px;
 }
 html.relay-desktop :is(.sidebar-header, .mini-sidebar-title-slot, .desktop-window-header) {

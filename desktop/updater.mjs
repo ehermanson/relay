@@ -50,10 +50,20 @@ export function createDesktopUpdater({
       stage: null,
       error: error instanceof Error ? error.message : String(error),
     });
+    if (!prepared && pendingInstall) {
+      // An adapter error before quiescence cancels the scheduled install so
+      // it cannot fire while the UI shows the failure.
+      cancel(pendingInstall);
+      pendingInstall = undefined;
+    }
     if (prepared && !recoveryStarted) {
       prepared = false;
       recoveryStarted = true;
       pendingInstall = undefined;
+      // The rejected artifact must never be reinstalled: the next attempt
+      // re-checks and re-downloads instead of replaying the same download.
+      downloaded = false;
+      update({ downloadPercent: null });
       // On macOS Squirrel verifies the code signature asynchronously during
       // quitAndInstall, after quiescence. Restore the backend if that fails.
       void Promise.resolve()
