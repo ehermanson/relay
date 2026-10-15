@@ -33,12 +33,14 @@ export function DialogContent({
       <BaseDialog.Backdrop className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm animate-fade-in" />
       {/* Top-anchored on mobile: the on-screen keyboard covers the lower half
           of the viewport, so a vertically centered dialog ends up hidden or
-          jumping when an input inside it focuses. */}
+          jumping when an input inside it focuses. The content box is capped
+          and scrolls internally: on a phone a long dialog (Complete space)
+          otherwise runs off the bottom with its buttons unreachable. */}
       <BaseDialog.Popup
         className={`fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none max-[768px]:items-start max-[768px]:pt-[max(8dvh,var(--app-top-inset))]`}
       >
         <div
-          className={`pointer-events-auto mx-auto flex w-full ${maxWidth} flex-col gap-3 rounded-xl border border-border/70 bg-surface p-5 shadow-2xl animate-fade-in ${className}`}
+          className={`pointer-events-auto mx-auto flex min-h-0 w-full ${maxWidth} flex-col gap-3 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-surface p-5 shadow-2xl animate-fade-in ${className}`}
           style={{ maxHeight: "min(85vh, 100dvh - var(--app-top-inset) - 2rem)" }}
         >
           {children}

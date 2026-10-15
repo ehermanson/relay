@@ -20,6 +20,8 @@ import { GhCliRequiredDialog } from "@/components/git/gh-cli-required-dialog";
 import { CommitMessageDialog } from "@/components/git/commit-message-dialog";
 import { useSpaceViewContext } from "@/components/spaces/space-view-context";
 import { SpacePrBadge } from "@/components/spaces/space-pr-badge";
+import { Dialog } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Archive,
   BookOpen,
@@ -28,8 +30,12 @@ import {
   EllipsisVertical,
   FileText,
   GitBranch,
+  GitCommitHorizontal,
+  GitMerge,
+  GitPullRequest,
   LayoutGrid,
   Pencil,
+  Upload,
 } from "lucide-react";
 
 export function SpaceViewHeader() {
@@ -37,7 +43,13 @@ export function SpaceViewHeader() {
   const isShowing = (panel: "brief" | "files" | "context") =>
     shared.isSidecarOpen && shared.sidecarTab === panel;
 
+  const canManage = !shared.space.isDefault && (shared.isActive || shared.isBroken);
+  const gitBusy = shared.pendingGitAction !== null;
+
   // ── Mobile layout ──────────────────────────────────────────────────
+  // Desktop spreads the space actions across the GitBadge menu and the title
+  // menu; the phone header has room for neither, so one ⋮ menu carries all of
+  // them. Rename opens a dialog here — the inline title editor is desktop-only.
   if (shared.isMobile) {
     return (
       <MobileViewHeader
@@ -46,20 +58,106 @@ export function SpaceViewHeader() {
         projectLabel={shared.projectName}
         gitBranch={shared.space.gitBranch ?? undefined}
         actions={
-          shared.sidecarContentCount > 0 ? (
-            <Button
-              variant="icon"
-              onClick={() => actions.setSidecarMobileOpen(true)}
-              className="relative h-9 w-9 shrink-0 rounded-lg"
-            >
-              <LayoutGrid size={17} strokeWidth={2} />
-              <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-claude px-0.5 text-[0.5625rem] font-semibold leading-none text-white">
-                {shared.sidecarContentCount}
-              </span>
-            </Button>
-          ) : null
+          <div className="flex shrink-0 items-center gap-1">
+            {shared.sidecarContentCount > 0 && (
+              <Button
+                variant="icon"
+                onClick={() => actions.setSidecarMobileOpen(true)}
+                className="relative h-10 w-10 shrink-0 rounded-lg"
+              >
+                <LayoutGrid size={17} strokeWidth={2} />
+                <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-claude px-0.5 text-[0.5625rem] font-semibold leading-none text-white">
+                  {shared.sidecarContentCount}
+                </span>
+              </Button>
+            )}
+            <Menu.Root>
+              <Menu.Trigger
+                aria-label="Space actions"
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-hover hover:text-text"
+              >
+                <EllipsisVertical size={17} strokeWidth={2} />
+              </Menu.Trigger>
+              <Menu.Content side="bottom" align="end">
+                {shared.isActive && shared.space.gitBranch && (
+                  <>
+                    <Menu.Item
+                      onClick={() => actions.setMergeDialog({ phase: "confirm" })}
+                      disabled={shared.spaceInstances.length === 0}
+                    >
+                      <GitMerge size={13} className="text-muted" />
+                      Complete
+                    </Menu.Item>
+                    <Menu.Separator />
+                    <Menu.Item onClick={() => actions.setCommitDialogOpen(true)} disabled={gitBusy}>
+                      <GitCommitHorizontal size={13} className="text-muted" />
+                      Commit changes
+                    </Menu.Item>
+                    <Menu.Item onClick={() => void actions.handlePush(false)} disabled={gitBusy}>
+                      <Upload size={13} className="text-muted" />
+                      {shared.pendingGitAction === "push" ? "Pushing…" : "Push branch"}
+                    </Menu.Item>
+                    <Menu.Item onClick={() => void actions.handlePush(true)} disabled={gitBusy}>
+                      <GitPullRequest size={13} className="text-muted" />
+                      Push & create PR
+                    </Menu.Item>
+                    <Menu.Separator />
+                  </>
+                )}
+                {canManage && (
+                  <Menu.Item onClick={actions.startRenamingSpace}>
+                    <Pencil size={13} strokeWidth={2} className="text-muted" />
+                    Rename
+                  </Menu.Item>
+                )}
+                {!shared.space.isDefault && shared.isActive && (
+                  <Menu.Item onClick={actions.handleMarkMerged}>
+                    <Check size={13} strokeWidth={2} className="text-muted" />
+                    Mark as merged
+                  </Menu.Item>
+                )}
+                <Menu.Item onClick={() => actions.setShowDebug(true)}>
+                  <Bug size={13} strokeWidth={2} className="text-muted" />
+                  Debug
+                </Menu.Item>
+                {canManage && (
+                  <>
+                    <Menu.Separator />
+                    <Menu.Item danger onClick={() => actions.setConfirmDelete(true)}>
+                      <Archive size={13} />
+                      Archive space
+                    </Menu.Item>
+                  </>
+                )}
+              </Menu.Content>
+            </Menu.Root>
+          </div>
         }
       >
+        <Dialog.Root
+          open={shared.editingSpaceName}
+          onOpenChange={(open) => {
+            if (!open) actions.cancelSpaceRename();
+          }}
+        >
+          <Dialog.Content maxWidth="max-w-sm">
+            <Dialog.Title>Rename space</Dialog.Title>
+            <Input
+              autoFocus
+              value={shared.spaceNameDraft}
+              onChange={(e) => actions.setSpaceNameDraft(e.target.value)}
+              onKeyDown={actions.handleSpaceNameKeyDown}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={actions.cancelSpaceRename}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={actions.commitSpaceRename}>
+                Rename
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Root>
         <CommitMessageDialog
           open={shared.commitDialogOpen}
           onOpenChange={actions.setCommitDialogOpen}

@@ -67,6 +67,7 @@ type SpaceViewContextValue = {
     handleSpaceNameKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
     commitSpaceRename: () => void;
     startRenamingSpace: () => void;
+    cancelSpaceRename: () => void;
     setShowDebug: (open: boolean) => void;
     setConfirmDelete: (open: boolean) => void;
     setCommitDialogOpen: (open: boolean) => void;

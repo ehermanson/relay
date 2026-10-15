@@ -629,9 +629,11 @@ export function SpaceView() {
     });
   };
 
+  const cancelSpaceRename = () => setEditingSpaceName(false);
+
   const handleSpaceNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") commitSpaceRename();
-    if (e.key === "Escape") setEditingSpaceName(false);
+    if (e.key === "Escape") cancelSpaceRename();
   };
 
   const handleMergeSuccessDone = () => {
@@ -704,6 +706,7 @@ export function SpaceView() {
       handleSpaceNameKeyDown,
       commitSpaceRename,
       startRenamingSpace,
+      cancelSpaceRename,
       setShowDebug,
       setConfirmDelete,
       setCommitDialogOpen,
