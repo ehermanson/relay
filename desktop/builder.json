@@ -10,6 +10,7 @@
     "dist/**/*",
     "app/dist/**/*",
     "app/public/icon-192.png",
+    "app/public/icon-512.png",
     "package.json",
     "!desktop/*.test.mjs",
     "!desktop/build.mjs",
@@ -33,11 +34,13 @@
     "notarize": true
   },
   "win": {
-    "target": ["nsis"]
+    "target": ["nsis"],
+    "icon": "app/public/icon-512.png"
   },
   "linux": {
     "target": ["AppImage"],
-    "category": "Development"
+    "category": "Development",
+    "icon": "app/public/icon-512.png"
   },
   "publish": [
     {

@@ -63,6 +63,7 @@ app.setName("Relay");
 app.setAppUserModelId("com.relay.desktop");
 const home = process.env.RELAY_DESKTOP_HOME || join(homedir(), ".relay-desktop");
 app.setPath("userData", join(home, "electron"));
+const appIcon = join(import.meta.dirname, "../app/public/icon-512.png");
 const bootAt = performance.now();
 const windows = new Set();
 const notifications = new Set();
@@ -469,6 +470,7 @@ async function createWindow(path = "/") {
     minHeight: 600,
     show: false,
     title: "Relay",
+    ...(process.platform !== "darwin" && { icon: appIcon }),
     ...(process.platform === "darwin"
       ? { titleBarStyle: "hidden", trafficLightPosition: { x: 16, y: 16 } }
       : {
@@ -982,6 +984,9 @@ function makeSupervisor() {
 }
 
 async function start() {
+  // Packaged macOS builds get the bundle icon; a source launch runs inside Electron.app.
+  if (process.platform === "darwin" && !app.isPackaged)
+    app.dock?.setIcon(join(import.meta.dirname, "icon.png"));
   await mkdir(home, { recursive: true, mode: 0o700 });
   try {
     const state = JSON.parse(await readFile(join(home, "desktop.json"), "utf8"));
