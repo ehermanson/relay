@@ -2,3 +2,9 @@ packages:
   - "app"
 allowBuilds:
   better-sqlite3: false
+  electron-winstaller: false
+  esbuild: false
+  node-pty: true
+# Never fail an install over an unlisted build script (pnpm 11 defaults this to
+# true, which breaks the in-app updater whenever a new dependency ships one).
+strictDepBuilds: false
