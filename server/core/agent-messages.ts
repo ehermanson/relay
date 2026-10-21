@@ -38,6 +38,8 @@ export interface UserMessageOrigin {
   name?: string;
   body?: string;
   senderTaskId?: string;
+  /** Why the task notification fired (e.g. "worker_restart"). SDK 0.3.280+. */
+  fireReason?: string;
 }
 
 export type UserEnvelopeClassification =
@@ -59,6 +61,8 @@ export type UserEnvelopeClassification =
       summary?: string;
       result?: string;
       outputFile?: string;
+      /** Why the notification fired (e.g. "worker_restart"). SDK 0.3.280+. */
+      fireReason?: string;
     }
   | { kind: "internal" };
 
@@ -157,7 +161,9 @@ export function classifyUserEnvelope(
   const kind = origin?.kind;
 
   if (kind === "task-notification") {
-    return parseTaskNotification(text) ?? { kind: "internal" };
+    const parsed = parseTaskNotification(text);
+    if (!parsed) return { kind: "internal" };
+    return origin?.fireReason ? { ...parsed, fireReason: origin.fireReason } : parsed;
   }
 
   if (kind === "peer" || kind === "observer") {
@@ -325,6 +331,8 @@ export interface TaskNotificationFields {
   /** Background output transcript; read for the final report when `result` is absent. */
   outputFile?: string;
   usage?: AgentInfo["usage"];
+  /** Why the notification fired (e.g. "worker_restart"). SDK 0.3.280+. */
+  fireReason?: string;
 }
 
 /**
@@ -346,6 +354,9 @@ export function buildTaskNotificationInfo(
   const report = notification.result ?? readAgentOutputResult(notification.outputFile) ?? undefined;
   if (report ?? notification.summary) info.result = report ?? notification.summary;
   if (notification.summary && report) info.lastActivity = notification.summary;
+  if (notification.fireReason === "worker_restart" && !report && !notification.summary) {
+    info.lastActivity = "Worker restarted";
+  }
   if (notification.status === "failed") info.resultIsError = true;
   if (notification.usage) info.usage = notification.usage;
   return info;
@@ -353,7 +364,11 @@ export function buildTaskNotificationInfo(
 
 // The pure merge/fold helpers live in the fs-free `agent-info.ts` so the UI can
 // share them via `@shared/agent-info`; re-exported here for existing importers.
-export { mergeAgentInfo, collectAgentsFromHistory, findAgentKeyByProviderId } from "#core/agent-info.js";
+export {
+  mergeAgentInfo,
+  collectAgentsFromHistory,
+  findAgentKeyByProviderId,
+} from "#core/agent-info.js";
 
 // =============================================================================
 // Output-file result extraction
