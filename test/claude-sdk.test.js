@@ -946,6 +946,38 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
 
+    it("adds only the growth of cumulative thinkingTokens to reasoningTokens", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const statsEvents = collectEvents(session, "stats");
+      const result = (thinking) => ({
+        type: "result",
+        subtype: "success",
+        session_id: "sess-1",
+        is_error: false,
+        modelUsage: {
+          "claude-sonnet-4-6": {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            thinkingTokens: thinking,
+          },
+        },
+      });
+
+      harness.fakeQuery.emit(result(40));
+      await tick();
+      harness.fakeQuery.emit(result(100));
+      await tick();
+      assert.equal(statsEvents[statsEvents.length - 1][0].reasoningTokens, 100);
+      // A smaller running total is a reset: counted whole.
+      harness.fakeQuery.emit(result(30));
+      await tick();
+      assert.equal(statsEvents[statsEvents.length - 1][0].reasoningTokens, 130);
+      session.close();
+    });
+
     it("takes the chat model from root assistant frames, not background modelUsage", async () => {
       const harness = makeHarness();
       const session = await createTestSession(harness);
