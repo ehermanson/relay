@@ -2150,6 +2150,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             outputTokens: number;
             cacheReadInputTokens: number;
             cacheCreationInputTokens: number;
+            /** Extended thinking tokens (SDK >= 0.3.257); already counted inside outputTokens. */
+            thinkingTokens?: number;
             /** Canonical model id used for pricing (SDK >= 0.3.218); may differ from the map key alias. */
             canonicalModel?: string;
             /** API provider that served this model (SDK >= 0.3.218). */
@@ -2168,6 +2170,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         this._stats.outputTokens += usage.outputTokens || 0;
         this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
         this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
+        if (usage.thinkingTokens) {
+          this._stats.reasoningTokens = (this._stats.reasoningTokens ?? 0) + usage.thinkingTokens;
+        }
       }
       this.emit("stats", { ...this._stats });
     }
