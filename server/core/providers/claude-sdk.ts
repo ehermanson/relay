@@ -1804,6 +1804,24 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
           raw: msg,
         } satisfies SystemEventMessage);
         break;
+      case "informational": {
+        const content = typeof msg.content === "string" ? msg.content : "";
+        const level = msg.level as string | undefined;
+        if (content && level !== "info") {
+          this.emit("systemEvent", {
+            type: "system_event",
+            event: "informational",
+            payload: {
+              content,
+              level: level ?? "notice",
+              ...(typeof msg.tool_use_id === "string" ? { toolUseId: msg.tool_use_id } : {}),
+              ...(msg.prevent_continuation === true ? { preventContinuation: true } : {}),
+            },
+            raw: msg,
+          } satisfies SystemEventMessage);
+        }
+        break;
+      }
       case "status":
       case "elicitation_complete":
       case "local_command_output":

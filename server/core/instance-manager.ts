@@ -6990,6 +6990,31 @@ export class InstanceManager extends EventEmitter {
         },
       ];
     }
+    if (entry.type === "system" && entry.subtype === "informational") {
+      const raw = entry as Record<string, unknown>;
+      const content = typeof raw.content === "string" ? raw.content : "";
+      const level = raw.level as string | undefined;
+      if (content && level !== "info") {
+        return [
+          {
+            timestamp,
+            message: {
+              type: "system_event",
+              event: "informational",
+              payload: {
+                content,
+                level: level ?? "notice",
+                ...(typeof raw.tool_use_id === "string" ? { toolUseId: raw.tool_use_id } : {}),
+                ...(raw.prevent_continuation === true ? { preventContinuation: true } : {}),
+              },
+              raw: entry,
+            },
+            raw: entry,
+          },
+        ];
+      }
+      return [];
+    }
     if (entry.type === "system" && entry.subtype === "init") {
       return [
         {

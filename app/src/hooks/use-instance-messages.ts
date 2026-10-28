@@ -1145,6 +1145,16 @@ function coreReducer(state: State, action: Action): State {
         items.push(buildModelSwitchItem(action.message.payload, Date.now()));
         return { ...state, items };
       }
+      if (action.message.event === "informational") {
+        const payload = action.message.payload ?? {};
+        const content = typeof payload.content === "string" ? payload.content : "";
+        if (content) {
+          const items = [...state.items];
+          items.push({ kind: "system", text: content });
+          return { ...state, items };
+        }
+        return state;
+      }
       if (action.message.event !== "compact_boundary") return state;
       const items = [...state.items];
       items.push({ kind: "compact-boundary", timestamp: Date.now() });
