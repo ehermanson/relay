@@ -375,6 +375,8 @@ export interface ProviderStatusSummary {
   notices?: ProviderNotice[];
   /** SDK-reported reason fast mode is unavailable (SDK >= 0.3.219). */
   fastModeDisabledReason?: string;
+  /** Plugin dirs that failed to load at session start (SDK >= 0.3.283). */
+  pluginErrors?: string[];
 }
 
 export interface ProviderRequest {

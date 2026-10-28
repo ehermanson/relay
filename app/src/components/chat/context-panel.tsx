@@ -291,7 +291,8 @@ function InstanceContext({
     globalProviderState?.mcpServers?.length ||
     providerStatus?.mcpServers?.length ||
     providerStatus?.notices?.length ||
-    globalProviderState?.notices?.length,
+    globalProviderState?.notices?.length ||
+    providerStatus?.pluginErrors?.length,
   );
   return (
     <div className="flex-1 overflow-y-auto">
@@ -409,7 +410,8 @@ function ProviderStatusBlock({
     globalState?.mcpServers?.length ||
     providerStatus?.mcpServers?.length ||
     providerStatus?.notices?.length ||
-    globalState?.notices?.length,
+    globalState?.notices?.length ||
+    providerStatus?.pluginErrors?.length,
   );
 
   if (!hasContent) return null;
@@ -500,6 +502,17 @@ function ProviderStatusBlock({
               </div>
             ),
           )}
+        </div>
+      ) : null}
+
+      {/* Plugin load errors */}
+      {providerStatus?.pluginErrors?.length ? (
+        <div className="flex flex-col gap-1">
+          {providerStatus.pluginErrors.map((path, index) => (
+            <div key={index} className="text-[0.75rem] text-warning">
+              Plugin failed to load: <span className="font-mono text-muted">{path}</span>
+            </div>
+          ))}
         </div>
       ) : null}
     </div>

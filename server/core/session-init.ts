@@ -292,6 +292,19 @@ export function normalizeSessionInitPayload(
       : undefined;
   if (mergedMcpServers !== undefined) payload.mcpServers = mergedMcpServers;
 
+  // plugin_errors (SDK >= 0.3.283): array of {path} for plugin dirs that failed to load.
+  // Untyped because the field postdates the installed SDK version.
+  const rawPluginErrors = (record as Record<string, unknown>).plugin_errors;
+  if (Array.isArray(rawPluginErrors)) {
+    const paths = rawPluginErrors.flatMap((entry) => {
+      if (typeof entry === "string" && entry.trim()) return [entry.trim()];
+      const rec = asRecord(entry);
+      if (rec && typeof rec.path === "string" && rec.path.trim()) return [rec.path.trim()];
+      return [];
+    });
+    if (paths.length > 0) payload.pluginErrors = paths;
+  }
+
   return Object.keys(payload).length > 0 ? payload : undefined;
 }
 
