@@ -9511,7 +9511,10 @@ export class InstanceManager extends EventEmitter {
                     : [];
                 })
               : undefined;
-            if (slashCommands.length || skills.length || mcpServers !== undefined) {
+            const pluginErrors = Array.isArray(payload.pluginErrors)
+              ? payload.pluginErrors.filter((p): p is string => typeof p === "string")
+              : undefined;
+            if (slashCommands.length || skills.length || mcpServers !== undefined || pluginErrors) {
               live.info.providerStatus = {
                 ...live.info.providerStatus,
                 slashCommands: slashCommands.length
@@ -9519,6 +9522,7 @@ export class InstanceManager extends EventEmitter {
                   : live.info.providerStatus?.slashCommands,
                 skills: skills.length ? skills : live.info.providerStatus?.skills,
                 ...(mcpServers !== undefined ? { mcpServers } : {}),
+                ...(pluginErrors ? { pluginErrors } : {}),
               };
               this.emitInstanceStatus(live);
             }
