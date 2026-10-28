@@ -1201,7 +1201,8 @@ export type SystemEventType =
   | "provider_status"
   | "provider_notice"
   | "model_rerouted"
-  | "model_switched";
+  | "model_switched"
+  | "informational";
 
 export interface SystemEventMessage {
   type: "system_event";
