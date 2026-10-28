@@ -1290,3 +1290,41 @@ describe("html_render pages", () => {
     expect(items[1]).toMatchObject({ kind: "html-render", render });
   });
 });
+
+describe("informational notices", () => {
+  const notice = (content: string, toolUseId?: string): HistoryEntry => ({
+    timestamp: 1,
+    message: {
+      type: "system_event",
+      instanceId: "instance-1",
+      event: "informational",
+      payload: { content, level: "notice", ...(toolUseId ? { toolUseId } : {}) },
+    },
+  });
+
+  it("replays one row per tool use, keeping the latest progress text", () => {
+    const items = replayHistoryToItems([
+      notice("Indexing 10%", "toolu_1"),
+      notice("Heads up"),
+      notice("Indexing 90%", "toolu_1"),
+    ]);
+    expect(items.filter((item) => item.kind === "system").map((item) => item.text)).toEqual([
+      "Indexing 90%",
+      "Heads up",
+    ]);
+  });
+
+  it("updates a live notice in place", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => {
+      result.current.setInstanceId("instance-1");
+    });
+    act(() => {
+      result.current.handleMessage("instance-1", notice("Step 1", "toolu_2").message);
+      result.current.handleMessage("instance-1", notice("Step 2", "toolu_2").message);
+    });
+    expect(
+      result.current.items.filter((item) => item.kind === "system").map((item) => item.text),
+    ).toEqual(["Step 2"]);
+  });
+});

@@ -1243,7 +1243,9 @@ export type SystemEventType =
   | "html_render"
   | "ui_render"
   /** Full-disk or storage-quota error prevented saving the transcript or ~/.claude.json. */
-  | "session_writes_lost";
+  | "session_writes_lost"
+  /** SDK `system/informational` notice (notice/suggestion/warning levels). */
+  | "informational";
 
 export interface SystemEventMessage {
   type: "system_event";

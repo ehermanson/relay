@@ -66,6 +66,8 @@ export interface SystemChatItem {
   kind: "system";
   text: string;
   isError?: boolean;
+  /** Later notices with the same key replace this one (SDK progress notices per tool use). */
+  dedupeKey?: string;
 }
 
 export interface CompactBoundaryChatItem {
