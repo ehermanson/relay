@@ -9,6 +9,15 @@ Work in an isolated maintenance worktree based on the freshly fetched default br
 below are relative to the maintenance worktree root. Use the installed `relay tasks` CLI
 (or the built CLI from this revision); no running Relay server is required.
 
+**Task files are written only through the CLI.** Create, update and comment with `relay tasks
+create|update|comment` — a comment is `relay tasks comment <id> --body "<markdown>"`. Never
+hand-write or hand-edit files under `.relay/tasks/` or `.relay/task-discussion/`: they need
+CLI-generated YAML front matter (id, revision, timestamps), and a plain Markdown note breaks
+`relay tasks validate`, which blocks every later push to the default branch. Run
+`relay tasks validate` and `relay tasks format --check` before every commit; if either fails,
+fix it through the CLI or stop and report. Never commit or push past a failure, and never
+bypass hooks with `--no-verify`.
+
 ## Read first (required context)
 
 - `CLAUDE.md` — architecture, the `ProviderCapabilities` model.
@@ -66,7 +75,7 @@ For each source:
 6. Run `relay tasks archive --days 30`, then `relay tasks validate` and
    `relay tasks format --check`. Keep history tracked; do not delete accepted tasks merely
    because they are old. Discard unaccepted suggestions; cancel accepted tasks that no
-   longer apply and record why in a separate task comment.
+   longer apply and record why with `relay tasks comment`.
 
 Be conservative: when unsure whether something is actionable, note it rather than filing a
 noisy task. A clean backlog is the goal.

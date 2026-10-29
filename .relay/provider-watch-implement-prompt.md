@@ -12,15 +12,24 @@ Work from the root of the checked-out `ehermanson/relay` repo (default branch).
 - `.relay/provider-strategy.md` — bucket definitions.
 - `relay tasks list --json` — current work in the selected worktree; use `show <id>` for details.
 
+**Task files are written only through the CLI.** Create, update and comment with `relay tasks
+create|update|comment` — a comment is `relay tasks comment <id> --body "<markdown>"`. Never
+hand-write or hand-edit files under `.relay/tasks/` or `.relay/task-discussion/`: they need
+CLI-generated YAML front matter (id, revision, timestamps), and a plain Markdown note breaks
+`relay tasks validate`, which blocks every later push to the default branch. Run
+`relay tasks validate` and `relay tasks format --check` before every commit; if either fails,
+fix it through the CLI or stop and report. Never commit or push past a failure, and never
+bypass hooks with `--no-verify`.
+
 ## Close out merged work (do this first, every run)
 
 Run `relay tasks list --json` for tasks tagged `provider-watch` with status `in_progress`. For
 each, check whether its impl PR merged (`gh pr list --state merged --search "<taskId>"` or
 look for branch `provider-watch/impl-<taskId>`). If merged, the work shipped but the task
 was never closed: use `relay tasks update <id> --status done`, and add a task comment
-linking the merged PR. Publish these task-only changes from an isolated maintenance
-worktree under the direct-publication policy in `provider-watch-prompt.md`; no PR is needed
-for this bookkeeping. A failed push remains pending. Then continue with code work.
+(`relay tasks comment <id> --body …`) linking the merged PR. Publish these task-only changes
+from an isolated maintenance worktree under the direct-publication policy in
+`provider-watch-prompt.md`; no PR is needed for this bookkeeping. A failed push remains pending. Then continue with code work.
 
 ## Select the eligible tasks
 
@@ -40,7 +49,8 @@ ship first if the run is interrupted. If none are eligible, do nothing and repor
    capability-declaration-shaped: usually a `ProviderCapabilities` field plus a UI control
    that renders from it.
 3. If the task turns out NOT to be mechanical (needs design decisions, broad refactor,
-   ambiguous scope), skip it — do not force it. Add a separate task comment, keep
+   ambiguous scope), skip it — do not force it. Add a task comment with
+   `relay tasks comment <id> --body "Kicked back — needs human design. <why>"`, keep
    its status `open`, report it as "kicked back, needs human design," and move on to the
    next eligible task (do not abort the whole run).
 4. Update AGENTS.md / README.md if the change makes the docs stale (CLAUDE.md self-maintenance
