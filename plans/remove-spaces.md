@@ -1,6 +1,6 @@
 # Remove Spaces
 
-Status (2026-10-29): proposed.
+Status (2026-10-29): done. All five steps landed on `remove-spaces`.
 
 Spaces (branch-scoped worktree groups of chats, with Complete/merge, push/PR, PR status, and a shared brief) predate subagents and Relay orchestration. Usage has collapsed: 19 Spaces ever (16 completed, 3 archived), 1 created in the last 30 days. The feature spreads across ~65 server/UI files (~7.4k lines that exist only for it, plus ~1.2k lines of tests). Delegation (parent + children, cards, wakes, `chat_send`) now covers "several chats working one problem"; provider-native worktree subagents cover isolated parallel edits.
 
@@ -67,3 +67,9 @@ Possible future, not part of this: a grouped view of a parent chat with its dele
 - `mergeInstance` ("Merge to main" for a chat on its own branch) stays.
 - Closed-Space chats are read-only (and done).
 - Fable review per step.
+
+## Follow-ups
+
+- A read-only chat has no UI indicator. Only the send error shows it; the client doesn't handle `chat_read_only` specially, and the diff drawer shows "no changes".
+- The dormant `spaces` table and `space_id` / `default_space_branch` columns can be dropped in a future schema bump.
+- Legacy `~/.relay/worktrees/space-*` directories are left for the user to remove with git.

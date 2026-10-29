@@ -2,7 +2,7 @@
 
 ## Outcome and decisions
 
-Replace the shared `.relay/tasks.json` snapshot with tracked Markdown task files. Each Space reads and writes its own worktree; the Project Tasks tab defaults to the Main space. Agents work offline through the same core functions exposed by a local CLI. Unrelated tasks merge independently. Same-task conflicts use normal Git review; no distributed claims or automatic last-writer-wins resolution.
+Replace the shared `.relay/tasks.json` snapshot with tracked Markdown task files. Each checkout (main or a linked worktree) reads and writes its own files; the Project Tasks tab shows the main checkout. (Space scoping, originally part of this plan, was removed with Spaces on 2026-10-29.) Agents work offline through the same core functions exposed by a local CLI. Unrelated tasks merge independently. Same-task conflicts use normal Git review; no distributed claims or automatic last-writer-wins resolution.
 
 Accepted automation tasks may be published without PR review, limited to task intake and bookkeeping. Unaccepted proposals may be discarded. Existing tasks may be cancelled; cancellation does not satisfy blockers. Delete only unreferenced tasks. Automatically archive done/cancelled tasks after 30 days when maintenance runs; retain canonical history in Git.
 
@@ -28,7 +28,7 @@ Core keeps existing exports (`hasTasks`, `initTasks`, `loadTasks`, `createTask`,
 - `validateTasks(dir)`, `archiveTasks(dir, { days?: number }?)`, `migrateTasks(dir, { dryRun?: boolean }?)`, `formatTasks(dir, { check?: boolean }?)`.
 - Typed task errors expose a code so HTTP can map not found, conflict, and validation failures.
 
-HTTP task routes accept optional `?spaceId=`. Resolve only registered Spaces belonging to the Project, reject missing/broken/closed write scopes. Omitted scope means Main space. Existing list envelope `{ tasks }` remains; add `includeArchived=true`. Add GET task detail and GET/POST comments. PATCH passes `expectedRevision`; DELETE passes revision query/header. WebSocket task changes include optional `spaceId` and invalidate matching queries rather than replacing differently filtered lists.
+HTTP task routes read and write the Project's main checkout. Existing list envelope `{ tasks }` remains; add `includeArchived=true`. Add GET task detail and GET/POST comments. PATCH passes `expectedRevision`; DELETE passes revision query/header. WebSocket task changes invalidate matching queries rather than replacing differently filtered lists.
 
 ## Track A — storage and offline CLI (GPT-5)
 
@@ -41,19 +41,19 @@ Ownership: task-manager and helper files, task types in shared types.ts, core ex
 
 ## Track B — server and bootstrap (GPT-5)
 
-1. Scope all task REST reads/writes to resolved worktrees; add detail/comments and typed failures. Keep Project default Main space.
-2. Include Space in task-change events and detect direct file edits using bounded watch/poll lifecycle with cleanup, including atomic replacement and Git checkout changes.
+1. Scope all task REST reads/writes to the Project's checkout; add detail/comments and typed failures.
+2. Detect direct file edits using bounded watch/poll lifecycle with cleanup, including atomic replacement and Git checkout changes.
 3. Bootstrap checks actual managed-session cwd and injects CLI/discovery guidance; both providers share the contract. Update follow-up injection and pick-up-task action. Ready ordering uses P0 first.
 4. Remove history from routine Project artifacts; preserve compatibility for active records. Prevent malformed task files from breaking unrelated Project/session initialization; surface diagnostics instead.
-5. Tests: cross-Project scope rejection, Main/Space isolation, invalid or closed Space, revisions, comments, archive detail, bootstrap cwd and legacy guidance suppression compatibility.
+5. Tests: cross-Project scope rejection, revisions, comments, archive detail, bootstrap cwd and legacy guidance suppression compatibility.
 
 Ownership: project routes, instance-manager, session-context, actions, websocket, event type in types.ts (coordinate with A), server tests; then offline CLI command wiring and CLI tests from Track A. No storage or app edits.
 
 ## Track C — UI and references (GPT-5)
 
-1. Add Space selection to Project Tasks with Main space default, scope-aware query keys and refresh events. Include unfinished default and done/cancelled/history views.
+1. Add scope-aware query keys and refresh events to Project Tasks. Include unfinished default and done/cancelled/history views.
 2. Add cancelled presentation and revision-aware edits/deletes; show actionable stale-write errors. Load archived detail and discussion on demand with comment creation.
-3. Scope task mentions, popovers, reference expansion, and new chats to the actual Space. Starting a new Space updates the task in its new worktree, not the Main space; handle uncommitted tasks absent from the new worktree clearly.
+3. Scope task mentions, popovers, reference expansion, and new chats to the Project.
 4. Update app API functions and URL search parsing, maintain old eight-hex and slug mentions while accepting UUIDs; fetch individual archived references rather than requiring entire history in artifacts.
 5. Focused UI helper tests for filtering, scoping, status/ID handling, and query invalidation.
 
@@ -73,7 +73,7 @@ Git merges unrelated task files normally. Same-task conflicts remain explicit, i
 
 ## Unresolved questions
 
-None blocking implementation. Use the 30-day default and Main-space default agreed in discussion. Proposal intake can use the local offline CLI today; a hosted inbox/synchronization service is outside this change.
+None blocking implementation. Use the 30-day default agreed in discussion. Proposal intake can use the local offline CLI today; a hosted inbox/synchronization service is outside this change.
 
 ## Implementation discovery
 

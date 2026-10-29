@@ -6,7 +6,7 @@ const uuid = "550e8400-e29b-41d4-a716-446655440000";
 const task: Task = {
   id: uuid,
   title: "Keep UUID references",
-  description: "Load it from the selected Space.",
+  description: "Load it from the selected Project.",
   status: "open",
   priority: 2,
   type: "task",

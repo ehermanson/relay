@@ -1,6 +1,6 @@
 # Cross-chat orchestration: chats that delegate to and message other chats
 
-Status (2026-10-29): **Phases 1–4 implemented** — `/mcp` endpoint, per-chat credentials, Claude + Codex injection, read-only tools (`relay_capabilities`, `chat_list`, `chat_read`), and delegation (`delegate_task`, `task_status`, `task_cancel`) with the `delegated_tasks` table, relay-origin agent cards, completion wakes, and stop/done/delete cascades; `chat_send`/`chat_wait` (never queued: busy or waiting targets are refused); `isolation: "space"` and `relay://chat/` chips. See AGENTS.md "Relay Orchestration". Not yet built from phase 2's design: a child waiting on input marking its parent's inbox row (G), the Codex resume instructions gap (F).
+Status (2026-10-29): **Phases 1–4 implemented** — `/mcp` endpoint, per-chat credentials, Claude + Codex injection, read-only tools (`relay_capabilities`, `chat_list`, `chat_read`), and delegation (`delegate_task`, `task_status`, `task_cancel`) with the `delegated_tasks` table, relay-origin agent cards, completion wakes, and stop/done/delete cascades; `chat_send`/`chat_wait` (never queued: busy or waiting targets are refused); `relay://chat/` chips. Phase 4's `isolation: "space"` was removed with Spaces (`plans/remove-spaces.md`); children always share the parent's checkout. See AGENTS.md "Relay Orchestration". Not yet built from phase 2's design: a child waiting on input marking its parent's inbox row (G), the Codex resume instructions gap (F).
 
 ## Goal
 
@@ -105,18 +105,18 @@ In short: you can't put a parent away while its children are still working. You 
 
 ## What Relay already has
 
-| Need                              | Relay today                                                                                                                                                                 |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create a chat on any provider     | `InstanceManager.createInstance({ provider, model, spaceId, runtimeMode, accountId, parentSessionId, review })`. It enforces the process cap and provider-in-account rules. |
-| Message a chat, queue when busy   | `sendMessage(id, text, …, internal, …, allowQueue)` queues behind a running turn. `interruptAndSend` is the "restart" mode.                                                 |
-| Turn-end hook                     | Turn-end reconcile already runs on idle, exit, and stop (worktree changes, title refresh). That is where child completion goes.                                             |
-| Rendering delegated agents        | `AgentInfo` / `agent_update` (replayable), `AgentCard`, Agents sidecar, `mergeAgentInfo`, `relation: "child" \| "teammate" \| "peer"`.                                      |
-| Agent-authored messages           | `UserMessage.author = { kind: "agent", name }` renders as `AgentNote`, and is excluded from titles, previews, and handoffs.                                                 |
-| Linked chats                      | Review chats (`review.sourceInstanceId`, `attachReviewLinks`), spin-offs (`SpinOffManager`, rendered packets), `parentSessionId`.                                           |
-| Portable context across providers | `session-handoff.ts` (provider switch) and spin-off packets.                                                                                                                |
-| Bootstrap instructions            | `buildSessionBootstrapContext` block kinds → Claude `systemPrompt.append`, Codex `developerInstructions` on `thread/start`.                                                 |
-| MCP plumbing knowledge            | `mcp.ts` / `mcp-management.ts` (discovery and normalization only). Relay does **not** host an MCP server.                                                                   |
-| Cross-chat search/read            | `SessionDB.search`, `getHistory`, chat summaries.                                                                                                                           |
+| Need                              | Relay today                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Create a chat on any provider     | `InstanceManager.createInstance({ provider, model, runtimeMode, accountId, parentSessionId, review })`. It enforces the process cap and provider-in-account rules. |
+| Message a chat, queue when busy   | `sendMessage(id, text, …, internal, …, allowQueue)` queues behind a running turn. `interruptAndSend` is the "restart" mode.                                        |
+| Turn-end hook                     | Turn-end reconcile already runs on idle, exit, and stop (worktree changes, title refresh). That is where child completion goes.                                    |
+| Rendering delegated agents        | `AgentInfo` / `agent_update` (replayable), `AgentCard`, Agents sidecar, `mergeAgentInfo`, `relation: "child" \| "teammate" \| "peer"`.                             |
+| Agent-authored messages           | `UserMessage.author = { kind: "agent", name }` renders as `AgentNote`, and is excluded from titles, previews, and handoffs.                                        |
+| Linked chats                      | Review chats (`review.sourceInstanceId`, `attachReviewLinks`), spin-offs (`SpinOffManager`, rendered packets), `parentSessionId`.                                  |
+| Portable context across providers | `session-handoff.ts` (provider switch) and spin-off packets.                                                                                                       |
+| Bootstrap instructions            | `buildSessionBootstrapContext` block kinds → Claude `systemPrompt.append`, Codex `developerInstructions` on `thread/start`.                                        |
+| MCP plumbing knowledge            | `mcp.ts` / `mcp-management.ts` (discovery and normalization only). Relay does **not** host an MCP server.                                                          |
+| Cross-chat search/read            | `SessionDB.search`, `getHistory`, chat summaries.                                                                                                                  |
 
 ## Gaps
 
@@ -133,7 +133,7 @@ In short: you can't put a parent away while its children are still working. You 
 
 - Mount a Streamable-HTTP MCP endpoint on the existing Hono app (`@modelcontextprotocol/sdk` server, stateless per request). It sits outside cookie auth and accepts **only** a bearer token from the registry.
 - Remote access matters here: tunnels terminate on localhost, so a loopback check proves nothing. The token is the only gate. Reject requests with a browser `Origin` header so a page can't drive the endpoint.
-- `McpCredentialRegistry` (new, `server/`): `issue(instanceId, { capabilities })` → raw token; store the SHA-256 hash only. `resolve(token)` → `{ instanceId, accountId, spaceId, projectDir, provider, runtimeMode }`. Revoke when the process exits or the instance is stopped or deleted. Keep tokens in memory only: a server restart kills every provider process anyway, and a lazy restart issues a fresh token.
+- `McpCredentialRegistry` (new, `server/`): `issue(instanceId, { capabilities })` → raw token; store the SHA-256 hash only. `resolve(token)` → `{ instanceId, accountId, projectDir, provider, runtimeMode }`. Revoke when the process exits or the instance is stopped or deleted. Keep tokens in memory only: a server restart kills every provider process anyway, and a lazy restart issues a fresh token.
 - The tool handlers live in core (`server/core/orchestration/…`) behind a narrow interface, so core never imports from server. The HTTP adapter in `server/` only authenticates and shapes responses.
 
 ### B. Provider injection (driver-owned, capability-gated)
@@ -146,13 +146,13 @@ In short: you can't put a parent away while its children are still working. You 
 
 ### C. Tools (v1, deliberately small)
 
-`relay_capabilities`, `delegate_task`, `task_status`, `task_cancel`, `chat_list`, `chat_read`, `chat_send`, `chat_wait`. Defer batch creation, Space launch, and metadata edits.
+`relay_capabilities`, `delegate_task`, `task_status`, `task_cancel`, `chat_list`, `chat_read`, `chat_send`, `chat_wait`. Defer batch creation and metadata edits.
 
-- `delegate_task { task, target?: { provider?, model? }, title?, role?, mode: "async" | "wait", timeoutMs?, clientRequestId?, runtimeMode?, isolation?: "shared" | "space" }`
-  - `shared` (default): same cwd/Space as the parent. `space`: create a Space (worktree) for the child, which is how parallel implementers avoid trampling each other's edits.
+- `delegate_task { task, target?: { provider?, model? }, title?, role?, mode: "async" | "wait", timeoutMs?, clientRequestId?, runtimeMode? }`
+  - The child runs in the parent's cwd. (An `isolation: "space"` option, a worktree per child, shipped in phase 4 and was removed with Spaces.)
   - Inherit the parent's runtime mode and narrow it when asked. Never escalate (`full-access` > `writes-only` > default > plan).
   - Typed failures: `capacity` (Relay's existing global process cap, which `createInstance` already enforces), `provider_unavailable`, `provider_unavailable_in_account`, `model_unavailable`, `mode_escalation_denied`, `parent_not_active`.
-- `chat_send` applies the same privilege ceiling to the target chat, and refuses chats in another account and read-only (completed/archived) Spaces.
+- `chat_send` applies the same privilege ceiling to the target chat, and refuses chats in another account and read-only chats (missing worktree).
 
 ### D. Delegation record and lineage (core + SQLite)
 
@@ -166,7 +166,7 @@ In short: you can't put a parent away while its children are still working. You 
 - At child turn end (the idle reconcile path): mark the task terminal, take the last assistant text as `result`, and write the row **before** delivering.
 - Deliver once per parent, coalesced: if the parent is idle, `sendMessage(parent, wakeText)` with `author: { kind: "agent", name: <child title> }`, so it renders as an `AgentNote` and never counts as a human turn for titles or done-revival heuristics. If the parent is processing, queue the wake. If a wake is already queued, rewrite it to cover all completed tasks rather than queuing another. Inline results up to 16 KB total, and send a `task_status` pointer for the rest.
 - Restart recovery: on startup, terminal-but-undelivered rows are re-offered (at-least-once, with a stable queued id per `delivery_generation`).
-- Never wake a parent that is done, stopped by the user, or in a completed/archived Space. Record the result and stop. Opening the parent shows the finished card.
+- Never wake a parent that is done or stopped by the user. Record the result and stop. Opening the parent shows the finished card.
 - Child questions: when a child chat gets `pendingPermission`, `pendingTool`, or `pendingPlan`, the inbox already flags it to the user. Also post an `AgentNote` to the parent ("<child> is waiting for input"). Don't route approvals to the parent agent.
 
 ### F. Instructions
@@ -177,7 +177,7 @@ In short: you can't put a parent away while its children are still working. You 
 
 ### G. Links and UI
 
-- Chat links: `relay://chat/<instanceId>`, returned by every tool. Add a `LINK_SOURCES` entry that renders a chip with the chat's **live** title and provider logo, and opens the chat in its own Project/Space route.
+- Chat links: `relay://chat/<instanceId>`, returned by every tool. Add a `LINK_SOURCES` entry that renders a chip with the chat's **live** title and provider logo, and opens the chat in its Project's chat route.
 - Child chat header: a breadcrumb back to the parent ("Delegated by <parent>").
 - **Decided: delegated child chats never appear in the inbox** (or the Projects-layout sidebar, mini sidebar, mobile Home, or the stale-chat sweep). Filter them where attached reviews are already filtered (`InboxEntry` building in `lib/inbox.ts`, keyed on `InstanceInfo.delegation`). The way into a child is the parent: its in-chat agent card and its **Agents sidecar** row, each with "Open chat". When a child is open, highlight its parent's row in the sidebar (walk `delegation.parentInstanceId` to the nearest non-delegated ancestor). ⌘K search may still return children, labelled with their parent.
 - Attention moves up to the parent: a child waiting on approval or input marks the **parent's** inbox row as needs-input ("<child> needs input"). The attention chooser opens the child directly. Without this, a child's question would be invisible.
@@ -200,11 +200,10 @@ In short: you can't put a parent away while its children are still working. You 
   - Undoing done (later activity revives the parent) does **not** restart cancelled children. The agent can delegate again.
   - The bulk stale-chat sweep (`setInstancesDone`) uses the same cascade, in one pass, with no per-chat broadcasts.
 - **Stop on the parent cascades too** (matching the prior art): stopping or interrupting the parent holds its wakes and stops its children.
-- **Archiving or completing the parent's Space** stops its chats already (`stopSpaceChats`). Children in that Space are covered. Children in their own `isolation: "space"` Space must be stopped explicitly by the same cascade.
 - **Decided: keep children for as long as their parent exists, and delete them together with it.**
   - Done, cancelled, and finished children are kept. They are cheap (a `managed_sessions` row plus a provider transcript Relay doesn't own), and they back the parent's card history, the Agents sidecar, and the "Open chat" link. There is no time-based pruning, matching the prior art.
   - Deleting a parent cancels its live children and **deletes them with it**, recursively. This differs from the prior art, which leaves orphans in place. In Relay a child is hidden from the inbox, so an orphan would be reachable only through ⌘K search: dead weight that still counts in search results. Deletion goes through the normal per-chat delete path, so provider transcripts on disk are left alone just as they are today.
-  - Worktrees: a child running in its own `isolation: "space"` Space is a normal Space and follows normal Complete/Archive. Children sharing the parent's Space need nothing extra.
+  - Worktrees: children share the parent's checkout and need nothing extra. Deleting a chat never removes a checkout.
 
 ### I. Reconciling with the existing subagent feature
 
@@ -244,7 +243,7 @@ Relay should keep its current split instead of mirroring native subagents into c
 - Native subagents spawned _inside_ a Relay child belong to that child chat (its own cards and sidecar), not the parent. The parent's card for the child shows only the child's own status and result.
 - Native subagents can probably reach the Relay tools: Claude subagents inherit the session's MCP servers by default, and Codex children may too (to verify). Relay can't tell which agent in the session made a call, because the credential belongs to the chat's session. So a `delegate_task` from a native subagent counts as coming from the owning chat, Its card goes in the chat's main stream, never nested inside the native subagent's detail, so `isMainStreamAgent` has to treat `origin: "relay"` agents as main-stream. The instructions already tell every child, native or Relay, to do the work itself. If this turns out noisy, add `mcp__relay__*` to the denied tools of Claude subagent definitions.
 
-**Which one the agent uses** stays a prompt-level decision (section F): native for same-provider, same-checkout work that finishes this turn; `delegate_task` for another provider or model, an isolated Space, work the user wants to interact with as its own chat, or work that should outlive the turn.
+**Which one the agent uses** stays a prompt-level decision (section F): native for same-provider, same-checkout work that finishes this turn; `delegate_task` for another provider or model, work the user wants to interact with as its own chat, or work that should outlive the turn.
 
 **Lifecycle parity.** Stop, mark done, and delete cascade to Relay children (section H). Native subagents already end with the parent's process, so no new behaviour is needed there; marking done keeps today's semantics for them.
 
@@ -262,7 +261,7 @@ Relay should keep its current split instead of mirroring native subagents into c
 1. **Endpoint + credentials + read-only tools** (`relay_capabilities`, `chat_list`, `chat_read`) for Claude and Codex. This proves the injection and auth end to end with no side effects.
 2. **`delegate_task` / `task_status` / `task_cancel`** with the `delegated_tasks` table, the `AgentInfo.origin` split (cards, sidecar, history route, capability gate), child breadcrumb, inbox exclusion, and completion wake.
 3. **`chat_send` / `chat_wait`** to ordinary chats, with the privilege ceiling.
-4. **`isolation: "space"`**, chat-link chips.
+4. Chat-link chips (and `isolation: "space"`, since removed with Spaces).
 
 ## Open questions
 

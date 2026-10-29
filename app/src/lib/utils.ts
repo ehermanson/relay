@@ -52,21 +52,6 @@ export function deriveInstanceStatusPresentation(
   };
 }
 
-/** Map an instance to a StatusDot variant. */
-export function instanceStatusVariant(
-  statusOrInstance: string | Pick<InstanceInfo, "status" | "external" | "pendingTool">,
-  pendingTool?: boolean,
-): StatusDotVariant {
-  if (typeof statusOrInstance === "string") {
-    return deriveInstanceStatusPresentation({
-      status: statusOrInstance as InstanceInfo["status"],
-      external: false,
-      pendingTool: pendingTool ? "pending" : undefined,
-    }).variant;
-  }
-  return deriveInstanceStatusPresentation(statusOrInstance).variant;
-}
-
 export function escapeHtml(text: string): string {
   const div = document.createElement("div");
   div.textContent = text;

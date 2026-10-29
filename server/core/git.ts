@@ -446,28 +446,6 @@ export async function getDefaultBranch(dir: string): Promise<string | null> {
   return null;
 }
 
-/** True when `ancestor` is reachable from `descendant`. Throws on git failure. */
-export async function isAncestor(
-  dir: string,
-  ancestor: string,
-  descendant: string,
-): Promise<boolean> {
-  const { exitCode, stderr } = await runGit(["merge-base", "--is-ancestor", ancestor, descendant], {
-    ...readOnly(dir, "git merge-base"),
-    allowFailure: true,
-  });
-  if (exitCode === 0) return true;
-  if (exitCode === 1) return false;
-  throw new GitCommandError({
-    kind: "failed",
-    operation: "git merge-base",
-    cwd: dir,
-    message: "Could not compare branches",
-    exitCode,
-    stderr,
-  });
-}
-
 /**
  * List local and remote branches, marking the current branch.
  * Throws `GitCommandError` on failure.
@@ -720,30 +698,6 @@ export async function hasWorktreeChanges(
 
 // ─── Worktrees ────────────────────────────────────────────────────────────
 
-/**
- * Create a git worktree for an isolated instance: branch `relay/<shortId>`
- * at HEAD, checked out in `<worktree base>/<shortId>/`. Null on failure.
- */
-export async function createWorktree(
-  repoRoot: string,
-  shortId: string,
-): Promise<{ worktreePath: string; branchName: string } | null> {
-  const worktreePath = join(getWorktreeBase(), shortId);
-  const branchName = `relay/${shortId}`;
-  try {
-    await withRepoLock(repoRoot, () =>
-      runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], {
-        cwd: repoRoot,
-        timeoutMs: GIT_TIMEOUTS.long,
-        operation: "git worktree add",
-      }),
-    );
-    return { worktreePath, branchName };
-  } catch {
-    return null;
-  }
-}
-
 export type WorktreeRemovalMethod = "git" | "fallback-delete" | "already-gone" | "failed";
 
 export interface WorktreeRemovalResult {
@@ -770,7 +724,7 @@ function isPathInside(child: string, parent: string): boolean {
  * - `unknown`: no `.git`, a `.git` directory, an unreadable/malformed file,
  *   or a target on a volume that is not mounted — never safe to delete.
  */
-export function inspectWorktreeGitPointer(dir: string): {
+function inspectWorktreeGitPointer(dir: string): {
   state: "dangling" | "valid" | "unknown";
   gitdir?: string;
 } {

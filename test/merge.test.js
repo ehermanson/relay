@@ -14,12 +14,11 @@ import { cpSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import { addWSHelpers } from "./helpers.js";
+import { addWSHelpers, createTestWorktree } from "./helpers.js";
 import { WebSocket } from "ws";
 import {
   isWorktreeDirty,
   mergeWorktreeBranch,
-  createWorktree,
   removeWorktree,
   getCurrentBranch,
 } from "../dist/server/core/git.js";
@@ -153,7 +152,7 @@ describe("git merge utilities", () => {
 
   describe("end-to-end worktree merge flow", () => {
     it("creates worktree, commits changes, merges back", async () => {
-      const wt = await createWorktree(repoDir, "test-wt");
+      const wt = createTestWorktree(repoDir, "test-wt");
       assert.ok(wt);
 
       // Make a change in the worktree

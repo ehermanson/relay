@@ -93,7 +93,6 @@ export {
   isGitRepo,
   getRepoRoot,
   getCurrentBranch,
-  createWorktree,
   removeWorktree,
   isRelayWorktreePath,
   resolveWorktreeOrigin,

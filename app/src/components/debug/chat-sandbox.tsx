@@ -283,7 +283,7 @@ const TEMPLATES: MessageTemplate[] = [
     description: "Message with image attachment",
     create: () => ({
       kind: "user" as const,
-      text: `Here's what the UI looks like (#${nextId()}).\n\n[Image: source: /Users/erichermanson/.relay/worktrees/space-44c21e73/app/public/favicon.svg]`,
+      text: `Here's what the UI looks like (#${nextId()}).\n\n[Image: source: /Users/erichermanson/projects/relay/app/public/favicon.svg]`,
       timestamp: Date.now(),
     }),
   },

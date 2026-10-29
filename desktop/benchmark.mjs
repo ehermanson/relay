@@ -96,7 +96,7 @@ if (chats) {
         type: "event_msg",
         payload: {
           type: "agent_message",
-          message: `Message ${message + 1}: synthetic performance fixture.\n\nInspect files, run checks, and preserve Project and Space state.\n\n\`\`\`ts\nconst result = { chat: ${index}, message: ${message} };\n\`\`\`\n${"x".repeat(messageBytes)} memory-fixture-${index}`,
+          message: `Message ${message + 1}: synthetic performance fixture.\n\nInspect files, run checks, and preserve Project and Chat state.\n\n\`\`\`ts\nconst result = { chat: ${index}, message: ${message} };\n\`\`\`\n${"x".repeat(messageBytes)} memory-fixture-${index}`,
         },
       });
     }

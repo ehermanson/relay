@@ -33,9 +33,9 @@ describe("toggleAnswerSelection", () => {
 describe("getChatBranch", () => {
   it("prefers the live HEAD over the recorded branch", () => {
     expect(
-      getChatBranch({ gitBranch: "relay-space/abc", gitInfo: { branch: "fix", isWorktree: true } }),
+      getChatBranch({ gitBranch: "feature/abc", gitInfo: { branch: "fix", isWorktree: true } }),
     ).toBe("fix");
-    expect(getChatBranch({ gitBranch: "relay-space/abc" })).toBe("relay-space/abc");
+    expect(getChatBranch({ gitBranch: "feature/abc" })).toBe("feature/abc");
     expect(getChatBranch({ gitInfo: { branch: "main", isWorktree: false } })).toBe("main");
     expect(getChatBranch({})).toBeUndefined();
   });

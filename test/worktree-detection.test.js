@@ -25,12 +25,12 @@ import {
   resolveWorktreeOrigin,
   isGitWorktree,
   resolveAnyWorktreeOrigin,
-  createWorktree,
   removeWorktree,
 } from "../dist/server/core/git.js";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
 import { SessionDB } from "../dist/server/core/db.js";
 import { resolveConfig } from "../dist/server/config.js";
+import { createTestWorktree } from "./helpers.js";
 
 const noopLogger = {
   info() {},
@@ -142,7 +142,7 @@ describe("resolveWorktreeOrigin", () => {
   });
 
   it("resolves worktree origin to the main repo directory", async () => {
-    worktree = await createWorktree(repoDir, "aabbccdd");
+    worktree = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(worktree, "worktree should be created");
     cleanupWorktrees.push(worktree);
 
@@ -199,7 +199,7 @@ describe("isGitWorktree / resolveAnyWorktreeOrigin", () => {
   });
 
   it("detects relay worktrees as git worktrees", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     cleanupWorktrees.push(wt);
     assert.equal(isGitWorktree(wt.worktreePath), true);
   });
@@ -258,7 +258,7 @@ describe("getGitInfo worktree detection", () => {
   });
 
   it("reports isWorktree=true for a git worktree directory", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -346,7 +346,7 @@ describe("scanAllSessions worktree recovery", () => {
   });
 
   it("resolves worktree cwd to original directory during JSONL scan", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -402,7 +402,7 @@ describe("scanAllSessions worktree recovery", () => {
   });
 
   it("does not create a project for worktree sessions when parent is not registered", async () => {
-    const wt = await createWorktree(repoDir, "orphaned1");
+    const wt = createTestWorktree(repoDir, "orphaned1");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -498,7 +498,7 @@ describe("scanAllSessions worktree recovery", () => {
   });
 
   it("archives gracefully when worktree no longer exists on disk", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     const worktreePath = wt.worktreePath;
 
@@ -574,7 +574,7 @@ describe("scanAllSessions archive protection", () => {
   });
 
   it("does not archive worktree instances when original_directory exists", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 
@@ -654,7 +654,7 @@ describe("live discovery worktree recovery", () => {
   });
 
   it("discovers running Claude sessions from relay worktrees under the registered repo", async () => {
-    const wt = await createWorktree(repoDir, "aabbccdd");
+    const wt = createTestWorktree(repoDir, "aabbccdd");
     assert.ok(wt, "worktree should be created");
     cleanupWorktrees.push(wt);
 

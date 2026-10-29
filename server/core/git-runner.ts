@@ -1,7 +1,7 @@
 /**
- * Shared, non-blocking runner for `git` and `gh` subprocesses.
+ * Shared, non-blocking runner for `git` subprocesses.
  *
- * Every git/gh invocation reachable from a request, WebSocket handler, or
+ * Every git invocation reachable from a request, WebSocket handler, or
  * manager goes through here so that:
  * - the Node event loop is never blocked (async spawn, arg arrays, no shell);
  * - credential/host-key prompts can never hang a call (prompt-free env, no
@@ -9,7 +9,7 @@
  * - read-only calls don't take optional locks (`GIT_OPTIONAL_LOCKS=0`) and so
  *   never collide with an agent's own git operations;
  * - short calls share a global concurrency cap, while long calls (push, pull,
- *   merge, worktree add/remove, PR creation) bypass it and cannot starve reads;
+ *   merge, worktree add/remove) bypass it and cannot starve reads;
  * - mutations of one repository (including all of its worktrees) serialize
  *   through `withRepoLock`;
  * - failures surface as a typed `GitCommandError` instead of fake defaults.
@@ -28,7 +28,7 @@ export const GIT_TIMEOUTS = {
   fast: Number(process.env.RELAY_GIT_TIMEOUT_MS) || 5_000,
   /** Local work that scales with repo size (diff, commit, checkout). */
   normal: 30_000,
-  /** Anything that talks to a remote (fetch, pull, push, gh). */
+  /** Anything that talks to a remote (fetch, pull, push). */
   network: 120_000,
   /** Worktree add/remove and merges. */
   long: 300_000,
@@ -49,7 +49,7 @@ export type GitErrorKind =
   | "not_a_repo"
   | "locked"
   | "output_too_large"
-  /** The git/gh binary itself could not be found. */
+  /** The git binary itself could not be found. */
   | "not_found"
   | "aborted"
   | "failed";
@@ -121,10 +121,7 @@ function classifyFailure(stderr: string): GitErrorKind {
     s.includes("host key verification failed") ||
     s.includes("invalid username or password") ||
     s.includes("http basic: access denied") ||
-    s.includes("could not read from remote repository") ||
-    s.includes("gh auth login") ||
-    s.includes("not logged into") ||
-    s.includes("gh_token")
+    s.includes("could not read from remote repository")
   ) {
     return "auth";
   }
@@ -181,12 +178,6 @@ export function buildGitEnv(opts?: {
     }
   }
   return env;
-}
-
-export function buildGhEnv(extra?: Record<string, string | undefined>): NodeJS.ProcessEnv {
-  return buildGitEnv({
-    extra: { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", ...extra },
-  });
 }
 
 // ─── Concurrency cap ──────────────────────────────────────────────────────
@@ -479,18 +470,6 @@ export function runGit(args: string[], opts: RunGitOptions): Promise<GitResult> 
     args,
     env: buildGitEnv({ readOnly: opts.readOnly, extra: opts.env }),
     opts,
-    operation,
-  });
-}
-
-/** Run `gh <args>` asynchronously with prompts and update checks disabled. */
-export function runGh(args: string[], opts: RunGitOptions): Promise<GitResult> {
-  const operation = opts.operation ?? `gh ${args.slice(0, 2).join(" ")}`.trim();
-  return runWithPolicy({
-    binary: "gh",
-    args,
-    env: buildGhEnv(opts.env),
-    opts: { timeoutMs: GIT_TIMEOUTS.network, ...opts },
     operation,
   });
 }

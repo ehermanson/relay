@@ -19,7 +19,6 @@ import {
   getCurrentBranch,
   getRemoteUrl,
   isRelayWorktreePath,
-  createWorktree,
   removeWorktree,
   isWorktreeDirty,
   getWorktreeStatus,
@@ -29,6 +28,7 @@ import {
   gitFetch,
   getAheadBehind,
 } from "../dist/server/core/git.js";
+import { createTestWorktree } from "./helpers.js";
 
 let seedRepoDir;
 
@@ -241,19 +241,14 @@ describe("worktree lifecycle", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  it("createWorktree creates a worktree and branch", async () => {
-    worktreeResult = await createWorktree(repoDir, "test1234");
-    assert.ok(worktreeResult);
-    assert.ok(worktreeResult.worktreePath.includes("test1234"));
-    assert.equal(worktreeResult.branchName, "relay/test1234");
-
-    // Verify the worktree is a valid git repo
+  it("a linked worktree is a repo on its own branch", async () => {
+    worktreeResult = createTestWorktree(repoDir, "test1234");
     assert.equal(isGitRepo(worktreeResult.worktreePath), true);
     assert.equal(await getCurrentBranch(worktreeResult.worktreePath), "relay/test1234");
   });
 
   it("isWorktreeDirty detects clean vs dirty state", async () => {
-    worktreeResult = await createWorktree(repoDir, "dirty1234");
+    worktreeResult = createTestWorktree(repoDir, "dirty1234");
     assert.ok(worktreeResult);
 
     // Clean initially
@@ -265,7 +260,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("treats tracked relay task metadata as normal worktree changes", async () => {
-    worktreeResult = await createWorktree(repoDir, "relaymd1");
+    worktreeResult = createTestWorktree(repoDir, "relaymd1");
     assert.ok(worktreeResult);
 
     mkdirSync(join(worktreeResult.worktreePath, ".relay"), { recursive: true });
@@ -281,7 +276,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("hasWorktreeChanges detects committed changes", async () => {
-    worktreeResult = await createWorktree(repoDir, "changes1");
+    worktreeResult = createTestWorktree(repoDir, "changes1");
     assert.ok(worktreeResult);
 
     // No changes yet
@@ -306,7 +301,7 @@ describe("worktree lifecycle", () => {
     try {
       process.env.RELAY_WORKTREE_BASE = maliciousBase;
 
-      worktreeResult = await createWorktree(repoDir, "safe1234");
+      worktreeResult = createTestWorktree(repoDir, "safe1234");
       assert.ok(worktreeResult);
       assert.equal(existsSync(markerFile), false);
 
@@ -332,7 +327,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("commitAll stages and commits all changes", async () => {
-    worktreeResult = await createWorktree(repoDir, "commit12");
+    worktreeResult = createTestWorktree(repoDir, "commit12");
     assert.ok(worktreeResult);
 
     writeFileSync(join(worktreeResult.worktreePath, "file.txt"), "modified");
@@ -346,7 +341,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("commitAll bypasses pre-commit hooks", async () => {
-    worktreeResult = await createWorktree(repoDir, "hookpass");
+    worktreeResult = createTestWorktree(repoDir, "hookpass");
     assert.ok(worktreeResult);
 
     // --git-path may be relative to the worktree; never resolve it against
@@ -373,7 +368,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("commitAll returns error when nothing to commit", async () => {
-    worktreeResult = await createWorktree(repoDir, "empty123");
+    worktreeResult = createTestWorktree(repoDir, "empty123");
     assert.ok(worktreeResult);
 
     const result = await commitAll(worktreeResult.worktreePath, "empty commit");
@@ -381,7 +376,7 @@ describe("worktree lifecycle", () => {
   });
 
   it("removeWorktree cleans up worktree and branch", async () => {
-    worktreeResult = await createWorktree(repoDir, "remove12");
+    worktreeResult = createTestWorktree(repoDir, "remove12");
     assert.ok(worktreeResult);
 
     await removeWorktree(repoDir, worktreeResult.worktreePath, worktreeResult.branchName);

@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import {
   runGit,
   buildGitEnv,
-  buildGhEnv,
   withRepoLock,
   getRepoLockKey,
   getGitRunnerStats,
@@ -59,11 +58,6 @@ describe("git-runner", () => {
       assert.equal(env.SSH_ASKPASS_REQUIRE, "never");
       assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
       assert.equal(buildGitEnv().GIT_OPTIONAL_LOCKS, undefined);
-
-      const ghEnv = buildGhEnv();
-      assert.equal(ghEnv.GH_PROMPT_DISABLED, "1");
-      assert.equal(ghEnv.GH_NO_UPDATE_NOTIFIER, "1");
-      assert.equal(ghEnv.GIT_TERMINAL_PROMPT, "0");
     });
 
     it("applies the hardened env to the spawned process", async () => {

@@ -1,8 +1,25 @@
 /**
- * Shared test helpers for WebSocket-based tests.
+ * Shared test helpers.
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { getWorktreeBase } from "../dist/server/core/git.js";
+
+/**
+ * Create a linked worktree on a new branch `relay/<shortId>` at HEAD, inside
+ * the test worktree base (`RELAY_WORKTREE_BASE`, set by test-env.js).
+ */
+export function createTestWorktree(repoRoot, shortId) {
+  const worktreePath = join(getWorktreeBase(), shortId);
+  const branchName = `relay/${shortId}`;
+  execFileSync("git", ["worktree", "add", "-q", "-b", branchName, worktreePath, "HEAD"], {
+    cwd: repoRoot,
+    stdio: "ignore",
+  });
+  return { worktreePath, branchName };
+}
 
 /**
  * Enhance a WebSocket client with typed message helpers.

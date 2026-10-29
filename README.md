@@ -6,7 +6,7 @@ Run Relay on your dev machine, open it from your laptop or phone, and keep up wi
 
 - Watch Claude Code and Codex chats in one place
 - Pick up terminal-started chats from the web UI
-- Organize work by project, chat, and git-backed space
+- Organize work by project and chat
 - Start new chats, switch models, and manage runtime settings
 - Review tasks, plans, docs, and project stats alongside the chat
 - Reach the same Relay server locally, over Tailscale, or through a tunnel
@@ -14,12 +14,6 @@ Run Relay on your dev machine, open it from your laptop or phone, and keep up wi
 ### Chats
 
 <img src="relay.png" alt="Relay chat view" width="800" />
-
-### Spaces
-
-The inbox shows each named space once, alongside standalone chats. Space rows summarize working chats, requests for input, and unread activity; open a space to return to your last-viewed chat. Pin spaces independently, then Complete to merge or Archive to close without merging.
-
-<img src="relay-space.png" alt="Relay spaces view" width="800" />
 
 ## What Relay Is
 
@@ -36,18 +30,15 @@ Right now, the main supported providers are:
 
 - **Project**: a local codebase you add to Relay
 - **Chat**: one conversation with an agent
-- **Space**: a git-backed work area inside a project, usually tied to a branch
-
-If you do not use spaces, you can still use Relay just fine with regular chats.
+- **Worktree**: a linked git checkout of a project; chats running in one show up under that project
 
 ## What You Can Do
 
 - Add existing git repos as projects, or create a new project from Relay
 - Start a new chat in a project
 - See chats that were started in the terminal and take them over from the UI
-- Create spaces for branch-based work, with separate chats inside each space
-- Complete a space by merging it, or archive it without merging
-- Use built-in git actions like branch switch, fetch, pull, push, and space push/PR
+- Use built-in git actions like branch switch, fetch, pull, and push
+- Let one chat delegate tasks to other chats, across providers, and follow them from the parent chat
 - Change provider, model, reasoning level, and runtime mode when the provider supports it
 - Attach photos, documents, and videos to chats; videos support inline playback and files up to 100 MB (playback depends on browser codec support). Agents receive videos as local file attachments.
 - Keep drafting during a connection interruption. Messages sent while disconnected are saved with attachments on this device and delivered when Relay reconnects while the app is open. If delivery is uncertain, Relay asks you to check the chat before retrying.
@@ -163,8 +154,7 @@ it can change after a connector restart. Dev mode does not start tunnels.
 1. Start Relay.
 2. Add a project.
 3. Start a chat, or open a chat Relay discovered from your terminal.
-4. If you want branch-scoped work, create a space.
-5. Use the project pages for tasks, plans, skills, docs, and project-level settings.
+4. Use the project pages for tasks, plans, skills, docs, and project-level settings.
 
 ## How It Works
 
@@ -179,7 +169,7 @@ It can start and manage its own chats, and it can also discover chats that were 
   claude / codex   <->   manages chats   <->   laptop / phone / tablet
                               |
                               v
-                    projects / spaces / git / tasks / plans
+                    projects / git / tasks / plans
 ```
 
 Relay keeps chat history on disk, uses SQLite as local app state, and loads full chat detail when you open it.
@@ -201,8 +191,7 @@ chat started in terminal
 Each project can have:
 
 - Chats
-- Spaces
-- Tasks stored as readable Markdown files in `.relay/tasks/`, with each Space using its own worktree
+- Tasks stored as readable Markdown files in `.relay/tasks/`, with each worktree keeping its own copy
 - Plans collected from chats
 - Project instructions
 - Default provider and model settings
@@ -211,9 +200,9 @@ Each project can have:
 
 Relay keeps history on disk and lazily loads the full chat state when you open it, so the sidebar stays fast even with a larger project.
 
-## Tasks, offline and in Spaces
+## Tasks, offline and in worktrees
 
-The Project Tasks tab defaults to the Main space. Select another Space to work with its branch’s task state. Task files travel with code in Git; agents can use them without a running Relay server or network connection.
+The Project Tasks tab shows the project’s main checkout. Task files travel with code in Git; agents can use them without a running Relay server or network connection.
 
 ```bash
 relay tasks list --ready --json
@@ -229,7 +218,7 @@ Run commands from the intended worktree. Each task is `.relay/tasks/<id>.md`, wi
 
 For an existing snapshot, run `relay tasks migrate --dry-run`, then `relay tasks migrate --apply` and review the changes in Git. Existing task IDs and links are preserved, including legacy readable slug IDs. Old branches must rebase through the migration before editing tasks. Direct Markdown edits are supported; `pnpm tasks:check` validates this repository’s task graph and formatting.
 
-Task-only automation can publish accepted work without a PR under the provider-watch instructions. Code changes still go through code review. Two Spaces can independently pick up the same task; Git resolves their overlapping task edits when the branches merge.
+Task-only automation can publish accepted work without a PR under the provider-watch instructions. Code changes still go through code review. Two worktrees can independently pick up the same task; Git resolves their overlapping task edits when the branches merge.
 
 ## Provider Features
 
@@ -256,7 +245,6 @@ Helpful extras:
 
 - Tailscale for private remote access
 - `cloudflared` if you want a public tunnel
-- `gh` if you want Relay to create pull requests for pushed spaces
 
 ## Configuration
 

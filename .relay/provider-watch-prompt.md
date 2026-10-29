@@ -116,7 +116,7 @@ source files, even if they are under `.relay/`.
 3. Stage only the explicitly allowed files changed by this run. Inspect the complete staged
    diff and reject any unexpected path. Run task validation/format checks before committing.
 4. Commit with a plain-language summary and push that commit to the remote default branch
-   with a normal fast-forward push. Never force-push. Do not modify the user's Main-space
+   with a normal fast-forward push. Never force-push. Do not modify the user's main
    checkout to publish the commit.
 5. If the remote advanced, fetch and reconcile in the maintenance worktree, repeat dedup
    and graph checks, and retry a normal push. Resolve real same-task conflicts explicitly.
@@ -127,7 +127,7 @@ source files, even if they are under `.relay/`.
    do not claim the remote watermark advanced.
 
 There is no HTTP-only writer requirement. A local runner can use Relay’s authenticated task
-API with an explicit Space scope, but the API writes files and does not commit/push them.
+API, but the API writes files and does not commit/push them.
 Use the CLI when the server is unavailable. Do not send task data to an unrelated endpoint.
 
 If there are no task, archive or watermark changes, report the summary without a commit.

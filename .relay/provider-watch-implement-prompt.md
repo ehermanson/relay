@@ -57,7 +57,7 @@ ship first if the run is interrupted. If none are eligible, do nothing and repor
    rule).
 5. In this branch’s worktree, use `relay tasks update <id> --status in_progress`. Include
    only this task’s state/comment changes in its code PR. Open-PR checks above prevent a
-   second implementation run before merge; other Spaces may independently pick up work.
+   second implementation run before merge; other worktrees may independently pick up work.
 
 ## Verify (required — include the output in the PR body)
 

@@ -1393,7 +1393,6 @@ describe("InstanceManager", () => {
       );
       const external = chats.find((chat) => chat.id === "external-worktree-only");
       assert.ok(external);
-      assert.equal("spaceId" in external, false);
       assert.ok(chats.find((chat) => chat.id === "managed-worktree-chat"));
     });
 
