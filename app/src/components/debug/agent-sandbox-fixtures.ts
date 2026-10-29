@@ -6,8 +6,9 @@
  * sandbox renders through the real `MessageList` / `AgentsPanel`.
  */
 
-import type { AgentInfo, ProviderRequest } from "@shared/types";
+import type { AgentInfo, InstanceInfo, ProviderRequest } from "@shared/types";
 import type { ChatItem, MergedActivity } from "@/lib/chat-types";
+import { buildDelegationFamily, type DelegationTab } from "@/lib/delegation";
 
 export interface AgentScene {
   label: string;
@@ -17,7 +18,57 @@ export interface AgentScene {
     agents: Record<string, AgentInfo>;
     agentItems: Record<string, ChatItem[]>;
     pendingRequest?: ProviderRequest;
+    /** Delegation family strip shown above the scene (`DelegationTabs`). */
+    familyTabs?: DelegationTab[];
   };
+}
+
+/** A family of Relay chats for the delegation tab strip: root, two children, one grandchild. */
+function relayFamilyTabs(ts: number): DelegationTab[] {
+  const base = {
+    workingDirectory: "/Users/dev/projects/relay",
+    projectId: "relay",
+    lastActivityAt: ts,
+  } satisfies Partial<InstanceInfo>;
+  const instances: InstanceInfo[] = [
+    {
+      ...base,
+      id: "sbx-root",
+      provider: "claude",
+      name: "Harden the offline outbox before the release",
+      status: "idle",
+      createdAt: ts - 70_000,
+    },
+    {
+      ...base,
+      id: "sbx-child-review",
+      provider: "codex",
+      name: "Review the migration for data loss on downgrade",
+      status: "processing",
+      createdAt: ts - 40_000,
+      delegation: { parentInstanceId: "sbx-root", taskId: "sbx-review" },
+    },
+    {
+      ...base,
+      id: "sbx-child-docs",
+      provider: "claude",
+      name: "Update the outbox docs with reserved vs accepted receipts",
+      status: "idle",
+      createdAt: ts - 60_000,
+      delegation: { parentInstanceId: "sbx-root", taskId: "sbx-docs" },
+    },
+    {
+      ...base,
+      id: "sbx-grandchild-tests",
+      provider: "claude",
+      name: "Write regression tests for uncertain receipts",
+      status: "idle",
+      createdAt: ts - 30_000,
+      pendingTool: "Bash",
+      delegation: { parentInstanceId: "sbx-child-review", taskId: "sbx-tests" },
+    },
+  ];
+  return buildDelegationFamily(instances, "sbx-root");
 }
 
 const now = () => Date.now();
@@ -547,7 +598,7 @@ export const AGENT_SCENES: AgentScene[] = [
   {
     label: "(h) Relay child chats (cross-provider)",
     description:
-      "delegate_task children: their own chats, with provider logo, Delegated marker, Open chat and Stop",
+      "delegate_task children: family tab strip, plus cards with provider logo, Delegated marker, Open chat and Stop",
     build: () => {
       const ts = now();
       const relayCall = (toolUseId: string, task: string, provider: string): MergedActivity =>
@@ -598,6 +649,7 @@ export const AGENT_SCENES: AgentScene[] = [
       return {
         agents,
         agentItems: {},
+        familyTabs: relayFamilyTabs(ts),
         items: [
           {
             kind: "user",

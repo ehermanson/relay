@@ -8,6 +8,7 @@ import { ReviewSetupPanel } from "@/components/chat/review-setup-panel";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { InstanceViewContent } from "@/components/chat/instance-view-content";
 import { InstanceViewHeader } from "@/components/chat/instance-view-header";
+import { DelegationFamilyTabs } from "@/components/chat/delegation-family-tabs";
 import { useInstanceViewContext } from "@/components/chat/instance-view-context";
 import { useFirstPaint } from "@/hooks/use-first-paint";
 import { useProviderGlobalState } from "@/stores/provider-runtime-store";
@@ -90,6 +91,9 @@ export function InstanceViewShell() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <InstanceViewHeader />
+      {/* Where a Space's chat tabs used to sit: the parent chat and the chats
+          it delegated to. Renders nothing outside a delegation family. */}
+      <DelegationFamilyTabs instance={shared.instance} />
 
       <div ref={shared.containerRef} className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">

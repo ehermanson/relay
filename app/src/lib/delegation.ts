@@ -43,3 +43,50 @@ export function findDelegationRoot(
   }
   return current;
 }
+
+/** One tab in a delegation family strip: a chat and how deep it sits under the root. */
+export interface DelegationTab {
+  instance: InstanceInfo;
+  /** 0 = the root (the chat that started delegating), 1 = its children, … */
+  depth: number;
+}
+
+/**
+ * The delegation family the current chat belongs to, as tabs: the root
+ * followed by its descendants depth-first, siblings in delegation order
+ * (creation time — a child chat is created when its task is delegated).
+ * Empty when the chat has no family (no parent and no children) or isn't in
+ * the list, so the strip renders nothing for an ordinary chat. Cycle-safe.
+ */
+export function buildDelegationFamily(
+  instances: ReadonlyArray<InstanceInfo>,
+  currentId: string,
+): DelegationTab[] {
+  const byId = new Map(instances.map((instance) => [instance.id, instance] as const));
+  const current = byId.get(currentId);
+  if (!current) return [];
+
+  const childrenOf = new Map<string, InstanceInfo[]>();
+  for (const instance of instances) {
+    const parentId = instance.delegation?.parentInstanceId;
+    if (!parentId || parentId === instance.id || !byId.has(parentId)) continue;
+    const siblings = childrenOf.get(parentId);
+    if (siblings) siblings.push(instance);
+    else childrenOf.set(parentId, [instance]);
+  }
+  for (const siblings of childrenOf.values()) {
+    siblings.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  const root = findDelegationRoot(current, byId);
+  const tabs: DelegationTab[] = [];
+  const seen = new Set<string>();
+  const visit = (instance: InstanceInfo, depth: number) => {
+    if (seen.has(instance.id)) return;
+    seen.add(instance.id);
+    tabs.push({ instance, depth });
+    for (const child of childrenOf.get(instance.id) ?? []) visit(child, depth + 1);
+  };
+  visit(root, 0);
+  return tabs.length > 1 ? tabs : [];
+}

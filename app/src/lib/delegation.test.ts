@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AgentInfo, InstanceInfo } from "@shared/types";
 import { buildAgentTree, gateAgentsByCapability, isMainStreamAgent } from "@/lib/agents";
-import { findDelegationRoot, isDelegatedChildInstance, relayTaskIdOf } from "@/lib/delegation";
+import {
+  buildDelegationFamily,
+  findDelegationRoot,
+  isDelegatedChildInstance,
+  relayTaskIdOf,
+} from "@/lib/delegation";
 
 function chat(overrides: Partial<InstanceInfo> & { id: string }): InstanceInfo {
   return {
@@ -38,6 +43,47 @@ describe("delegation helpers", () => {
     const cyclic = new Map([a, b].map((i) => [i.id, i]));
     expect(["a", "b"]).toContain(findDelegationRoot(a, cyclic).id);
     expect(findDelegationRoot(child("orphan", "gone"), byId).id).toBe("orphan");
+  });
+});
+
+describe("buildDelegationFamily", () => {
+  const at = (instance: InstanceInfo, createdAt: number) => ({ ...instance, createdAt });
+  const root = chat({ id: "root" });
+  const late = at(child("late", "root"), 30);
+  const early = at(child("early", "root"), 10);
+  const grand = at(child("grand", "early"), 20);
+  const other = chat({ id: "other" });
+  const all = [late, other, grand, root, early];
+  const shape = (id: string) =>
+    buildDelegationFamily(all, id).map((tab) => `${tab.instance.id}:${tab.depth}`);
+
+  it("returns the root then descendants depth-first, siblings by creation time", () => {
+    expect(shape("root")).toEqual(["root:0", "early:1", "grand:2", "late:1"]);
+  });
+
+  it("is the same family from any member", () => {
+    expect(shape("grand")).toEqual(shape("root"));
+    expect(shape("late")).toEqual(shape("root"));
+  });
+
+  it("is empty for a chat with no parent and no children", () => {
+    expect(buildDelegationFamily(all, "other")).toEqual([]);
+    expect(buildDelegationFamily(all, "missing")).toEqual([]);
+    expect(buildDelegationFamily([child("orphan", "gone")], "orphan")).toEqual([]);
+  });
+
+  it("breaks ties by id and survives cycles", () => {
+    const a = at(child("a", "p"), 5);
+    const b = at(child("b", "p"), 5);
+    const p = chat({ id: "p" });
+    expect(buildDelegationFamily([b, p, a], "p").map((tab) => tab.instance.id)).toEqual([
+      "p",
+      "a",
+      "b",
+    ]);
+    const x = child("x", "y");
+    const y = child("y", "x");
+    expect(buildDelegationFamily([x, y], "x")).toHaveLength(2);
   });
 });
 

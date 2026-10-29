@@ -57,6 +57,8 @@ import { toggleAnswerSelection } from "@/lib/utils";
 import { findRequestAgentId } from "@/lib/agents";
 import { AgentsPanel } from "@/components/chat/agents-panel";
 import { AGENT_SCENES } from "@/components/debug/agent-sandbox-fixtures";
+import { DelegationTabs } from "@/components/chat/delegation-tabs";
+import type { DelegationTab } from "@/lib/delegation";
 import type {
   AgentInfo,
   InstanceInfo,
@@ -1147,6 +1149,8 @@ export function ChatSandbox() {
   const [agentItems, setAgentItems] = useState<Record<string, ChatItem[]>>({});
   const [agentRequest, setAgentRequest] = useState<ProviderRequest | null>(null);
   const [showAgentsPanel, setShowAgentsPanel] = useState(false);
+  const [familyTabs, setFamilyTabs] = useState<DelegationTab[]>([]);
+  const [familyActiveId, setFamilyActiveId] = useState<string | null>(null);
   const [queuedItems, setQueuedItems] = useState<QueuedChatItem[]>([]);
   const agentsCount = Object.keys(agents).length;
 
@@ -1168,6 +1172,7 @@ export function ChatSandbox() {
     setAgents({});
     setAgentItems({});
     setAgentRequest(null);
+    setFamilyTabs([]);
     setInstanceOverrides({});
     setComposerMode("idle");
     setConnectionBanner(null);
@@ -1283,7 +1288,13 @@ export function ChatSandbox() {
       {/* Split layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: controls */}
-        <div className="w-[280px] shrink-0 overflow-y-auto border-r border-border/70 bg-surface">
+        {/* On phones the controls and the preview take turns: loading a scene
+            shows the preview full-width, Reset brings the controls back. */}
+        <div
+          className={`w-[280px] shrink-0 overflow-y-auto border-r border-border/70 bg-surface ${
+            items.length > 0 ? "max-[768px]:hidden" : "max-[768px]:w-full max-[768px]:border-r-0"
+          }`}
+        >
           <div className="p-4">
             {/* Instance presets */}
             <Section title="Instance Presets">
@@ -1421,6 +1432,8 @@ export function ChatSandbox() {
                       setAgents(built.agents);
                       setAgentItems(built.agentItems);
                       setAgentRequest(built.pendingRequest ?? null);
+                      setFamilyTabs(built.familyTabs ?? []);
+                      setFamilyActiveId(built.familyTabs?.[0]?.instance.id ?? null);
                     }}
                     className="rounded-md border border-border/50 px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-surface-hover"
                   >
@@ -1462,7 +1475,11 @@ export function ChatSandbox() {
         </div>
 
         {/* Right: mock instance view */}
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
+            items.length > 0 ? "" : "max-[768px]:hidden"
+          }`}
+        >
           {/* Real InstanceHeader */}
           <InstanceHeader
             instance={instance}
@@ -1480,6 +1497,11 @@ export function ChatSandbox() {
             onSelectTab={() => {}}
             onOpenDebug={() => {}}
             onOpenMobileSidecar={() => {}}
+          />
+          <DelegationTabs
+            tabs={familyTabs}
+            activeId={familyActiveId}
+            onSelect={setFamilyActiveId}
           />
 
           {/* Message list (+ optional Agents sidecar prototype) */}
