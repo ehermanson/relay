@@ -3,7 +3,7 @@ import "./test-env.js";
  * Relay-delegated tasks (`delegate_task`): child chats, the parent's agent
  * card state, completion wakes, and the stop/done/delete cascades.
  */
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
@@ -24,6 +24,15 @@ import { handleMcpPayload } from "../dist/server/core/orchestration/mcp-protocol
 import { createRelayMcpServer } from "../dist/server/core/orchestration/tools.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
+
+// Wait timers are unref'd so they never hold a real server open. With nothing
+// else on the event loop (CI), a test awaiting one would let Node exit first
+// and cancel the rest of the file, so keep the loop alive while tests run.
+let keepAlive;
+before(() => {
+  keepAlive = setInterval(() => {}, 1000);
+});
+after(() => clearInterval(keepAlive));
 
 // ---------------------------------------------------------------------------
 // Pure rules
