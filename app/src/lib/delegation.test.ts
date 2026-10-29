@@ -39,17 +39,6 @@ describe("delegation helpers", () => {
     expect(["a", "b"]).toContain(findDelegationRoot(a, cyclic).id);
     expect(findDelegationRoot(child("orphan", "gone"), byId).id).toBe("orphan");
   });
-
-  it("treats a legacy space-isolated child like any delegated child", () => {
-    const isolated = chat({
-      id: "kid",
-      delegation: { parentInstanceId: "main", taskId: "t", isolation: "space" },
-    });
-    expect(isDelegatedChildInstance(isolated)).toBe(true);
-    const grandchild = child("gc", "kid");
-    const byId = new Map([chat({ id: "main" }), isolated, grandchild].map((i) => [i.id, i]));
-    expect(findDelegationRoot(grandchild, byId).id).toBe("main");
-  });
 });
 
 describe("relay agents", () => {

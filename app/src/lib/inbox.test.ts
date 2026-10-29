@@ -83,11 +83,7 @@ describe("buildInboxEntries", () => {
     const delegation = { parentInstanceId: "parent", taskId: "t1" };
     const entries = buildInboxEntries([
       group({
-        groupInstances: [
-          chat({ id: "parent" }),
-          chat({ id: "child", delegation }),
-          chat({ id: "isolated", delegation: { ...delegation, isolation: "space" } }),
-        ],
+        groupInstances: [chat({ id: "parent" }), chat({ id: "child", delegation })],
       }),
     ]);
     expect(entries.map((entry) => entry.instance.id)).toEqual(["parent"]);

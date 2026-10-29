@@ -1617,8 +1617,6 @@ export class InstanceManager extends EventEmitter {
     string,
     Set<(task: DelegatedTaskRecord) => void>
   >();
-  /** In-flight `delegateTask` attempts by parent + clientRequestId. */
-  private readonly delegationsInFlight = new Map<string, Promise<DelegatedTaskRecord>>();
   /** `waitForChatTurn` callers; see `addChatTurnWaiter`. */
   private readonly chatTurnWaiters = new Set<(id: string) => void>();
   private readonly notifyChatTurnWaiters = (id: string): void => {
@@ -2668,23 +2666,6 @@ export class InstanceManager extends EventEmitter {
    * `clientRequestId`.
    */
   async delegateTask(parentId: string, request: DelegateTaskRequest): Promise<DelegatedTaskRecord> {
-    // Concurrent retries share one attempt: with `isolation: "space"` the
-    // attempt awaits Space creation, so a re-check alone can't keep them apart.
-    if (!request.clientRequestId) return this.startDelegatedTask(parentId, request);
-    const key = `${parentId}\u0000${request.clientRequestId}`;
-    const inFlight = this.delegationsInFlight.get(key);
-    if (inFlight) return inFlight;
-    const attempt = this.startDelegatedTask(parentId, request).finally(() =>
-      this.delegationsInFlight.delete(key),
-    );
-    this.delegationsInFlight.set(key, attempt);
-    return attempt;
-  }
-
-  private async startDelegatedTask(
-    parentId: string,
-    request: DelegateTaskRequest,
-  ): Promise<DelegatedTaskRecord> {
     const parent = this.instances.get(parentId);
     if (!parent || parent.info.external) {
       throw new McpToolError("parent_not_active", "This chat can't delegate right now.");
@@ -2740,31 +2721,14 @@ export class InstanceManager extends EventEmitter {
       this.findDelegationToolUse(live),
     );
 
-    // Re-check after the awaits: a concurrent retry may have won. Retries
-    // with a clientRequestId share one attempt (`delegateTask`), so the only
-    // await below (an isolated child's Space) can't let a second one in.
+    // Re-check after the awaits: a concurrent retry may have won. From here
+    // to the insert is synchronous, so the check holds.
     if (request.clientRequestId) {
       const existing = this.db.findDelegatedTaskByRequest(parentId, request.clientRequestId);
       if (existing) return existing;
     }
     const taskId = randomUUID();
     const title = request.title?.trim() || titleFromTask(request.task);
-    let space: SpaceInfo | null = null;
-    if (request.isolation === "space") {
-      // Fail fast at the cap rather than build a worktree nobody can use.
-      try {
-        this.assertProcessCapacity();
-      } catch (err) {
-        throw this.toDelegationError(err);
-      }
-      space = await this.createChildSpace(parent, title);
-      // The parent may have gone (or its Space closed) during the git work.
-      const still = this.instances.get(parentId);
-      if (!still || !this.isSpaceWritable(still)) {
-        this.discardChildSpace(space);
-        throw new McpToolError("parent_not_active", "This chat can't delegate right now.");
-      }
-    }
     let child: InstanceInfo;
     try {
       child = this.createInstance({
@@ -2772,20 +2736,17 @@ export class InstanceManager extends EventEmitter {
         model,
         runtimeMode: mode.mode,
         modelOptions: sameProvider ? parent.info.modelOptions : undefined,
-        ...(space
-          ? { spaceId: space.id }
-          : { spaceId: parent.info.spaceId, workingDirectory: parent.info.workingDirectory }),
+        spaceId: parent.info.spaceId,
+        workingDirectory: parent.info.workingDirectory,
         accountId,
         name: title,
         delegation: {
           parentInstanceId: parentId,
           taskId,
           ...(request.role ? { role: request.role } : {}),
-          ...(space ? { isolation: "space" as const } : {}),
         },
       });
     } catch (err) {
-      if (space) this.discardChildSpace(space);
       throw this.toDelegationError(err);
     }
 
@@ -2837,15 +2798,6 @@ export class InstanceManager extends EventEmitter {
     return err;
   }
 
-  /** Remove a child Space that never got its chat: worktree and row, no "Archived" leftover. */
-  private discardChildSpace(space: SpaceInfo): void {
-    void this.spaceManager.discardUnusedSpace(space.id).catch((err) => {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Couldn't remove unused child Space ${space.id}: ${err}`,
-      );
-    });
-  }
-
   /** Throws `MaxProcessesError` when another managed process would exceed the cap. */
   private assertProcessCapacity(): void {
     const activeCount = [...this.instances.values()].filter(
@@ -2853,40 +2805,6 @@ export class InstanceManager extends EventEmitter {
     ).length;
     const maxProcesses = this.resolveMaxProcesses();
     if (activeCount >= maxProcesses) throw new MaxProcessesError(maxProcesses);
-  }
-
-  /**
-   * A Space for an isolated child, branched from what the parent's main
-   * checkout has checked out, so completing it merges the child's work back
-   * there. Committed work only: the worktree is a fresh checkout.
-   */
-  private async createChildSpace(parent: Instance, title: string): Promise<SpaceInfo> {
-    const parentSpace = parent.info.spaceId
-      ? this.spaceManager.getSpace(parent.info.spaceId)
-      : undefined;
-    const project = parent.info.projectId
-      ? this._projectManager.getProject(parent.info.projectId)
-      : undefined;
-    // A Space branch is checked out in its own worktree, which Complete
-    // refuses to merge into; until it can, isolated children branch from the
-    // main checkout only.
-    if (parentSpace && !parentSpace.isDefault) {
-      throw new McpToolError(
-        "space_unavailable",
-        "Isolated delegates can't branch from a Space yet; delegate with isolation 'shared', or from the main checkout.",
-      );
-    }
-    const projectDirectory = parentSpace?.projectDirectory ?? project?.directory;
-    if (!projectDirectory) {
-      throw new McpToolError("space_unavailable", "This chat isn't in a project Relay can branch.");
-    }
-    // Detached HEAD: branch from the commit the parent is on, not the default branch.
-    const baseBranch = parent.info.gitBranch ?? "HEAD";
-    try {
-      return await this.spaceManager.createSpace(projectDirectory, { name: title, baseBranch });
-    } catch (err) {
-      throw new McpToolError("space_unavailable", `Couldn't create a Space: ${errorMessage(err)}`);
-    }
   }
 
   /**

@@ -311,12 +311,6 @@ const delegateTask: Tool = {
         additionalProperties: false,
       },
       runtimeMode: { type: "string", enum: RUNTIME_MODES },
-      isolation: {
-        type: "string",
-        enum: ["shared", "space"],
-        description:
-          "'shared' (default): work in this chat's checkout. 'space': a new Space (its own worktree) branched from this chat's branch, for parallel edits; it starts from committed work only, and the user completes it to merge. Not available from inside a Space.",
-      },
       mode: { type: "string", enum: ["async", "wait"] },
       timeoutMs: { type: "integer", minimum: 1000, maximum: DELEGATE_WAIT_MAX_MS },
       clientRequestId: {
@@ -337,6 +331,14 @@ const delegateTask: Tool = {
     const caller = requireCaller(ctx);
     const task = optionalString(args, "task");
     if (!task) throw new McpToolError("invalid_request", "task is required.");
+    // Removed with Spaces. Older Codex threads keep guidance that mentions it,
+    // and tool arguments aren't schema-checked, so refuse rather than ignore.
+    if ("isolation" in args) {
+      throw new McpToolError(
+        "invalid_request",
+        "isolation is no longer supported; children share this chat's checkout.",
+      );
+    }
     // The child's first message must read as its task, not as a Relay agent note.
     if (parseRelayAgentMessage(task.trimStart())) {
       throw new McpToolError("invalid_request", "task can't start with a Relay message marker.");
@@ -353,10 +355,6 @@ const delegateTask: Tool = {
     if (runtimeMode !== undefined && !RUNTIME_MODES.includes(runtimeMode as ProviderRuntimeMode)) {
       throw new McpToolError("invalid_request", `Unknown runtimeMode ${runtimeMode}.`);
     }
-    const isolation = optionalString(args, "isolation") ?? "shared";
-    if (isolation !== "shared" && isolation !== "space") {
-      throw new McpToolError("invalid_request", "isolation must be 'shared' or 'space'.");
-    }
     const mode = optionalString(args, "mode") ?? "async";
     if (mode !== "async" && mode !== "wait") {
       throw new McpToolError("invalid_request", "mode must be 'async' or 'wait'.");
@@ -369,7 +367,6 @@ const delegateTask: Tool = {
       model: optionalString(target as Record<string, unknown>, "model"),
       runtimeMode: runtimeMode as ProviderRuntimeMode | undefined,
       clientRequestId: optionalString(args, "clientRequestId"),
-      isolation,
     });
     if (mode === "async" || started.status !== "running") {
       return {

@@ -223,8 +223,6 @@ export interface DelegateTaskRequest {
   model?: string;
   runtimeMode?: ProviderRuntimeMode;
   clientRequestId?: string;
-  /** `"space"` gives the child its own Space branched from the parent's branch. */
-  isolation?: "shared" | "space";
 }
 
 /** A short chat title from a task's first line. */
