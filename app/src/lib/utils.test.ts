@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareChatListOrder,
+  getChatBranch,
   getContextWindowUsage,
   getDisplaySessionStats,
   getDisplayTokenBreakdown,
@@ -26,6 +27,17 @@ describe("toggleAnswerSelection", () => {
   it("removes an already-selected option for multi-select questions", () => {
     expect(toggleAnswerSelection(["A", "B"], "A", true)).toEqual(["B"]);
     expect(toggleAnswerSelection(["A"], "A", true)).toEqual([]);
+  });
+});
+
+describe("getChatBranch", () => {
+  it("prefers the live HEAD over the assigned space branch", () => {
+    expect(
+      getChatBranch({ gitBranch: "relay-space/abc", gitInfo: { branch: "fix", isWorktree: true } }),
+    ).toBe("fix");
+    expect(getChatBranch({ gitBranch: "relay-space/abc" })).toBe("relay-space/abc");
+    expect(getChatBranch({ gitInfo: { branch: "main", isWorktree: false } })).toBe("main");
+    expect(getChatBranch({})).toBeUndefined();
   });
 });
 

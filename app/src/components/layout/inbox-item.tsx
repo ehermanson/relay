@@ -21,7 +21,12 @@ import type { TerminalScope } from "@shared/types";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { getInstanceProjectRouteId } from "@/lib/project-route";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
-import { deriveInstanceStatusPresentation, formatTimeAgo, getChatSortTimestamp } from "@/lib/utils";
+import {
+  deriveInstanceStatusPresentation,
+  formatTimeAgo,
+  getChatBranch,
+  getChatSortTimestamp,
+} from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
 import type { InboxChatEntry } from "@/lib/inbox";
 
@@ -58,7 +63,7 @@ export function InboxChatSummary({ entry }: { entry: InboxChatEntry }) {
   const { instance } = entry;
   const status = deriveInstanceStatusPresentation(instance);
   const modelLabel = resolveModelLabel(entry);
-  const branch = instance.gitBranch ?? instance.gitInfo?.branch;
+  const branch = getChatBranch(instance);
   const recencyAt = getChatSortTimestamp(instance);
 
   return (
@@ -204,7 +209,7 @@ export function InboxItem({ entry, isActive, activeChatId }: InboxItemProps) {
   const unread = useUnreadStore((s) => selectHasUnread(s, instance.id, instance.lastActivityAt));
   const recencyAt = getChatSortTimestamp(instance);
   const modelLabel = resolveModelLabel(entry);
-  const branch = instance.gitBranch ?? instance.gitInfo?.branch;
+  const branch = getChatBranch(instance);
 
   return (
     <Link

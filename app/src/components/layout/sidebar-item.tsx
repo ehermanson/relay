@@ -9,7 +9,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import type { TerminalScope } from "@shared/types";
 import { useSidebarActions } from "../../context/sidebar-actions-context";
 import { getInstanceProjectRouteId } from "@/lib/project-route";
-import { formatTimeAgo, getChatSortTimestamp } from "@/lib/utils";
+import { formatTimeAgo, getChatBranch, getChatSortTimestamp } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
@@ -154,7 +154,7 @@ export function SidebarItem({
         {!editing && instance.gitBranch && (
           <div className="mt-0.5 flex items-center gap-1 truncate text-[0.6875rem] leading-tight text-muted">
             <GitBranch size={10} strokeWidth={2.5} className="shrink-0" />
-            <span className="truncate">{instance.gitBranch}</span>
+            <span className="truncate">{getChatBranch(instance)}</span>
           </div>
         )}
         {!editing && isChild && parentInstance && (

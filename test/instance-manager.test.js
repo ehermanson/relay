@@ -3,6 +3,7 @@ import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -1161,7 +1162,65 @@ describe("InstanceManager", () => {
       assert.equal(instance.info.originalGitBranch, "main");
     });
 
-    it("warns only once per missing space-owned working directory during git refresh", async () => {
+    it("follows a Claude session into a worktree it entered mid-session", async () => {
+      const repoDir = makeRepoDir();
+      const info = manager.createInstance({ workingDirectory: repoDir, provider: "claude" });
+      const instance = manager.instances.get(info.id);
+      assert.ok(instance);
+      assert.equal(instance.info.gitInfo?.branch, "main");
+
+      const worktreePath = join(repoDir, ".claude", "worktrees", "feat");
+      runGit(repoDir, ["worktree", "add", "-q", "-b", "worktree-feat", worktreePath]);
+      const jsonlPath = join(repoDir, "session.jsonl");
+      const worktreeState = (session) =>
+        JSON.stringify({ type: "worktree-state", worktreeSession: session, sessionId: "s1" });
+      writeFileSync(
+        jsonlPath,
+        worktreeState({ worktreePath, worktreeBranch: "worktree-feat", originalBranch: "main" }) +
+          "\n",
+      );
+      instance.jsonlPath = jsonlPath;
+
+      await manager.refreshGitBranchStateAsync(info.id, instance);
+      assert.deepEqual(instance.info.gitInfo, { branch: "worktree-feat", isWorktree: true });
+      assert.equal(
+        instance.info.branchChanged,
+        undefined,
+        "no banner for the agent's own worktree",
+      );
+
+      appendFileSync(jsonlPath, worktreeState(null) + "\n");
+      await manager.refreshGitBranchStateAsync(info.id, instance);
+      assert.equal(instance.info.gitInfo?.branch, "main");
+    });
+
+    it("re-points a managed chat at its relocated transcript and watcher", async () => {
+      const repoDir = makeRepoDir();
+      const info = manager.createInstance({ workingDirectory: repoDir, provider: "claude" });
+      const instance = manager.instances.get(info.id);
+      assert.ok(instance);
+      const claudeRoot = manager.baseConfig.providerDirs.claude;
+      const sessionId = "0f3a2c1e-reloc-test";
+      const staleDir = join(claudeRoot, "projects", "-stale");
+      const movedDir = join(claudeRoot, "projects", "-moved");
+      mkdirSync(staleDir, { recursive: true });
+      mkdirSync(movedDir, { recursive: true });
+      const stalePath = join(staleDir, `${sessionId}.jsonl`);
+      const movedPath = join(movedDir, `${sessionId}.jsonl`);
+      writeFileSync(stalePath, "");
+      instance.sessionId = sessionId;
+      instance.jsonlPath = stalePath;
+      manager.pointWatcherAt(info.id, instance, stalePath);
+      assert.equal(instance.watchState?.jsonlPath, stalePath);
+
+      renameSync(stalePath, movedPath); // what EnterWorktree does
+      await manager.refreshGitBranchStateAsync(info.id, instance);
+
+      assert.equal(instance.jsonlPath, movedPath);
+      assert.equal(instance.watchState?.jsonlPath, movedPath);
+    });
+
+    it("never falls back into the main repo when a space worktree is missing during git refresh", async () => {
       const warnings = [];
       const logger = {
         info() {},
@@ -1185,14 +1244,13 @@ describe("InstanceManager", () => {
 
       rmSync(space.worktreePath, { recursive: true, force: true });
 
+      const branchBefore = instance.info.gitInfo?.branch;
       await noisyManager.refreshGitBranchStateAsync(info.id, instance);
       await noisyManager.refreshGitBranchStateAsync(info.id, instance);
 
-      assert.equal(warnings.length, 1);
-      assert.match(
-        warnings[0],
-        /Space-owned working directory .* is missing; keeping stale path to avoid falling back into the main repo/,
-      );
+      assert.equal(instance.info.workingDirectory, space.worktreePath);
+      assert.equal(instance.info.gitInfo?.branch, branchBefore);
+      assert.deepEqual(warnings, []);
     });
   });
 

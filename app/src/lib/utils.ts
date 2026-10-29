@@ -127,6 +127,17 @@ export function getChatRecencyTimestamp(
 }
 
 /**
+ * The branch a chat is on: the live HEAD of the directory it works in
+ * (`gitInfo`, refreshed by the server — follows checkouts and agent-entered
+ * worktrees), falling back to the branch it was assigned (space/worktree).
+ */
+export function getChatBranch(
+  instance: Pick<InstanceInfo, "gitInfo" | "gitBranch">,
+): string | undefined {
+  return instance.gitInfo?.branch || instance.gitBranch || undefined;
+}
+
+/**
  * Sort key for chat lists: the last user/assistant message, falling back to
  * `lastActivityAt` only for chats with no message yet. Tool calls and thinking
  * bump `lastActivityAt`, and letting them reorder the list made working chats

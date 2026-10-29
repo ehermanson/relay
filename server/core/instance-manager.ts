@@ -183,6 +183,7 @@ import {
   readAgentHistoryForProvider,
   readAgentModelForProvider,
   resolveAgentTranscriptPathForProvider,
+  readSessionWorkingDirectoryForProvider,
   resolveManagedTranscriptPathForProvider,
 } from "#core/provider-registry.js";
 import { estimateRetainedBytes } from "#core/retained-size.js";
@@ -5027,34 +5028,82 @@ export class InstanceManager extends EventEmitter {
         `[InstanceManager] Git enrichment apply failed for ${id}: ${err}`,
       );
     });
+
+    // A persisted gitInfo is only as fresh as the chat's last live refresh;
+    // the checkout may have switched branches while it was stopped.
+    await this.refreshGitBranchStateAsync(id, instance).catch((err) => {
+      this.baseConfig.logger.debug(`[InstanceManager] Git branch refresh failed for ${id}: ${err}`);
+    });
   }
 
   private async refreshGitBranchStateAsync(id: string, _instance: Instance): Promise<void> {
     const prep = await this.enqueueInstanceMutation(id, (live) => {
       if (live.refreshingGitBranch) return null;
+      // Read-only: never resolveRunnableCwd here — it falls back (and rewrites
+      // the chat's directory) when a worktree is gone.
+      const cwd = live.actualCwd || live.info.workingDirectory;
+      if (!existsSync(cwd)) return null;
       live.refreshingGitBranch = true;
       return {
-        cwd: this.resolveRunnableCwd(live),
+        cwd,
         currentIsWorktree: live.info.gitInfo?.isWorktree ?? Boolean(live.worktreePath),
+        provider: live.info.provider,
+        external: Boolean(live.info.external),
+        jsonlPath: live.externalState?.jsonlPath ?? live.jsonlPath,
+        sessionId: live.providerBinding?.providerSessionId ?? live.sessionId ?? live.info.sessionId,
+        configDir: live.info.configDir,
       };
     }).catch(() => null);
     if (!prep) return;
 
     try {
+      // A managed transcript can move mid-session (Claude relocates it into
+      // the worktree's project dir on EnterWorktree/ExitWorktree).
+      let jsonlPath = prep.jsonlPath;
+      let relocatedJsonlPath: string | undefined;
+      if (!prep.external && prep.sessionId && (!jsonlPath || !existsSync(jsonlPath))) {
+        const resolved = this.resolveManagedTranscriptPath(prep.provider, {
+          sessionId: prep.sessionId,
+          transcriptPath: jsonlPath,
+          workingDirectory: prep.cwd,
+          configDir: prep.configDir,
+        });
+        if (resolved && resolved !== jsonlPath && existsSync(resolved)) {
+          jsonlPath = resolved;
+          relocatedJsonlPath = resolved;
+        }
+      }
+      // The agent may have switched into a worktree without changing the cwd
+      // Relay spawned it with — its branch is that worktree's, not the spawn cwd's.
+      const sessionCwd = jsonlPath
+        ? readSessionWorkingDirectoryForProvider(prep.provider, jsonlPath)
+        : null;
+      const gitDir = sessionCwd && existsSync(sessionCwd) ? sessionCwd : prep.cwd;
       // Filesystem-only HEAD read — this runs every watcher tick, so it must
       // never spawn git.
-      const currentBranch = readGitHeadInfo(prep.cwd)?.branch ?? null;
+      const headInfo = readGitHeadInfo(gitDir);
+      const currentBranch = headInfo?.branch ?? null;
+      const agentMovedDir = gitDir !== prep.cwd;
+      const currentIsWorktree = agentMovedDir
+        ? (headInfo?.isWorktree ?? true)
+        : prep.currentIsWorktree;
       await this.enqueueInstanceMutation(id, (live) => {
         let changed = false;
+        if (relocatedJsonlPath && live.jsonlPath !== relocatedJsonlPath) {
+          live.jsonlPath = relocatedJsonlPath;
+          if (live.providerBinding) live.providerBinding.transcriptPath = relocatedJsonlPath;
+          if (live.watchState) this.pointWatcherAt(id, live, relocatedJsonlPath);
+          changed = true;
+        }
         if (currentBranch) {
           if (
             !live.info.gitInfo ||
             live.info.gitInfo.branch !== currentBranch ||
-            live.info.gitInfo.isWorktree !== prep.currentIsWorktree
+            live.info.gitInfo.isWorktree !== currentIsWorktree
           ) {
             live.info.gitInfo = {
               branch: currentBranch,
-              isWorktree: prep.currentIsWorktree,
+              isWorktree: currentIsWorktree,
             };
             changed = true;
           }
@@ -5064,7 +5113,9 @@ export class InstanceManager extends EventEmitter {
             changed = true;
           }
 
-          if (live.info.originalGitBranch !== currentBranch) {
+          // An agent that moved itself into a worktree changed branches on
+          // purpose — the banner is for the checkout moving under the chat.
+          if (!agentMovedDir && live.info.originalGitBranch !== currentBranch) {
             const nextBranchChanged = {
               originalBranch: live.info.originalGitBranch,
               currentBranch,
@@ -7695,6 +7746,26 @@ export class InstanceManager extends EventEmitter {
   // JSONL file watching
   // ===========================================================================
 
+  /** (Re)start the JSONL watcher on `jsonlPath`, from its current EOF. No-op if already there. */
+  private pointWatcherAt(id: string, instance: Instance, jsonlPath: string): void {
+    if (instance.watchState?.jsonlPath === jsonlPath) return;
+    const oldInterval = this.watchIntervals.get(id);
+    if (oldInterval) {
+      clearInterval(oldInterval);
+      this.watchIntervals.delete(id);
+    }
+    try {
+      instance.watchState = createWatchState(
+        jsonlPath,
+        statSync(jsonlPath).size,
+        instance.info.stats,
+      );
+      this.startWatching(id, instance);
+    } catch {
+      // ignore — file may have been removed between checks
+    }
+  }
+
   private startWatching(instanceId: string, instance: Instance): void {
     if (!instance.watchState) return;
     if (this.watchIntervals.has(instanceId)) return; // Already watching
@@ -9917,8 +9988,20 @@ export class InstanceManager extends EventEmitter {
     instance: Instance,
     proc: ProviderSession,
     sessionId: string,
-    jsonlPath?: string,
+    capturedJsonlPath?: string,
   ): void {
+    // Capture derives the path from the spawn cwd; a session that entered a
+    // worktree (Claude EnterWorktree) has its transcript somewhere else.
+    let jsonlPath = capturedJsonlPath;
+    if (jsonlPath && !existsSync(jsonlPath)) {
+      const resolved = this.resolveManagedTranscriptPath(instance.info.provider, {
+        sessionId,
+        transcriptPath: jsonlPath,
+        workingDirectory: instance.actualCwd || instance.info.workingDirectory,
+        configDir: instance.info.configDir,
+      });
+      if (resolved && existsSync(resolved)) jsonlPath = resolved;
+    }
     instance.sessionId = sessionId;
     instance.jsonlPath = jsonlPath;
     instance.info.sessionId = sessionId;
@@ -9940,23 +10023,7 @@ export class InstanceManager extends EventEmitter {
     proc.setSessionId?.(sessionId);
 
     // Start JSONL watching so terminal-side changes are picked up.
-    if (jsonlPath && instance.watchState?.jsonlPath !== jsonlPath) {
-      const oldInterval = this.watchIntervals.get(id);
-      if (oldInterval) {
-        clearInterval(oldInterval);
-        this.watchIntervals.delete(id);
-      }
-      try {
-        instance.watchState = createWatchState(
-          jsonlPath,
-          statSync(jsonlPath).size,
-          instance.info.stats,
-        );
-        this.startWatching(id, instance);
-      } catch {
-        // ignore — file may have been removed between checks
-      }
-    }
+    if (jsonlPath) this.pointWatcherAt(id, instance, jsonlPath);
 
     this.removeLiveExternalShadow(
       id,

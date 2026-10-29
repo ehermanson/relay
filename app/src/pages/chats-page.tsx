@@ -23,6 +23,7 @@ import {
   formatModel,
   formatTimeAgo,
   formatTokens,
+  getChatBranch,
   getChatSortTimestamp,
   getDisplaySessionStats,
 } from "@/lib/utils";
@@ -85,7 +86,7 @@ function SessionCard({
       {instance.gitBranch && (
         <Badge variant="default" className="hidden shrink-0 sm:flex">
           <GitBranch size={10} className="mr-1" />
-          <span className="max-w-[120px] truncate">{instance.gitBranch}</span>
+          <span className="max-w-[120px] truncate">{getChatBranch(instance)}</span>
         </Badge>
       )}
 

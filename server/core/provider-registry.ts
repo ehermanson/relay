@@ -42,6 +42,7 @@ import {
   refreshSdkDiscoveredModelsIfStale,
 } from "#core/providers/claude-sdk.js";
 import { findClaudeBinary, isClaudeInstalled } from "#core/providers/claude-cli.js";
+import { readClaudeWorktreeState } from "#core/providers/claude-worktree-state.js";
 import { findCodexBinary, isCodexInstalled } from "#core/providers/codex-cli.js";
 import {
   buildVersionAdvisory,
@@ -207,6 +208,12 @@ interface ProviderDriver {
   captureManagedSession(
     context: ProviderCaptureContext,
   ): { sessionId: string; transcriptPath?: string } | null;
+  /**
+   * The directory a session is working in when the provider moved it away
+   * from its spawn cwd mid-session (Claude `EnterWorktree`). Null when it is in
+   * its spawn cwd. File-system read only; must be cheap enough per watcher tick.
+   */
+  readSessionWorkingDirectory?(transcriptPath: string): string | null;
   discoverExternalSessions?(
     context: ProviderExternalDiscoveryContext,
   ): Promise<DiscoveredExternalSession[]>;
@@ -321,6 +328,50 @@ export function inferClaudeModelIdFromSdkInfo(model: ClaudeSdkModelInfo): string
 function resolveClaudeProjectDir(providerRoot: string, workingDirectory: string): string {
   const projectsDir = join(providerRoot, "projects");
   return join(projectsDir, workingDirectory.replace(/[^A-Za-z0-9_-]/g, "-"));
+}
+
+/**
+ * `<sessionId>.jsonl` → path across every project dir under one Claude root,
+ * built in one pass and reused briefly: restore can miss hundreds of rows in a
+ * row, and a per-miss directory scan multiplies into tens of thousands of stats.
+ */
+const CLAUDE_TRANSCRIPT_INDEX_TTL_MS = 10_000;
+const claudeTranscriptIndex = new Map<string, { builtAt: number; paths: Map<string, string> }>();
+
+/** `<sessionId>.jsonl` in any project dir under the root — wherever the CLI last relocated it. */
+function findClaudeTranscriptBySessionId(
+  providerRoot: string,
+  sessionId: string,
+): string | undefined {
+  const fileName = `${sessionId}.jsonl`;
+  const cached = claudeTranscriptIndex.get(providerRoot);
+  if (cached && Date.now() - cached.builtAt < CLAUDE_TRANSCRIPT_INDEX_TTL_MS) {
+    const hit = cached.paths.get(fileName);
+    // A hit can go stale when the CLI relocates the file again; re-index then.
+    if (!hit || existsSync(hit)) return hit;
+  }
+  const projectsDir = join(providerRoot, "projects");
+  const paths = new Map<string, string>();
+  let dirs: string[];
+  try {
+    dirs = readdirSync(projectsDir);
+  } catch {
+    claudeTranscriptIndex.delete(providerRoot);
+    return undefined;
+  }
+  for (const dir of dirs) {
+    let files: string[];
+    try {
+      files = readdirSync(join(projectsDir, dir));
+    } catch {
+      continue; // not a directory
+    }
+    for (const file of files) {
+      if (file.endsWith(".jsonl")) paths.set(file, join(projectsDir, dir, file));
+    }
+  }
+  claudeTranscriptIndex.set(providerRoot, { builtAt: Date.now(), paths });
+  return paths.get(fileName);
 }
 
 function normalizeDiscoveryDirectory(directory: string): string {
@@ -784,7 +835,16 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
           return options.transcriptPath;
         }
       }
-      return derivedPath ?? options.transcriptPath;
+      if (derivedPath && existsSync(derivedPath)) return derivedPath;
+      // EnterWorktree/ExitWorktree relocate the transcript into the new cwd's
+      // project dir, so neither the stored nor the derived path may exist.
+      const relocated = options.sessionId
+        ? findClaudeTranscriptBySessionId(options.providerDirs.claude, options.sessionId)
+        : undefined;
+      return relocated ?? derivedPath ?? options.transcriptPath;
+    },
+    readSessionWorkingDirectory(transcriptPath) {
+      return readClaudeWorktreeState(transcriptPath)?.worktreePath ?? null;
     },
     captureManagedSession(context) {
       const binding = context.binding ?? context.proc.getRuntimeBinding();
@@ -1274,6 +1334,13 @@ export function createManagedProviderSession(
     ? requestedMode
     : "approval-required";
   return driver.createSession(config, { ...options, runtimeMode }, context);
+}
+
+export function readSessionWorkingDirectoryForProvider(
+  provider: ProviderKind,
+  transcriptPath: string,
+): string | null {
+  return getProviderDriver(provider).readSessionWorkingDirectory?.(transcriptPath) ?? null;
 }
 
 export function resolveManagedTranscriptPathForProvider(

@@ -45,7 +45,7 @@ import {
   gitPullInstance,
   gitPushInstance,
 } from "../../lib/api";
-import { deriveInstanceStatusPresentation } from "../../lib/utils";
+import { deriveInstanceStatusPresentation, getChatBranch } from "../../lib/utils";
 import { useRepoStatus } from "@/hooks/use-repo-status";
 import type { InstanceInfo, ProviderKind, ProviderNotice, SessionStats } from "@shared/types";
 import type { SidecarTab } from "./sidecar";
@@ -383,7 +383,7 @@ export function InstanceHeader({
   onToggleTerminal,
   terminalOpen,
 }: InstanceHeaderProps) {
-  const displayBranch = instance.gitInfo?.branch || instance.gitBranch;
+  const displayBranch = getChatBranch(instance);
 
   const instanceStatus = deriveInstanceStatusPresentation(instance);
 
