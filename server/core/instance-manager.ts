@@ -282,12 +282,14 @@ import { DEFAULT_ACCOUNT_ID, type Account, type ProviderDefaults } from "#core/t
 import { OrchestrationCredentials } from "#core/orchestration/credentials.js";
 import {
   agentInfoForTask,
+  buildChatMessage,
   buildDelegatedChildNote,
   buildTaskWakeMessage,
   DELEGATED_CHILD_BLOCK_KIND,
   type DelegateTaskRequest,
+  exceedsRuntimeModeCeiling,
   lastAssistantText,
-  parseTaskWakeMessage,
+  parseRelayAgentMessage,
   relayTaskAgentKey,
   resolveChildRuntimeMode,
   titleFromTask,
@@ -297,7 +299,11 @@ import {
   RELAY_MCP_SERVER_NAME,
 } from "#core/orchestration/instructions.js";
 import { McpToolError } from "#core/orchestration/mcp-protocol.js";
-import type { OrchestrationHost, OrchestrationProviderInfo } from "#core/orchestration/tools.js";
+import type {
+  ChatWaitOutcome,
+  OrchestrationHost,
+  OrchestrationProviderInfo,
+} from "#core/orchestration/tools.js";
 
 // =============================================================================
 // Re-exports
@@ -468,13 +474,13 @@ function isTaskWakeEntry(entry: HistoryEntry): boolean {
     message.type === "user" &&
     !message.author &&
     !message.agentId &&
-    parseTaskWakeMessage(message.text ?? "") !== null
+    parseRelayAgentMessage(message.text ?? "") !== null
   );
 }
 
 function asTaskWakeNote(entry: HistoryEntry): HistoryEntry {
   const message = entry.message as UserMessage;
-  const wake = parseTaskWakeMessage(message.text)!;
+  const wake = parseRelayAgentMessage(message.text)!;
   return {
     ...entry,
     message: { ...message, text: wake.body, author: { kind: "agent", name: wake.name } },
@@ -1611,6 +1617,11 @@ export class InstanceManager extends EventEmitter {
     string,
     Set<(task: DelegatedTaskRecord) => void>
   >();
+  /** `waitForChatTurn` callers; see `addChatTurnWaiter`. */
+  private readonly chatTurnWaiters = new Set<(id: string) => void>();
+  private readonly notifyChatTurnWaiters = (id: string): void => {
+    for (const waiter of this.chatTurnWaiters) waiter(id);
+  };
   /** Pending coalesced wake per parent chat. */
   private readonly taskWakeTimers = new Map<string, NodeJS.Timeout>();
   /** Consecutive failed wake dispatches per parent (bounded retry). */
@@ -2436,6 +2447,10 @@ export class InstanceManager extends EventEmitter {
         this.waitForDelegatedTask(taskId, timeoutMs, signal),
       cancelDelegatedTask: (taskId) =>
         this.cancelDelegatedTask(taskId, "cancelled by the delegating chat"),
+      sendChatMessage: (callerId, chatId, text) =>
+        this.sendOrchestrationMessage(callerId, chatId, text),
+      waitForChatTurn: (callerId, chatId, timeoutMs, signal) =>
+        this.waitForChatTurn(callerId, chatId, timeoutMs, signal),
     };
   }
 
@@ -2479,6 +2494,165 @@ export class InstanceManager extends EventEmitter {
         };
       }),
     );
+  }
+
+  // ===========================================================================
+  // Cross-chat messages (`chat_send` / `chat_wait`)
+  // ===========================================================================
+
+  /**
+   * Deliver `text` from `callerId` into `targetId` as an agent note, starting
+   * a turn there. Only an idle chat that isn't waiting on its user takes one:
+   * a queued message would drain into whatever that turn leaves behind, and a
+   * message into a pending plan or approval would answer for the user. Never
+   * into a chat running with more access than the caller. The tool layer has
+   * already checked the account and that the target isn't the caller.
+   */
+  async sendOrchestrationMessage(callerId: string, targetId: string, text: string): Promise<void> {
+    const caller = this.instances.get(callerId);
+    if (!caller) throw new McpToolError("caller_not_found", "The calling chat no longer exists.");
+    if (!this.instances.has(targetId)) {
+      throw new McpToolError("chat_not_found", `No chat ${targetId} in this account.`);
+    }
+    if (!this.acceptingMessages) {
+      throw new McpToolError("relay_restarting", "Relay is restarting; try again shortly.");
+    }
+    const callerMode = caller.info.runtimeMode ?? this.baseConfig.defaultRuntimeMode;
+    await this.enqueueInstanceMutation(targetId, async (target) => {
+      if (!this.acceptingMessages) {
+        throw new McpToolError("relay_restarting", "Relay is restarting; try again shortly.");
+      }
+      if (target.info.external) {
+        throw new McpToolError(
+          "chat_not_sendable",
+          "That chat is a terminal session Relay doesn't manage.",
+        );
+      }
+      if (!this.isSpaceWritable(target)) {
+        throw new McpToolError("chat_not_sendable", "That chat's Space is closed (read-only).");
+      }
+      // Like a wake, a message never revives a chat its user put away.
+      if (this.isChatDone(target)) {
+        throw new McpToolError("chat_not_sendable", "That chat is marked done.");
+      }
+      if (target.info.pendingPermission || target.info.pendingTool || target.info.pendingPlan) {
+        throw new McpToolError(
+          "chat_needs_input",
+          "That chat is waiting on its user. Don't answer for them; tell your user instead.",
+        );
+      }
+      if (target.process?.isProcessing || target.pendingMessages?.length) {
+        throw new McpToolError(
+          "chat_busy",
+          "That chat is mid-turn. Call chat_wait on it, then send.",
+        );
+      }
+      const targetMode = target.info.runtimeMode ?? this.baseConfig.defaultRuntimeMode;
+      if (exceedsRuntimeModeCeiling(callerMode, targetMode)) {
+        throw new McpToolError(
+          "mode_escalation_denied",
+          `That chat runs with more access (${targetMode}) than this one (${callerMode}).`,
+        );
+      }
+      try {
+        await this.dispatchUserMessageLocked(targetId, target, buildChatMessage(caller.info, text));
+      } catch (err) {
+        if (err instanceof MaxProcessesError) {
+          throw new McpToolError(
+            "capacity",
+            "Relay is at its concurrent-chat limit. Report this to the user; don't retry.",
+          );
+        }
+        throw err;
+      }
+    });
+    this.baseConfig.logger.info(`[InstanceManager] Chat ${callerId} sent a message to ${targetId}`);
+  }
+
+  /**
+   * Resolve when `chatId` has no turn running or queued (`finished`, or
+   * `error` when its last turn failed), is waiting on its user
+   * (`needs_input`), was deleted (`gone`), or on timeout / `signal` abort
+   * (`timeout`). Settled chats resolve at once. When the caller waits on its
+   * own delegate, the wait also covers the task: it settles once the task
+   * ends, and a result seen here isn't woken again.
+   */
+  waitForChatTurn(
+    callerId: string,
+    chatId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<ChatWaitOutcome> {
+    const ownTask = () => {
+      const delegation = this.instances.get(chatId)?.info.delegation;
+      return delegation?.parentInstanceId === callerId
+        ? (this.db.getDelegatedTask(delegation.taskId) ?? undefined)
+        : undefined;
+    };
+    const check = (): ChatWaitOutcome | undefined => {
+      const instance = this.instances.get(chatId);
+      if (!instance) return "gone";
+      const info = instance.info;
+      if (info.pendingPermission || info.pendingTool || info.pendingPlan) return "needs_input";
+      const busy =
+        instance.process?.isProcessing ||
+        !!instance.pendingMessages?.length ||
+        info.status === "processing";
+      if (busy || ownTask()?.status === "running") return undefined;
+      return info.status === "error" ? "error" : "finished";
+    };
+    const settle = (outcome: ChatWaitOutcome): ChatWaitOutcome => {
+      const task = outcome === "finished" || outcome === "error" ? ownTask() : undefined;
+      if (task && task.status !== "running" && task.deliveredAt === undefined) {
+        this.db.markDelegatedTasksDelivered([task.id], Date.now());
+      }
+      return outcome;
+    };
+    const initial = check();
+    if (initial) return Promise.resolve(settle(initial));
+    return new Promise((resolve) => {
+      const done = (outcome: ChatWaitOutcome) => {
+        clearTimeout(timer);
+        clearInterval(recheck);
+        signal?.removeEventListener("abort", onAbort);
+        this.removeChatTurnWaiter(onChange);
+        resolve(outcome === "timeout" || signal?.aborted ? outcome : settle(outcome));
+      };
+      // The target's status, its removal, and (for an own delegate) the
+      // task's card update on the caller.
+      const onChange = (id: string) => {
+        if (id !== chatId && id !== callerId) return;
+        const outcome = check();
+        if (outcome) done(outcome);
+      };
+      const onAbort = () => done("timeout");
+      const timer = setTimeout(onAbort, timeoutMs);
+      timer.unref?.();
+      // Events cover every transition we know of; this catches one that
+      // settles without an event.
+      const recheck = setInterval(() => onChange(chatId), 2_000);
+      recheck.unref?.();
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.addChatTurnWaiter(onChange);
+    });
+  }
+
+  /** `chat_wait` callers share one subscription, however many are waiting. */
+  private addChatTurnWaiter(waiter: (id: string) => void): void {
+    if (this.chatTurnWaiters.size === 0) {
+      this.on("instance:status", this.notifyChatTurnWaiters);
+      this.on("instance:removed", this.notifyChatTurnWaiters);
+      this.on("instance:agent_update", this.notifyChatTurnWaiters);
+    }
+    this.chatTurnWaiters.add(waiter);
+  }
+
+  private removeChatTurnWaiter(waiter: (id: string) => void): void {
+    if (!this.chatTurnWaiters.delete(waiter) || this.chatTurnWaiters.size > 0) return;
+    this.off("instance:status", this.notifyChatTurnWaiters);
+    this.off("instance:removed", this.notifyChatTurnWaiters);
+    this.off("instance:agent_update", this.notifyChatTurnWaiters);
   }
 
   // ===========================================================================
@@ -4548,9 +4722,10 @@ export class InstanceManager extends EventEmitter {
     let shouldInjectTaskContext = false;
     let customInstructions: string | null = null;
 
-    // A task wake is an agent note, never the user request the first-turn
-    // wrappers frame — and wrapping would hide its marker from replay.
-    const isTaskWake = parseTaskWakeMessage(text) !== null;
+    // A Relay agent note (task wake, chat_send) is never the user request the
+    // first-turn wrappers frame — wrapping would hide its marker from replay.
+    // The flags stay unset, so the chat's first human turn still gets them.
+    const isTaskWake = parseRelayAgentMessage(text) !== null;
     if (!instance.taskContextInjected && !internal && !isTaskWake && instance.info.projectId) {
       instance.taskContextInjected = true;
       const taskProject = this._projectManager.getProject(instance.info.projectId);
@@ -4570,7 +4745,8 @@ export class InstanceManager extends EventEmitter {
       }
     }
 
-    if (instance.autoTitle) {
+    // An agent note never names the chat; its first human turn does.
+    if (instance.autoTitle && !isTaskWake) {
       instance.info.name = generateTitle(text);
       instance.autoTitle = false;
     }
@@ -4607,7 +4783,7 @@ export class InstanceManager extends EventEmitter {
     }
 
     // A task wake is an agent note from the delegated chat, never a human turn.
-    const wake = parseTaskWakeMessage(messageText);
+    const wake = parseRelayAgentMessage(messageText);
     const userMessage: UserMessage = {
       type: "user",
       text: wake ? wake.body : messageText,
@@ -4838,7 +5014,7 @@ export class InstanceManager extends EventEmitter {
     // the real history entry when the queue is drained.
     // Apply the same marker transform that dispatchUserMessageLocked uses,
     // so the placeholder text is self-contained and renderable.
-    const wake = parseTaskWakeMessage(text);
+    const wake = parseRelayAgentMessage(text);
     let displayText = wake ? wake.body : text;
     if (images && images.length > 0) {
       const markers = images.map((p) => `[Image: source: ${p}]`).join("\n");

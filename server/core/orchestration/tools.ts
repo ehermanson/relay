@@ -13,7 +13,11 @@ import {
   type McpServerDefinition,
   type McpToolDefinition,
 } from "#core/orchestration/mcp-protocol.js";
-import type { DelegateTaskRequest } from "#core/orchestration/delegation.js";
+import {
+  lastAssistantText,
+  parseRelayAgentMessage,
+  type DelegateTaskRequest,
+} from "#core/orchestration/delegation.js";
 import {
   DEFAULT_ACCOUNT_ID,
   type DelegatedTaskInfo,
@@ -76,7 +80,29 @@ export interface OrchestrationHost {
     signal?: AbortSignal,
   ): Promise<DelegatedTaskInfo>;
   cancelDelegatedTask(taskId: string): DelegatedTaskInfo;
+  /**
+   * Deliver a message from `callerId` into another chat of its account as an
+   * agent note. Throws `McpToolError` when the chat can't take it now.
+   */
+  sendChatMessage(callerId: string, chatId: string, text: string): Promise<void>;
+  /**
+   * Resolves when the chat's turn settles, or on `timeoutMs` / `signal` abort.
+   * On the caller's own delegate it also waits for the task to end.
+   */
+  waitForChatTurn(
+    callerId: string,
+    chatId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<ChatWaitOutcome>;
 }
+
+/**
+ * How a `chat_wait` ended: `finished` (no turn running or queued), `error`
+ * (likewise, but its last turn failed), `needs_input` (waiting on its user),
+ * `timeout`, or `gone` (deleted).
+ */
+export type ChatWaitOutcome = "finished" | "error" | "needs_input" | "timeout" | "gone";
 
 export interface OrchestrationCallContext {
   host: OrchestrationHost;
@@ -305,6 +331,10 @@ const delegateTask: Tool = {
     const caller = requireCaller(ctx);
     const task = optionalString(args, "task");
     if (!task) throw new McpToolError("invalid_request", "task is required.");
+    // The child's first message must read as its task, not as a Relay agent note.
+    if (parseRelayAgentMessage(task.trimStart())) {
+      throw new McpToolError("invalid_request", "task can't start with a Relay message marker.");
+    }
     const target = args.target === undefined || args.target === null ? {} : args.target;
     if (typeof target !== "object" || Array.isArray(target)) {
       throw new McpToolError("invalid_request", "target must be an object.");
@@ -402,6 +432,122 @@ const taskCancel: Tool = {
   },
 };
 
+/** A chat in the caller's account other than the caller itself, or a typed refusal. */
+function requireOtherChat(
+  args: Record<string, unknown>,
+  ctx: OrchestrationCallContext,
+  caller: InstanceInfo,
+): InstanceInfo {
+  const raw = optionalString(args, "chatId");
+  if (!raw) throw new McpToolError("invalid_request", "chatId is required.");
+  const chatId = parseChatReference(raw);
+  const chat = ctx.host.getChat(chatId);
+  if (!chat || ctx.host.accountIdOf(chat) !== ctx.host.accountIdOf(caller)) {
+    throw new McpToolError("chat_not_found", `No chat ${chatId} in this account.`);
+  }
+  if (chat.id === caller.id) {
+    throw new McpToolError("chat_not_sendable", "That is this chat.");
+  }
+  return chat;
+}
+
+const chatSend: Tool = {
+  name: "chat_send",
+  description:
+    "Send a message to another chat in this account; it arrives as a note from this chat and starts a turn there. The chat must be idle and not waiting on its user, and can't run with more access than this chat. Call chat_wait afterwards for its reply.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chatId: { type: "string", description: "Chat id or relay://chat/<id> link." },
+      message: { type: "string", description: "Self-contained message for that chat." },
+    },
+    required: ["chatId", "message"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Send to chat",
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  async handler(args, ctx) {
+    const caller = requireCaller(ctx);
+    const message = optionalString(args, "message");
+    if (!message) throw new McpToolError("invalid_request", "message is required.");
+    const chat = requireOtherChat(args, ctx, caller);
+    await ctx.host.sendChatMessage(caller.id, chat.id, message);
+    const after = ctx.host.getChat(chat.id) ?? chat;
+    return {
+      chat: summarizeChat(after, caller.id),
+      sent: true,
+      next: "Call chat_wait on this chat for its reply, unless you don't need one.",
+    };
+  },
+};
+
+const CHAT_WAIT_DEFAULT_MS = DELEGATE_WAIT_DEFAULT_MS;
+
+const chatWait: Tool = {
+  name: "chat_wait",
+  description:
+    "Wait until another chat's turn ends (nothing running or queued), it needs its user's input, or timeoutMs passes, then return its status and latest reply. Returns at once when it is already settled.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chatId: { type: "string", description: "Chat id or relay://chat/<id> link." },
+      timeoutMs: { type: "integer", minimum: 1000, maximum: DELEGATE_WAIT_MAX_MS },
+    },
+    required: ["chatId"],
+    additionalProperties: false,
+  },
+  annotations: { title: "Wait for chat", readOnlyHint: true, openWorldHint: false },
+  async handler(args, ctx) {
+    const caller = requireCaller(ctx);
+    const chat = requireOtherChat(args, ctx, caller);
+    const timeoutMs = clampInt(args.timeoutMs, 1000, DELEGATE_WAIT_MAX_MS, CHAT_WAIT_DEFAULT_MS);
+    const outcome = await ctx.host.waitForChatTurn(caller.id, chat.id, timeoutMs, ctx.signal);
+    const after = ctx.host.getChat(chat.id);
+    if (outcome === "gone" || !after) {
+      return {
+        outcome: "gone",
+        chat: { id: chat.id, link: relayChatLink(chat.id), deleted: true },
+      };
+    }
+    let lastReply: string | undefined;
+    if (outcome !== "timeout") {
+      try {
+        lastReply = lastAssistantText(ctx.host.getHistory(chat.id));
+      } catch {
+        // No readable history: the summary still says how it ended.
+      }
+    }
+    const clipped = lastReply !== undefined && lastReply.length > TASK_RESULT_PREVIEW_CHARS;
+    // On its own delegate the caller also learns how the task ended — a
+    // cancelled or failed task otherwise reads as an ordinary finished turn.
+    const task =
+      after.delegation?.parentInstanceId === caller.id
+        ? ctx.host.getDelegatedTask(after.delegation.taskId)
+        : undefined;
+    return {
+      outcome,
+      chat: summarizeChat(after, caller.id),
+      ...(task
+        ? {
+            task: {
+              taskId: task.id,
+              status: task.status,
+              ...(task.statusDetail ? { statusDetail: task.statusDetail } : {}),
+            },
+          }
+        : {}),
+      ...(lastReply !== undefined
+        ? { lastReply: clipped ? `${lastReply.slice(0, TASK_RESULT_PREVIEW_CHARS)}…` : lastReply }
+        : {}),
+      ...(clipped ? { lastReplyTruncated: true, next: "chat_read has the rest." } : {}),
+    };
+  },
+};
+
 export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   relayCapabilities,
   delegateTask,
@@ -409,6 +555,8 @@ export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   taskCancel,
   chatList,
   chatRead,
+  chatSend,
+  chatWait,
 ];
 
 /** Inline result size for tool replies other than `task_status`. */

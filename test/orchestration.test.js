@@ -133,7 +133,7 @@ describe("MCP protocol", () => {
     const res = await handleMcpPayload({ jsonrpc: "2.0", id: 1, method: "tools/list" }, server, {});
     const names = res.result.tools.map((t) => t.name);
     assert.deepEqual(names, [...RELAY_TOOL_NAMES]);
-    const acting = new Set(["delegate_task", "task_cancel"]);
+    const acting = new Set(["delegate_task", "task_cancel", "chat_send"]);
     for (const tool of res.result.tools) {
       assert.equal(tool.inputSchema.type, "object");
       assert.equal(tool.annotations.readOnlyHint, !acting.has(tool.name), tool.name);

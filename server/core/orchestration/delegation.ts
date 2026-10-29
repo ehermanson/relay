@@ -74,6 +74,15 @@ export function resolveChildRuntimeMode(
   return { ok: true, mode: fallback };
 }
 
+/** Would directing a chat at `target` let a caller at `caller` do more than it can itself? */
+export function exceedsRuntimeModeCeiling(
+  caller: ProviderRuntimeMode,
+  target: ProviderRuntimeMode,
+): boolean {
+  const ceiling = RUNTIME_MODE_RANK[caller] ?? RUNTIME_MODE_RANK["approval-required"];
+  return (RUNTIME_MODE_RANK[target] ?? Infinity) > ceiling;
+}
+
 const AGENT_STATUS: Record<DelegatedTaskStatus, AgentLifecycle> = {
   running: "running",
   completed: "completed",
@@ -111,8 +120,14 @@ export function agentInfoForTask(
 /** Total inline result text one wake may carry; the rest is a `task_status` pointer. */
 export const TASK_WAKE_RESULT_BUDGET = 16_000;
 
-/** First-line marker of a wake. Survives provider transcripts, so replay can re-attribute it. */
+/**
+ * First-line markers of agent-authored messages Relay delivers into a chat
+ * (task wakes, `chat_send`). They survive provider transcripts, so live
+ * dispatch and replay both re-attribute them as agent notes.
+ */
 const TASK_WAKE_PREFIX = "[Relay task update] ";
+const CHAT_MESSAGE_PREFIX = "[Relay message] ";
+const RELAY_AGENT_MESSAGE_PREFIXES = [TASK_WAKE_PREFIX, CHAT_MESSAGE_PREFIX];
 
 const STATUS_WORDS: Record<DelegatedTaskStatus, string> = {
   running: "is still running",
@@ -142,13 +157,26 @@ export function buildTaskWakeMessage(tasks: readonly DelegatedTaskInfo[]): strin
   return `${TASK_WAKE_PREFIX}${sender}\n\n${sections.join("\n\n---\n\n")}`;
 }
 
-/** A wake's display form: sent as an agent note from `name`, never a human turn. */
-export function parseTaskWakeMessage(text: string): { name: string; body: string } | null {
-  if (!text.startsWith(TASK_WAKE_PREFIX)) return null;
+/**
+ * `chat_send`'s envelope: names the sending chat by link. The receiver just
+ * replies in its own chat; the sender reads that reply through `chat_wait`
+ * (a `chat_send` back would usually find the sender busy waiting).
+ */
+export function buildChatMessage(sender: Pick<InstanceInfo, "id" | "name">, text: string): string {
+  return `${CHAT_MESSAGE_PREFIX}${sender.name}\n\nMessage from the chat ${relayChatLink(sender.id)}. Reply here as usual; the sender reads your reply.\n\n${text.trim()}`;
+}
+
+/**
+ * Display form of a Relay-delivered agent message (task wake or `chat_send`):
+ * an agent note from `name`, never a human turn. Null for anything else.
+ */
+export function parseRelayAgentMessage(text: string): { name: string; body: string } | null {
+  const prefix = RELAY_AGENT_MESSAGE_PREFIXES.find((candidate) => text.startsWith(candidate));
+  if (!prefix) return null;
   const newline = text.indexOf("\n");
-  const name = (newline === -1 ? text : text.slice(0, newline)).slice(TASK_WAKE_PREFIX.length);
+  const name = (newline === -1 ? text : text.slice(0, newline)).slice(prefix.length);
   const body = newline === -1 ? "" : text.slice(newline + 1).trim();
-  return { name: name.trim() || "Delegated task", body };
+  return { name: name.trim() || "Relay agent", body };
 }
 
 /** Bootstrap note telling a child, explicitly, that it is one. */

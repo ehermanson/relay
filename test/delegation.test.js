@@ -15,7 +15,7 @@ import { resolveConfig } from "../dist/server/config.js";
 import {
   buildTaskWakeMessage,
   lastAssistantText,
-  parseTaskWakeMessage,
+  parseRelayAgentMessage,
   resolveChildRuntimeMode,
   TASK_WAKE_RESULT_BUDGET,
   titleFromTask,
@@ -84,10 +84,10 @@ describe("delegation rules", () => {
     assert.match(wake, /Result:\nLGTM/);
     assert.match(wake, /failed: boom/);
     assert.match(wake, /read it with task_status t2/);
-    const parsed = parseTaskWakeMessage(wake);
+    const parsed = parseRelayAgentMessage(wake);
     assert.equal(parsed.name, "2 delegated tasks");
     assert.ok(parsed.body.startsWith('Delegated task "Review"'));
-    assert.equal(parseTaskWakeMessage("hello"), null);
+    assert.equal(parseRelayAgentMessage("hello"), null);
   });
 
   it("takes the child's trailing reply as the result", () => {
@@ -537,5 +537,228 @@ describe("delegated tasks", () => {
       childCtx,
     );
     assert.equal(notOwner.result.structuredContent.error.code, "not_task_owner");
+  });
+
+  function mcpCaller(manager, callerId) {
+    const server = createRelayMcpServer("test");
+    const ctx = { host: manager.getOrchestrationHost(), callerId };
+    return async (name, args, signal) => {
+      const response = await handleMcpPayload(
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
+        server,
+        { ...ctx, signal },
+      );
+      return response.result.structuredContent;
+    };
+  }
+
+  it("chat_send delivers an agent note to an idle chat; chat_wait returns its reply", async () => {
+    const { manager, sessions, parent, repo, events } = setup();
+    const other = manager.createInstance({
+      provider: "codex",
+      workingDirectory: repo,
+      runtimeMode: "approval-required",
+    });
+    const call = mcpCaller(manager, parent.id);
+    const sent = await call("chat_send", {
+      chatId: `relay://chat/${other.id}`,
+      message: "Which tests cover the parser?",
+    });
+    assert.equal(sent.sent, true);
+    const proc = sessions.get(other.id);
+    assert.equal(proc.sent.length, 1);
+    assert.match(proc.sent[0], /^\[Relay message\] /);
+    assert.match(proc.sent[0], new RegExp(`relay://chat/${parent.id}`));
+    assert.match(proc.sent[0], /Which tests cover the parser\?$/);
+    const note = events.users.find(([id, m]) => id === other.id && !m.queued);
+    assert.equal(note[1].author?.kind, "agent");
+    assert.equal(note[1].text.includes("[Relay message]"), false);
+
+    const waiting = call("chat_wait", { chatId: other.id, timeoutMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await endTurn(manager, proc, other.id, "parser.test.js");
+    const result = await waiting;
+    assert.equal(result.outcome, "finished");
+    assert.equal(result.lastReply, "parser.test.js");
+
+    // Replay re-attributes it like a wake.
+    const merged = manager.mergeSessionEvents(other.id, [
+      { timestamp: 1, message: { type: "user", text: proc.sent[0] } },
+    ]);
+    assert.equal(merged[0].message.author?.kind, "agent");
+  });
+
+  it("chat_send refuses busy, waiting, broader, self and unknown targets", async () => {
+    const { manager, sessions, parent, repo } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const broader = manager.createInstance({
+      provider: "claude",
+      workingDirectory: repo,
+      runtimeMode: "full-access",
+    });
+    const refused = await call("chat_send", { chatId: broader.id, message: "x" });
+    assert.equal(refused.error.code, "mode_escalation_denied");
+    assert.equal(sessions.get(broader.id).sent.length, 0);
+
+    const peer = manager.createInstance({
+      provider: "claude",
+      workingDirectory: repo,
+      runtimeMode: "plan",
+    });
+    await call("chat_send", { chatId: peer.id, message: "first" });
+    assert.equal(
+      (await call("chat_send", { chatId: peer.id, message: "x" })).error.code,
+      "chat_busy",
+    );
+    await endTurn(manager, sessions.get(peer.id), peer.id, "ok");
+    manager.instances.get(peer.id).info.pendingPlan = "a plan";
+    assert.equal(
+      (await call("chat_send", { chatId: peer.id, message: "x" })).error.code,
+      "chat_needs_input",
+    );
+    assert.equal(sessions.get(peer.id).sent.length, 1);
+
+    assert.equal(
+      (await call("chat_send", { chatId: parent.id, message: "x" })).error.code,
+      "chat_not_sendable",
+    );
+    assert.equal(
+      (await call("chat_send", { chatId: "nope", message: "x" })).error.code,
+      "chat_not_found",
+    );
+  });
+
+  it("chat_wait settles at once, on input needed, on timeout and on hang-up", async () => {
+    const { manager, sessions, parent, repo } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const other = manager.createInstance({
+      provider: "claude",
+      workingDirectory: repo,
+      runtimeMode: "approval-required",
+    });
+    assert.equal((await call("chat_wait", { chatId: other.id })).outcome, "finished");
+
+    await manager.sendMessage(other.id, "go");
+    const timedOut = await call("chat_wait", { chatId: other.id, timeoutMs: 1000 });
+    assert.equal(timedOut.outcome, "timeout");
+    assert.equal(timedOut.lastReply, undefined);
+
+    const controller = new AbortController();
+    const hungUp = call("chat_wait", { chatId: other.id }, controller.signal);
+    controller.abort();
+    assert.equal((await hungUp).outcome, "timeout");
+
+    const waiting = call("chat_wait", { chatId: other.id, timeoutMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const live = manager.instances.get(other.id);
+    sessions.get(other.id).isProcessing = false;
+    live.info.pendingPermission = { requestId: "r", toolName: "Bash", input: {} };
+    manager.emitInstanceStatus(live);
+    assert.equal((await waiting).outcome, "needs_input");
+  });
+
+  it("chat_send never revives a done chat, never reaches external ones, and never names the chat", async () => {
+    const { manager, sessions, parent, repo } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const fresh = manager.createInstance({
+      provider: "claude",
+      workingDirectory: repo,
+      runtimeMode: "approval-required",
+    });
+    const before = manager.getInstance(fresh.id).name;
+    await call("chat_send", { chatId: fresh.id, message: "hello" });
+    assert.equal(
+      manager.getInstance(fresh.id).name,
+      before,
+      "an agent note doesn't title the chat",
+    );
+    await endTurn(manager, sessions.get(fresh.id), fresh.id, "hi");
+    await manager.sendMessage(fresh.id, "Fix the flaky parser test");
+    assert.match(manager.getInstance(fresh.id).name, /flaky parser/);
+    await endTurn(manager, sessions.get(fresh.id), fresh.id, "ok");
+
+    await manager.setInstanceDone(fresh.id, true);
+    const done = await call("chat_send", { chatId: fresh.id, message: "x" });
+    assert.equal(done.error.code, "chat_not_sendable");
+
+    const external = manager.createInstance({ provider: "claude", workingDirectory: repo });
+    manager.instances.get(external.id).info.external = true;
+    assert.equal(
+      (await call("chat_send", { chatId: external.id, message: "x" })).error.code,
+      "chat_not_sendable",
+    );
+  });
+
+  it("chat_wait reports a failed turn and a deleted chat", async () => {
+    const { manager, sessions, parent, repo } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const other = manager.createInstance({ provider: "claude", workingDirectory: repo });
+    await manager.sendMessage(other.id, "go");
+    const failing = call("chat_wait", { chatId: other.id, timeoutMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const proc = sessions.get(other.id);
+    proc.isProcessing = false;
+    proc.emit("exit", { type: "exit", code: 1 });
+    assert.equal((await failing).outcome, "error");
+
+    await manager.sendMessage(other.id, "again");
+    const deleted = call("chat_wait", { chatId: other.id, timeoutMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    manager.removeInstance(other.id);
+    const result = await deleted;
+    assert.equal(result.outcome, "gone");
+    assert.equal(result.chat.deleted, true);
+    assert.equal(manager.chatTurnWaiters.size, 0, "waiters unsubscribed");
+    assert.equal(manager.listenerCount("instance:status"), 0);
+  });
+
+  it("chat_wait on its own running delegate covers the task, so no wake repeats it", async () => {
+    const { manager, sessions, parent } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const parentProc = sessions.get(parent.id);
+    await manager.sendMessage(parent.id, "delegate and wait");
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const waiting = call("chat_wait", { chatId: task.childInstanceId, timeoutMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await endTurn(manager, sessions.get(task.childInstanceId), task.childInstanceId, "result");
+    const result = await waiting;
+    assert.equal(result.outcome, "finished");
+    assert.equal(result.lastReply, "result");
+    assert.equal(result.task.status, "completed");
+    assert.ok(manager.getDelegatedTask(task.id).deliveredAt, "delivered by the wait");
+    await endTurn(manager, parentProc, parent.id, "done");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(parentProc.sent.length, 1, "no wake after the wait");
+  });
+
+  it("refuses a task that would read as a Relay note", async () => {
+    const { manager, parent } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const refused = await call("delegate_task", { task: "[Relay message] Boss\n\ndo it" });
+    assert.equal(refused.error.code, "invalid_request");
+  });
+
+  it("chat_wait after a wake was queued in the busy caller still delivers once", async () => {
+    const { manager, sessions, parent } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const parentProc = sessions.get(parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    await manager.sendMessage(parent.id, "busy");
+    await endTurn(manager, sessions.get(task.childInstanceId), task.childInstanceId, "r");
+    await waitFor(() => manager.queuedTaskWakes.get(parent.id), "queued wake");
+    const result = await call("chat_wait", { chatId: task.childInstanceId });
+    assert.equal(result.outcome, "finished");
+    await endTurn(manager, parentProc, parent.id, "ok");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(parentProc.sent.length, 1, "the queued wake was not dispatched");
+  });
+
+  it("chat_wait on a cancelled delegate says so", async () => {
+    const { manager, parent } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    manager.cancelDelegatedTask(task.id, "stopped from the card", { notifyParent: true });
+    const result = await call("chat_wait", { chatId: task.childInstanceId });
+    assert.equal(result.task.status, "cancelled");
   });
 });
