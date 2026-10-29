@@ -72,12 +72,10 @@ function ProjectLayout() {
     projectId: urlProjectId,
     chatId,
     planSlug,
-    spaceId,
   } = useParams({ strict: false }) as {
     projectId?: string;
     chatId?: string;
     planSlug?: string;
-    spaceId?: string;
   };
   const location = useLocation();
   const { instances } = useWSState();
@@ -88,7 +86,7 @@ function ProjectLayout() {
   const projectId = artifacts.projectSlug ?? urlProjectId ?? artifacts.projectId;
   const dirName = getProjectName(artifacts.directory);
 
-  const isChildView = !!chatId || !!planSlug || !!spaceId;
+  const isChildView = !!chatId || !!planSlug;
 
   // Session stats
   const projectInstances = instances.filter((inst) => instanceMatchesProject(inst, projectId));
@@ -103,29 +101,24 @@ function ProjectLayout() {
   const isPlansTab = pathname.includes("/plans");
   const isTasksTab = pathname.includes("/tasks");
   const isSkillsTab = pathname.includes("/skills");
-  const isSpacesTab = pathname.includes("/spaces") && !spaceId;
   const isChatsTab = pathname.includes("/chats");
   const isSettingsTab = pathname.includes("/settings");
-  const isOverviewTab =
-    !isPlansTab && !isTasksTab && !isSkillsTab && !isSpacesTab && !isChatsTab && !isSettingsTab;
+  const isOverviewTab = !isPlansTab && !isTasksTab && !isSkillsTab && !isChatsTab && !isSettingsTab;
   const activeTab = isPlansTab
     ? "plans"
     : isTasksTab
       ? "tasks"
       : isSkillsTab
         ? "skills"
-        : isSpacesTab
-          ? "spaces"
-          : isChatsTab
-            ? "chats"
-            : isSettingsTab
-              ? "settings"
-              : "overview";
+        : isChatsTab
+          ? "chats"
+          : isSettingsTab
+            ? "settings"
+            : "overview";
 
   const planCount = artifacts.plans.length;
   const taskCount = artifacts.tasks?.length ?? 0;
   const skillCount = artifacts.skills.length;
-  const spaceCount = (artifacts.spaces ?? []).filter((s) => !s.isDefault).length;
 
   const ctxValue = { artifacts };
 
@@ -207,15 +200,6 @@ function ProjectLayout() {
               active={isSkillsTab}
               label="Skills"
               count={skillCount}
-            />
-          )}
-          {spaceCount > 0 && (
-            <NavTab
-              to="/projects/$projectId/spaces"
-              params={{ projectId }}
-              active={isSpacesTab}
-              label="Spaces"
-              count={spaceCount}
             />
           )}
           <NavTab

@@ -31,7 +31,7 @@ describe("toggleAnswerSelection", () => {
 });
 
 describe("getChatBranch", () => {
-  it("prefers the live HEAD over the assigned space branch", () => {
+  it("prefers the live HEAD over the recorded branch", () => {
     expect(
       getChatBranch({ gitBranch: "relay-space/abc", gitInfo: { branch: "fix", isWorktree: true } }),
     ).toBe("fix");
@@ -75,12 +75,6 @@ describe("isChatDone", () => {
         lastMessage: { text: "hi", from: "assistant", timestamp: 1000 },
       }),
     ).toBe(false);
-  });
-
-  it("keeps chats in closed spaces done regardless of activity", () => {
-    expect(isChatDone({ lastActivityAt: 9999 }, "completed")).toBe(true);
-    expect(isChatDone({ lastActivityAt: 9999 }, "archived")).toBe(true);
-    expect(isChatDone({ lastActivityAt: 9999 }, "active")).toBe(false);
   });
 });
 

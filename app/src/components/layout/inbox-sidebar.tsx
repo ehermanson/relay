@@ -1,9 +1,8 @@
 /**
  * InboxSidebar — sidebar v2.
  *
- * One mixed list of standalone chats and named spaces across projects, sorted
- * by activity. Finished chats and closed spaces collapse into a
- * "Done" section; project-level actions move into a "Projects" section at the
+ * One list of chats across projects, sorted by activity. Finished chats
+ * collapse into a "Done" section; project-level actions move into a "Projects" section at the
  * bottom, since there are no project headers to hang them off.
  */
 
@@ -17,10 +16,8 @@ import {
   ChevronDown,
   ChevronRight,
   FolderPlus,
-  GitBranch,
   Inbox,
   Loader2,
-  MessageSquarePlus,
   MoreVertical,
   Plus,
 } from "lucide-react";
@@ -46,7 +43,6 @@ import { Menu } from "../ui/menu";
 import { ProjectAvatar } from "../ui/project-avatar";
 import { Tooltip } from "../ui/tooltip";
 import { InboxItem } from "./inbox-item";
-import { InboxSpaceItem } from "./inbox-space-item";
 import { NewChatMenu } from "./new-chat-menu";
 import { ProjectActionsMenuContent } from "./project-actions-menu";
 import {
@@ -85,38 +81,28 @@ function CappedInboxList({
   entries,
   limit,
   currentId,
-  currentSpaceId,
 }: {
   entries: InboxEntry[];
   limit: number;
   currentId?: string;
-  currentSpaceId?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const visible = useMemo(
-    () => (expanded ? entries : capInboxEntries(entries, limit, currentId, currentSpaceId)),
-    [entries, expanded, limit, currentId, currentSpaceId],
+    () => (expanded ? entries : capInboxEntries(entries, limit, currentId)),
+    [entries, expanded, limit, currentId],
   );
   const hidden = entries.length - visible.length;
 
   return (
     <div className="space-y-0.5">
-      {visible.map((entry) =>
-        entry.kind === "space" ? (
-          <InboxSpaceItem
-            key={entry.id}
-            entry={entry}
-            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
-          />
-        ) : (
-          <InboxItem
-            key={entry.id}
-            entry={entry}
-            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
-            activeChatId={currentId}
-          />
-        ),
-      )}
+      {visible.map((entry) => (
+        <InboxItem
+          key={entry.id}
+          entry={entry}
+          isActive={isInboxEntryCurrent(entry, currentId)}
+          activeChatId={currentId}
+        />
+      ))}
       {hidden > 0 && <ShowAllButton hidden={hidden} onClick={() => setExpanded(true)} />}
     </div>
   );
@@ -142,17 +128,15 @@ function SweepStaleRow({ count, onClick }: { count: number; onClick: () => void 
 }
 
 /**
- * Top-level "New" menu, occupying the header slot that Projects mode gives to
- * Add project. In a flat list there are no project headers to hang creation
- * off, so it becomes the layout's primary action — and Add project moves into
- * the project filter menu, since two plus glyphs side by side were
+ * Top-level "New chat" action, occupying the header slot that Projects mode
+ * gives to Add project. In a flat list there are no project headers to hang
+ * creation off, so it becomes the layout's primary action — and Add project
+ * moves into the project filter menu, since two plus glyphs side by side were
  * indistinguishable.
  *
- * It offers both New chat and New space: spaces have no other discoverable home
- * in the flat inbox layout (the per-project "New Space" lives in the collapsed
- * "Projects" section behind a hover-only affordance). With a project filter
- * applied (or one project registered) the target is unambiguous, so the menu
- * acts on it directly; otherwise each action opens a project picker.
+ * With a project filter applied (or one project registered) the target is
+ * unambiguous, so it creates the chat directly; otherwise it opens a project
+ * picker.
  */
 function NewChatHeaderButton({
   projectOptions,
@@ -173,7 +157,6 @@ function NewChatHeaderButton({
       projectOptions={projectOptions}
       soleTarget={soleTarget}
       onCreate={actions.quickCreate}
-      onCreateSpace={actions.createSpace}
       icon={<Plus size={15} strokeWidth={2.5} />}
       tooltipSide="bottom"
       align="end"
@@ -209,7 +192,6 @@ function ProjectRow({
 }) {
   const actions = useSidebarActions();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
 
   return (
     <div className="group/project flex items-center rounded-lg pl-2.5 pr-1 transition-colors hover:bg-surface-hover">
@@ -225,46 +207,19 @@ function ProjectRow({
       </Link>
 
       <div className="flex shrink-0 items-center gap-0.5">
-        <Menu.Root open={newMenuOpen} onOpenChange={setNewMenuOpen}>
-          <Tooltip content="New" side="top">
-            <Menu.Trigger
-              onClick={(event: React.MouseEvent) => event.stopPropagation()}
-              className="sidebar-menu-trigger flex h-6 w-6 items-center justify-center rounded-md text-muted opacity-0 transition-all group-hover/project:opacity-100 hover:bg-surface-hover hover:text-text"
-            >
-              <Plus size={14} strokeWidth={2.5} />
-            </Menu.Trigger>
-          </Tooltip>
-          <Menu.Content align="start">
-            <Menu.Item
-              className="!items-start"
-              onClick={(event: React.MouseEvent) => {
-                event.stopPropagation();
-                actions.quickCreate(dir);
-              }}
-            >
-              <MessageSquarePlus size={13} strokeWidth={2} className="mt-1 text-muted" />
-              <div>
-                <div>New Chat</div>
-                <div className="text-[0.6875rem] text-muted">Work with an agent on this branch</div>
-              </div>
-            </Menu.Item>
-            <Menu.Item
-              className="!items-start"
-              onClick={(event: React.MouseEvent) => {
-                event.stopPropagation();
-                actions.createSpace(dir);
-              }}
-            >
-              <GitBranch size={13} strokeWidth={2} className="mt-1 text-muted" />
-              <div>
-                <div>New Space</div>
-                <div className="text-[0.6875rem] text-muted">
-                  Start an isolated worktree and merge back later
-                </div>
-              </div>
-            </Menu.Item>
-          </Menu.Content>
-        </Menu.Root>
+        <Tooltip content="New chat" side="top">
+          <button
+            type="button"
+            aria-label="New chat"
+            onClick={(event) => {
+              event.stopPropagation();
+              actions.quickCreate(dir);
+            }}
+            className="sidebar-menu-trigger flex h-6 w-6 items-center justify-center rounded-md text-muted opacity-0 transition-all group-hover/project:opacity-100 hover:bg-surface-hover hover:text-text"
+          >
+            <Plus size={14} strokeWidth={2.5} />
+          </button>
+        </Tooltip>
 
         {menuOpen ? (
           <Menu.Root open={menuOpen} onOpenChange={setMenuOpen}>
@@ -323,7 +278,6 @@ export function InboxSidebar({
     registeredDirs,
     currentChatId,
     currentProjectId,
-    currentSpaceId,
     createNewChat,
     moveDown,
     moveToBottom,
@@ -333,7 +287,7 @@ export function InboxSidebar({
 
   const currentId = currentChatId;
   const currentEntry = [...active, ...done].find((entry) =>
-    isInboxEntryCurrent(entry, currentChatId, currentSpaceId),
+    isInboxEntryCurrent(entry, currentChatId),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -360,11 +314,9 @@ export function InboxSidebar({
     if (!currentEntry) return;
     const container = scrollRef.current;
     if (!container) return;
-    const selector =
-      currentEntry.kind === "space"
-        ? `[data-space-id="${CSS.escape(currentEntry.space.id)}"]`
-        : `[data-chat-id="${CSS.escape(currentEntry.instance.id)}"]`;
-    const el = container.querySelector<HTMLElement>(selector);
+    const el = container.querySelector<HTMLElement>(
+      `[data-chat-id="${CSS.escape(currentEntry.instance.id)}"]`,
+    );
     if (!el) return;
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
     didInitialScrollRef.current = true;
@@ -399,7 +351,6 @@ export function InboxSidebar({
   return (
     <SidebarActionsProvider
       currentProjectId={currentProjectId}
-      currentSpaceId={currentSpaceId}
       projectByDir={projectByDir}
       createNewChat={createNewChat}
     >
@@ -490,7 +441,6 @@ export function InboxSidebar({
                       entries={active}
                       limit={ACTIVE_VISIBLE_LIMIT}
                       currentId={currentId}
-                      currentSpaceId={currentSpaceId}
                     />
                     {staleEntries.length > 0 && (
                       <SweepStaleRow
@@ -504,7 +454,7 @@ export function InboxSidebar({
                     <Check size={18} className="text-muted/40" />
                     <p className="text-[0.75rem] text-muted">Inbox zero</p>
                     <span className="text-[0.6875rem] text-muted/60">
-                      {done.length > 0 ? "All chats and spaces are done" : "No chats or spaces yet"}
+                      {done.length > 0 ? "All chats are done" : "No chats yet"}
                     </span>
                   </div>
                 )}
@@ -532,7 +482,6 @@ export function InboxSidebar({
                         entries={done}
                         limit={DONE_VISIBLE_LIMIT}
                         currentId={currentId}
-                        currentSpaceId={currentSpaceId}
                       />
                     </div>
                   </Collapsible.Content>

@@ -9,7 +9,6 @@ import {
   isProjectScopedPath,
   loginDirForAccount,
   projectAccountIds,
-  projectAccountMismatch,
   projectBelongsToAccount,
   readStoredActiveAccountId,
   resolveActiveAccountId,
@@ -128,35 +127,11 @@ describe("chatAccountMismatch", () => {
   });
 });
 
-describe("projectAccountMismatch", () => {
-  it("is null below two accounts and when the active account is a member", () => {
-    expect(
-      projectAccountMismatch({ accountIds: ["work"] }, "default", [defaultAccount]),
-    ).toBeNull();
-    expect(projectAccountMismatch({ accountIds: ["work"] }, "work", both)).toBeNull();
-    expect(projectAccountMismatch({ accountIds: [] }, "default", both)).toBeNull();
-    expect(projectAccountMismatch({ accountIds: ["default", "work"] }, "work", both)).toBeNull();
-  });
-
-  it("names the first registered owner when the active account is not a member", () => {
-    expect(projectAccountMismatch({ accountIds: ["work"] }, "default", both)).toBe(work);
-    expect(projectAccountMismatch({ accountIds: [] }, "work", both)).toBe(defaultAccount);
-    expect(projectAccountMismatch({ accountIds: ["work", "default"] }, "other", both)).toBe(
-      defaultAccount,
-    );
-  });
-
-  it("falls back to the default account when every owner is gone", () => {
-    expect(projectAccountMismatch({ accountIds: ["removed"] }, "work", both)).toBe(defaultAccount);
-  });
-});
-
 describe("isProjectScopedPath", () => {
-  it("matches chats, spaces and project pages", () => {
+  it("matches chats and project pages", () => {
     expect(isProjectScopedPath("/projects")).toBe(true);
     expect(isProjectScopedPath("/projects/relay")).toBe(true);
     expect(isProjectScopedPath("/projects/relay/chats/abc")).toBe(true);
-    expect(isProjectScopedPath("/projects/relay/spaces/s1/abc")).toBe(true);
     expect(isProjectScopedPath("/projects/relay/settings")).toBe(true);
   });
 

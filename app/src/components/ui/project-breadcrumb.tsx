@@ -1,8 +1,8 @@
 /**
  * Breadcrumb dropdown for navigating between project subpages
- * (Overview, Plans, Tasks, Skills, Spaces, Chats, Settings).
+ * (Overview, Plans, Tasks, Skills, Chats, Settings).
  *
- * Replaces the plain text link in chat/space headers with a dropdown menu,
+ * Replaces the plain text link in chat headers with a dropdown menu,
  * making project subpages accessible from anywhere within a project.
  */
 
@@ -12,7 +12,6 @@ import {
   BookOpen,
   ChevronDown,
   Cog,
-  GitBranch,
   LayoutList,
   ListChecks,
   MessageSquare,
@@ -39,7 +38,6 @@ export function ProjectBreadcrumb({ projectId, label, mobile = false }: ProjectB
   const planCount = ctx?.artifacts.plans.length ?? 0;
   const taskCount = ctx?.artifacts.tasks?.length ?? 0;
   const skillCount = ctx?.artifacts.skills.length ?? 0;
-  const spaceCount = (ctx?.artifacts.spaces ?? []).filter((s) => !s.isDefault).length;
 
   const items: {
     label: string;
@@ -63,13 +61,6 @@ export function ProjectBreadcrumb({ projectId, label, mobile = false }: ProjectB
       icon: Zap,
       to: `/projects/${projectId}/skills`,
       count: skillCount,
-      requireCount: true,
-    },
-    {
-      label: "Spaces",
-      icon: GitBranch,
-      to: `/projects/${projectId}/spaces`,
-      count: spaceCount,
       requireCount: true,
     },
     {

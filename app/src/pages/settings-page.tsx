@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -13,11 +13,10 @@ import {
   fetchProjectMcpServers,
 } from "../lib/api";
 import { useProjectContext } from "../context/project-context";
-import { Input, Select } from "../components/ui/input";
+import { Select } from "../components/ui/input";
 import { McpServerFormFields } from "@/components/settings/mcp-server-form-fields";
 import { getProjectMcpProviders } from "@/lib/mcp-management";
 import { MarkdownEditor } from "../components/ui/markdown-editor";
-import { RadioGroup, RadioGroupField } from "@/components/ui/radio-group";
 import {
   SettingsSection,
   SettingRow,
@@ -121,14 +120,6 @@ function SettingsForm({
           <InstructionsSection
             key={`instructions-${project.customInstructions ?? ""}`}
             project={project}
-            save={save}
-          />
-        </SettingsSectionBoundary>
-        <SettingsSectionBoundary name="Git">
-          <GitSection
-            key={`git-${project.defaultSpaceBranch ?? ""}`}
-            project={project}
-            globalSettings={globalSettings}
             save={save}
           />
         </SettingsSectionBoundary>
@@ -368,93 +359,6 @@ function InstructionsSection({
           </span>
         </div>
       </div>
-    </SettingsSection>
-  );
-}
-
-// ─── Git Section ────────────────────────────────────────────────────────────
-
-function GitSection({
-  project,
-  globalSettings,
-  save,
-}: {
-  project: Project;
-  globalSettings: GlobalSettings;
-  save: ReturnType<typeof useProjectAutoSave>;
-}) {
-  const [branchValue, setBranchValue] = useState(project.defaultSpaceBranch ?? "");
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  // Clear pending debounce on unmount
-  useEffect(() => () => clearTimeout(debounceRef.current), []);
-
-  const cancelPendingDebounce = useCallback(() => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = undefined;
-  }, []);
-
-  const handleBranchChange = useCallback(
-    (value: string) => {
-      setBranchValue(value);
-      clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        save.mutate({ defaultSpaceBranch: value.trim() || null });
-      }, 600);
-    },
-    [save],
-  );
-
-  const handleBranchSourceChange = (value: string) => {
-    save.mutate({ spaceBranchSource: value as "local" | "remote" });
-  };
-
-  const globalBranch = globalSettings.defaultSpaceBranch ?? "main";
-  const globalBranchSource = globalSettings.spaceBranchSource ?? "local";
-
-  return (
-    <SettingsSection title="Git" description="Branch settings for new spaces in this project.">
-      <SettingRow
-        label="Default Space Branch"
-        description="Base branch for new spaces. Falls back to global default if unset."
-        overrideInfo={{
-          isOverridden:
-            project.defaultSpaceBranch != null && project.defaultSpaceBranch !== globalBranch,
-          globalLabel: globalBranch,
-          onReset: () => {
-            cancelPendingDebounce();
-            save.mutate({ defaultSpaceBranch: null });
-          },
-        }}
-      >
-        <Input
-          value={branchValue}
-          onChange={(e) => handleBranchChange(e.target.value)}
-          placeholder={globalBranch}
-          className="w-48"
-        />
-      </SettingRow>
-
-      <SettingRow
-        label="Branch Source"
-        description="Whether to branch from local or remote tracking branches."
-        overrideInfo={{
-          isOverridden:
-            project.spaceBranchSource != null && project.spaceBranchSource !== globalBranchSource,
-          globalLabel: globalBranchSource === "remote" ? "Remote" : "Local",
-          onReset: () => save.mutate({ spaceBranchSource: null }),
-        }}
-      >
-        <RadioGroup
-          value={project.spaceBranchSource ?? globalBranchSource}
-          onValueChange={handleBranchSourceChange}
-          className="flex items-center gap-4"
-          name="p-space-branch-source"
-        >
-          <RadioGroupField value="local" label="Local" />
-          <RadioGroupField value="remote" label="Remote" />
-        </RadioGroup>
-      </SettingRow>
     </SettingsSection>
   );
 }

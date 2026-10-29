@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { GitBranch, Pin } from "lucide-react";
+import { Pin } from "lucide-react";
 import { StatusDot } from "@/components/ui/status-dot";
 import { getInstanceChatRoute } from "@/lib/project-route";
 import {
@@ -12,22 +12,19 @@ import type { InstanceInfo } from "@shared/types";
 
 /**
  * Dense chat row for the mobile project chat list.
- * Row 1: status dot · name (truncated) · time-ago. Row 2 (optional): space
- * branch tag · model. Space chats are tagged so the flat list stays legible.
+ * Row 1: status dot · name (truncated) · time-ago. Row 2 (optional): model.
  */
 export function ChatListRow({
   instance,
   showModel = false,
-  spaceLabel,
 }: {
   instance: InstanceInfo;
   showModel?: boolean;
-  spaceLabel?: string;
 }) {
   const route = getInstanceChatRoute(instance);
   const recencyAt = getChatSortTimestamp(instance);
   const model = instance.stats?.model;
-  const showSecondRow = !!spaceLabel || (showModel && !!model);
+  const showSecondRow = showModel && !!model;
 
   return (
     <Link
@@ -48,13 +45,7 @@ export function ChatListRow({
         </div>
         {showSecondRow && (
           <div className="mt-0.5 flex items-center gap-2 text-[0.625rem] text-muted">
-            {spaceLabel && (
-              <span className="flex min-w-0 items-center gap-1 text-accent/80">
-                <GitBranch size={10} className="shrink-0" />
-                <span className="truncate">{spaceLabel}</span>
-              </span>
-            )}
-            {showModel && model && <span className="shrink-0">{formatModel(model)}</span>}
+            <span className="shrink-0">{formatModel(model)}</span>
           </div>
         )}
       </div>

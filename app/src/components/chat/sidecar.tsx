@@ -154,7 +154,6 @@ const TAB_LABELS: Record<SidecarTab, string> = {
   files: "Files",
   plan: "Plan",
   context: "Context",
-  brief: "Brief",
   review: "Review",
 };
 
@@ -285,7 +284,6 @@ export const Sidecar = memo(
       if (key === "context" && (hasStats || hasProviderContext))
         return (
           <ContextPanel
-            mode="instance"
             stats={stats ?? null}
             items={items ?? []}
             provider={provider}

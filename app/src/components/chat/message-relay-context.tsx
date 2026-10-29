@@ -1,12 +1,6 @@
 import { createContext, useContext } from "react";
 import type { ReactNode } from "react";
 
-export interface RelaySibling {
-  id: string;
-  name: string;
-  status: string;
-}
-
 export interface RelaySourceChat {
   id: string;
   name: string;
@@ -31,9 +25,6 @@ export interface InlineReplyFragment {
 }
 
 interface MessageRelayContextValue {
-  siblings: RelaySibling[];
-  onSendToChat: (targetInstanceId: string, messageText: string) => void;
-  onSendToNewChat: (messageText: string) => void;
   sourceChat?: RelaySourceChat;
   onSendToSourceChat?: (messageText: string) => void;
   allowSpinOff?: boolean;

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, FolderOpen, GitBranch, Globe, MessageSquare } from "lucide-react";
-import { fetchAllSpaces, searchChats, type SearchResultItem } from "@/lib/api";
+import { searchChats, type SearchResultItem } from "@/lib/api";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useProjectsQuery } from "@/hooks/use-projects-query";
 import { projectBelongsToAccount } from "@/lib/account-scope";
@@ -134,18 +134,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const showingRecents = debouncedQuery.trim().length === 0;
   const showingPartial = !showingRecents && results.some((r) => r.partial);
 
-  // Spaces per project — shares the sidebar's ["spaces", projectId] cache,
-  // fetched only while the dialog is open
-  const spaceQueries = useQueries({
-    queries: projects.map((p) => ({
-      queryKey: ["spaces", p.id],
-      queryFn: () => fetchAllSpaces(p.id),
-      enabled: open,
-      staleTime: 60_000,
-    })),
-  });
-
-  // Projects and spaces match client-side on the live query (no debounce needed)
+  // Projects match client-side on the live query (no debounce needed)
   const localQuery = query.trim().toLowerCase();
   const projectMatches =
     localQuery.length < 2
@@ -154,22 +143,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
           .filter((p) => !filterProjectId || p.id === filterProjectId)
           .filter((p) => p.name.toLowerCase().includes(localQuery))
           .slice(0, 3);
-  const spaceMatches =
-    localQuery.length < 2
-      ? []
-      : projects
-          .flatMap((p, i) =>
-            (filterProjectId && p.id !== filterProjectId ? [] : (spaceQueries[i]?.data ?? []))
-              .filter((s) => !s.isDefault && s.status === "active")
-              .filter(
-                (s) =>
-                  s.name.toLowerCase().includes(localQuery) ||
-                  s.gitBranch?.toLowerCase().includes(localQuery),
-              )
-              .map((s) => ({ space: s, project: p })),
-          )
-          .slice(0, 3);
-  const hasLocalMatches = projectMatches.length > 0 || spaceMatches.length > 0;
+  const hasLocalMatches = projectMatches.length > 0;
 
   const handleSelect = useCallback(
     (result: SearchResultItem) => {
@@ -180,26 +154,14 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
         q: query.trim() ? query : undefined,
         match: result.snippet ?? undefined,
       };
-      if (result.spaceId) {
-        navigate({
-          to: "/projects/$projectId/spaces/$spaceId/$chatId",
-          params: {
-            projectId: result.projectId,
-            spaceId: result.spaceId,
-            chatId: result.instanceId,
-          },
-          search,
-        });
-      } else {
-        navigate({
-          to: "/projects/$projectId/chats/$chatId",
-          params: {
-            projectId: result.projectId,
-            chatId: result.instanceId,
-          },
-          search,
-        });
-      }
+      navigate({
+        to: "/projects/$projectId/chats/$chatId",
+        params: {
+          projectId: result.projectId,
+          chatId: result.instanceId,
+        },
+        search,
+      });
     },
     [navigate, onOpenChange, query],
   );
@@ -290,40 +252,6 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                       <span className="truncate text-[0.8125rem] font-medium text-text-bright">
                         {p.name}
                       </span>
-                    </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-            {spaceMatches.length > 0 && (
-              <CommandGroup heading="Spaces">
-                {spaceMatches.map(({ space, project }) => (
-                  <CommandItem
-                    key={`space-${space.id}`}
-                    value={`space-${space.id}`}
-                    onSelect={() => {
-                      onOpenChange(false);
-                      navigate({
-                        to: "/projects/$projectId/spaces/$spaceId",
-                        params: { projectId: project.id, spaceId: space.id },
-                      });
-                    }}
-                    className="!py-2 !px-3"
-                  >
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                      <GitBranch size={13} className="shrink-0 text-muted" />
-                      <span className="truncate text-[0.8125rem] font-medium text-text-bright">
-                        {space.name}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-0.5 text-[0.625rem] text-muted/70">
-                        <FolderOpen size={10} />
-                        {project.name}
-                      </span>
-                      {space.gitBranch && (
-                        <span className="truncate text-[0.625rem] text-muted/70">
-                          {space.gitBranch}
-                        </span>
-                      )}
                     </div>
                   </CommandItem>
                 ))}

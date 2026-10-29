@@ -6,7 +6,6 @@ import { useWSState, useWSMethods } from "../context/websocket-context";
 import { getInstanceProjectRouteId } from "../lib/project-route";
 import { Tooltip } from "../components/ui/tooltip";
 import { EmptyProjectActions } from "../components/empty-project-actions";
-import { CreateSpaceDialog, useCreateSpaceDialog } from "../components/spaces/create-space-dialog";
 import {
   formatTimeAgo,
   formatTokens,
@@ -69,7 +68,6 @@ function ProjectCard({
   artifactsLoading,
   chatsLoading,
   onNewSession,
-  onCreateSpace,
 }: {
   directory: string;
   instances: InstanceInfo[];
@@ -79,7 +77,6 @@ function ProjectCard({
   artifactsLoading?: boolean;
   chatsLoading?: boolean;
   onNewSession: (dir: string) => void;
-  onCreateSpace: (dir: string) => void;
 }) {
   const dirName = directory.split("/").pop() || directory;
   const activeCount = instances.filter(
@@ -166,10 +163,7 @@ function ProjectCard({
             e.stopPropagation();
           }}
         >
-          <EmptyProjectActions
-            onNewChat={() => onNewSession(directory)}
-            onNewSpace={() => onCreateSpace(directory)}
-          />
+          <EmptyProjectActions onNewChat={() => onNewSession(directory)} />
         </div>
       )}
 
@@ -261,15 +255,12 @@ export function Dashboard() {
     projects,
     projectsLoading,
     chatsLoadingByProjectId,
-    projectSpaces,
-    spacesLoadingByDir,
   } = useProjectNavigationModel();
   const { accountIdParam } = useActiveAccount();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const navigate = useNavigate();
   const pendingCreate = useRef(false);
   const prevInstanceIds = useRef(new Set<string>());
-  const spaceDialog = useCreateSpaceDialog();
 
   // Fetch project icons
   const { data: projectIcons = {} } = useQuery({
@@ -299,10 +290,6 @@ export function Dashboard() {
     pendingCreate.current = true;
     trackInstanceCreate(workingDirectory);
     send({ type: "create_instance", workingDirectory, accountId: accountIdParam });
-  };
-
-  const handleCreateSpace = (dir: string) => {
-    spaceDialog.open(dir);
   };
 
   // Fetch artifacts for each project (for stats)
@@ -360,7 +347,6 @@ export function Dashboard() {
         projectId:
           project?.id ?? (groupInstances[0] ? getInstanceProjectRouteId(groupInstances[0]) : dir),
         iconPath: projectIcons[dir],
-        spaces: projectSpaces[dir] ?? [],
       };
     });
     return (
@@ -369,10 +355,7 @@ export function Dashboard() {
         // Placeholders only: with nothing cached, "Loading…" is right until
         // both the summaries and the WS instance list have landed.
         loading={
-          isSyncing ||
-          projectsLoading ||
-          Object.values(chatsLoadingByProjectId).some(Boolean) ||
-          Object.values(spacesLoadingByDir).some(Boolean)
+          isSyncing || projectsLoading || Object.values(chatsLoadingByProjectId).some(Boolean)
         }
         onNewChat={handleNewSession}
       />
@@ -422,7 +405,6 @@ export function Dashboard() {
                     artifactsLoading={artifactsLoadingByDir.get(dir)}
                     chatsLoading={project ? chatsLoadingByProjectId[project.id] : false}
                     onNewSession={handleNewSession}
-                    onCreateSpace={handleCreateSpace}
                   />
                 );
               })}
@@ -464,15 +446,6 @@ export function Dashboard() {
           )}
         </div>
       </div>
-
-      <CreateSpaceDialog
-        dir={spaceDialog.dir}
-        projectName={
-          spaceDialog.dir ? (projectByDir.get(spaceDialog.dir)?.name ?? spaceDialog.dir) : ""
-        }
-        projectId={spaceDialog.dir ? projectByDir.get(spaceDialog.dir)?.id : undefined}
-        onOpenChange={(open) => !open && spaceDialog.close()}
-      />
     </div>
   );
 }

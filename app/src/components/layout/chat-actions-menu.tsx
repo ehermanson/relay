@@ -13,19 +13,16 @@ import { Menu } from "@/components/ui/menu";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { useSidebarLayout } from "@/hooks/use-global-settings";
 import { isChatDone } from "@/lib/utils";
-import type { InstanceInfo, SpaceInfo } from "@shared/types";
+import type { InstanceInfo } from "@shared/types";
 
 export function ChatActionsMenuContent({
   instance,
-  spaceStatus,
   activeChatId,
   onRename,
   side,
   align,
 }: {
   instance: InstanceInfo;
-  /** Chats in a closed space are permanently done — see `isChatDone`. */
-  spaceStatus?: SpaceInfo["status"];
   /** Currently open chat — used to offer "Open in split view". */
   activeChatId?: string;
   onRename: () => void;
@@ -35,7 +32,7 @@ export function ChatActionsMenuContent({
 }) {
   const navigate = useNavigate({ from: "/projects/$projectId/chats/$chatId" });
   const actions = useSidebarActions();
-  const done = isChatDone(instance, spaceStatus);
+  const done = isChatDone(instance);
   // Done is an inbox concept: Projects mode has no Done section, so the item
   // would take effect with no visible response there. Hide it instead.
   const showMarkDone = useSidebarLayout() === "inbox";

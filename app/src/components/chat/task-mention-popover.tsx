@@ -129,7 +129,7 @@ interface PopoverState {
 
 export function useTaskMentionPopover(
   containerRef: React.RefObject<HTMLElement | null>,
-  options: { projectId?: string; spaceId?: string; tasks: Task[] | null },
+  options: { projectId?: string; tasks: Task[] | null },
 ) {
   const [popoverState, setPopoverState] = useState<PopoverState | null>(null);
 
@@ -145,7 +145,7 @@ export function useTaskMentionPopover(
         return;
       }
       if (!options.projectId) return;
-      void fetchTask(options.projectId, taskId, { spaceId: options.spaceId })
+      void fetchTask(options.projectId, taskId)
         .then((resolved) => {
           if (resolved) setPopoverState({ task: resolved, anchor });
         })
@@ -153,7 +153,7 @@ export function useTaskMentionPopover(
           // Keep the mention usable when the task was removed or its file is temporarily invalid.
         });
     },
-    [options.projectId, options.spaceId, options.tasks],
+    [options.projectId, options.tasks],
   );
 
   useEffect(() => {

@@ -34,22 +34,6 @@ export function homeActivity(instances: readonly InstanceInfo[]): HomeActivity {
   };
 }
 
-export function homeEntryInstances(entry: InboxEntry): readonly InstanceInfo[] {
-  return entry.kind === "space" ? entry.instances : [entry.instance];
-}
-
-/** The chat a Home row previews: the destination when known, else the most recent member. */
-export function homeEntryChat(
-  entry: InboxEntry,
-  destinationChatId?: string,
-): InstanceInfo | undefined {
-  if (entry.kind === "chat") return entry.instance;
-  return (
-    entry.instances.find((instance) => instance.id === destinationChatId) ??
-    [...entry.instances].sort((a, b) => getChatSortTimestamp(b) - getChatSortTimestamp(a))[0]
-  );
-}
-
 const byRecency = (a: HomeEntry, b: HomeEntry) =>
   b.recencyAt - a.recencyAt || a.id.localeCompare(b.id);
 
@@ -72,9 +56,8 @@ export function buildMobileHome(groups: readonly InboxSourceGroup[]) {
   const needsInput: HomeEntry[] = [];
   const recent: HomeEntry[] = [];
   for (const entry of buildInboxEntries(groups)) {
-    if (entry.done || (entry.kind === "space" && entry.instances.length === 0)) continue;
-    // Entry recency wins: for a space it also counts the space's own activity.
-    const home: HomeEntry = { ...homeActivity(homeEntryInstances(entry)), ...entry };
+    if (entry.done) continue;
+    const home: HomeEntry = { ...homeActivity([entry.instance]), ...entry };
     (home.attention > 0 ? needsInput : recent).push(home);
   }
   needsInput.sort(byRecency);

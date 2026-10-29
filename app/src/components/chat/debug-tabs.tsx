@@ -1,10 +1,10 @@
 /**
- * Shared debug tab bar + data panes for both chat and space debug drawers.
+ * Shared debug tab bar + data panes for the chat debug drawer.
  *
  * Renders: Provider | Session | Context | Raw | Processed | Instance
  * with a tree/raw toggle and per-tab descriptions.
  *
- * Accepts optional extra tabs (e.g. "Space") via the `extraTabs` prop.
+ * Accepts optional extra tabs via the `extraTabs` prop.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -31,7 +31,7 @@ export interface DebugTabsProps {
   rawHistory?: HistoryEntry[] | null;
   isProcessing?: boolean;
   providerGlobalState?: ProviderGlobalState;
-  /** Extra tabs prepended before the chat data tabs (e.g. "Space"). */
+  /** Extra tabs prepended before the chat data tabs. */
   extraTabs?: ExtraTab[];
   /** Max height for data panes. */
   maxHeight?: string;

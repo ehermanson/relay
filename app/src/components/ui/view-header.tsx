@@ -1,5 +1,5 @@
 /**
- * Shared header primitives for chat and space views.
+ * Shared header primitives for chat views.
  * Keeps token badge and layout consistent.
  */
 
@@ -80,7 +80,7 @@ export function ViewHeaderTitle({ children }: ViewHeaderTitleProps) {
   return <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>;
 }
 
-// ── Mobile header (shared layout for chat + space views) ─────────────
+// ── Mobile header (shared layout for chat views) ─────────────────────
 
 interface MobileViewHeaderProps {
   /** Primary title shown on the top line. */

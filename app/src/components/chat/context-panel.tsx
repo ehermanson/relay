@@ -2,23 +2,17 @@ import { memo, useMemo } from "react";
 import { Tooltip } from "../ui/tooltip";
 import { Popover } from "../ui/popover";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { useActiveAccount } from "@/hooks/use-active-account";
 import type { ChatItem } from "@/hooks/use-instance-messages";
-import { stateKeyFor } from "@/lib/account-scope";
-
-import { useProviderRuntimeStore } from "@/stores/provider-runtime-store";
 import {
   formatTokens,
   formatModel,
   formatTimestamp,
   getContextWindowUsage,
   getDisplaySessionStats,
-  instanceStatusVariant,
   rateLimitColorClass,
 } from "../../lib/utils";
 import type {
   SessionStats,
-  InstanceInfo,
   ProviderStatusSummary,
   ProviderGlobalState,
   ProviderKind,
@@ -213,11 +207,10 @@ function ContextWindowBar({
 }
 
 // =============================================================================
-// Context Panel — unified for instance and space views
+// Context Panel (chat sidecar)
 // =============================================================================
 
-interface InstanceContextProps {
-  mode: "instance";
+interface ContextPanelProps {
   stats: SessionStats | null;
   items: ChatItem[];
   provider?: ProviderKind;
@@ -227,24 +220,8 @@ interface InstanceContextProps {
   lastActivityAt: number;
 }
 
-interface SpaceContextProps {
-  mode: "space";
-  stats: SessionStats | null;
-  instances: InstanceInfo[];
-  branch: string | null;
-  status: string;
-  activeCount: number;
-  stoppedCount: number;
-  createdAt: number;
-}
-
-export type ContextPanelProps = InstanceContextProps | SpaceContextProps;
-
 export const ContextPanel = memo(function ContextPanel(props: ContextPanelProps) {
-  if (props.mode === "instance") {
-    return <InstanceContext {...props} />;
-  }
-  return <SpaceContext {...props} />;
+  return <InstanceContext {...props} />;
 });
 
 // =============================================================================
@@ -259,7 +236,7 @@ function InstanceContext({
   providerGlobalState,
   createdAt,
   lastActivityAt,
-}: InstanceContextProps) {
+}: ContextPanelProps) {
   const safeStats: SessionStats = stats ?? {
     inputTokens: 0,
     outputTokens: 0,
@@ -384,7 +361,7 @@ function InstanceContext({
 }
 
 // =============================================================================
-// Shared: Provider status block (reused by instance + space context)
+// Shared: Provider status block
 // =============================================================================
 
 function ProviderStatusBlock({
@@ -502,109 +479,6 @@ function ProviderStatusBlock({
           )}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-// =============================================================================
-// Space context (space sidebar)
-// =============================================================================
-
-function SpaceContext({
-  stats,
-  instances,
-  branch,
-  status,
-  activeCount,
-  stoppedCount,
-  createdAt,
-}: SpaceContextProps) {
-  const totalTokens = stats
-    ? stats.inputTokens + stats.outputTokens + stats.cacheCreationTokens + stats.cacheReadTokens
-    : 0;
-  const segments = stats ? computeSegments(stats) : [];
-
-  // Collect unique providers used in this space. Provider state is per login;
-  // the space view shows the active account's state for each provider.
-  const providerGlobalStates = useProviderRuntimeStore((s) => s.providerGlobalState);
-  const account = useActiveAccount();
-  const stateFor = (p: ProviderKind): ProviderGlobalState | undefined => {
-    return providerGlobalStates[stateKeyFor(p, account.loginDirFor(p))];
-  };
-  const uniqueProviders = useMemo(() => {
-    const seen = new Set<string>();
-    for (const inst of instances) {
-      if (inst.provider) seen.add(inst.provider);
-    }
-    return Array.from(seen);
-  }, [instances]);
-
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="px-3.5 py-2.5">
-        <div className="sidecar-stats-grid grid gap-x-4 gap-y-3">
-          <StatRow label="Branch" value={branch ?? "—"} />
-          <StatRow label="Status" value={status} />
-          <StatRow label="Chats" value={instances.length} />
-          {activeCount > 0 && <StatRow label="Active" value={activeCount} />}
-          {stoppedCount > 0 && <StatRow label="Ended" value={stoppedCount} />}
-          {stats && (
-            <>
-              <div className="sidecar-stats-divider border-t border-border/30" />
-              <StatRow label="Total Tokens" value={formatTokens(totalTokens)} />
-              <StatRow label="Input Tokens" value={formatTokens(stats.inputTokens)} />
-              <StatRow label="Output Tokens" value={formatTokens(stats.outputTokens)} />
-              <StatRow
-                label="Cache Tokens (read/write)"
-                value={`${formatTokens(stats.cacheReadTokens)} / ${formatTokens(stats.cacheCreationTokens)}`}
-              />
-            </>
-          )}
-          <div className="sidecar-stats-divider border-t border-border/30" />
-          <StatRow label="Created" value={formatTimestamp(createdAt)} />
-        </div>
-
-        <TokenBreakdownBar segments={segments} />
-      </div>
-
-      {/* Provider status — one block per provider used in the space */}
-      {uniqueProviders.length > 0 && (
-        <div className="border-t border-border/30 px-3.5 py-2.5">
-          <div className="mb-1.5 text-[0.6875rem] text-muted">Provider Status</div>
-          <div className="flex flex-col gap-3">
-            {uniqueProviders.map((p) => (
-              <ProviderStatusBlock
-                key={p}
-                provider={p}
-                globalState={stateFor(p as ProviderKind)}
-                mcpContext="provider"
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Per-chat breakdown */}
-      {instances.length > 0 && (
-        <div className="border-t border-border/30">
-          <div className="px-3.5 py-2.5 text-[0.6875rem] text-muted">Per-chat</div>
-          <div className="flex flex-col gap-0.5 px-3.5 pb-3">
-            {instances.map((inst) => (
-              <div key={inst.id} className="flex items-center gap-2 py-1">
-                <StatusDot variant={instanceStatusVariant(inst.status)} />
-                <span className="min-w-0 flex-1 truncate text-[0.8125rem] text-text">
-                  {inst.name}
-                </span>
-                {inst.stats && (
-                  <span className="shrink-0 text-[0.6875rem] text-muted/50">
-                    {formatTokens(getDisplaySessionStats(inst.provider, inst.stats).totalTokens)}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

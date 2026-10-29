@@ -1,7 +1,7 @@
 /**
  * Floating-card overlay used to host the mobile sidecar/sidebar on small
  * screens. Owns the backdrop, positioning, and dismissal (backdrop tap or
- * swipe-right) so instance and space views share the same presentation.
+ * swipe-right) so every chat view shares the same presentation.
  *
  * Parents conditionally mount this on open, so the drawer manages its own
  * enter/exit animation internally: it mounts closed, opens on the next

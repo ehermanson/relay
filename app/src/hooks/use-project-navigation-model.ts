@@ -7,8 +7,6 @@ import { useProjectChatSummaries } from "./use-project-chat-summaries";
 import { useProjectOrder } from "../stores/project-order-store";
 import { useProjectOrderHydration } from "./use-project-order-hydration";
 import { useProjectsQuery } from "./use-projects-query";
-import { useProjectSpaces } from "./use-project-spaces";
-import { getChatRecencyTimestamp } from "@/lib/utils";
 import type { InstanceInfo, Project } from "@shared/types";
 
 /**
@@ -28,7 +26,6 @@ export function useProjectNavigationModel() {
         projectBelongsToAccount(project, account.activeId, account.isMulti),
       )
     : allProjects;
-  const { spacesByDir: projectSpaces, spacesLoadingByDir } = useProjectSpaces(projects);
   const { chatsByProjectId, chatsLoadingByProjectId } = useProjectChatSummaries(projects);
   const projectOrder = useProjectOrder();
   const { syncVisibleDirs } = projectOrder;
@@ -61,18 +58,6 @@ export function useProjectNavigationModel() {
   const groupDirs = groups.map(([dir]) => dir);
   const groupDirsKey = groupDirs.join("\0");
 
-  const latestChatIdBySpace: Record<string, string> = {};
-  const latestActivityBySpace = new Map<string, number>();
-  for (const instance of mergedInstances.values()) {
-    if (!instance.spaceId) continue;
-    const activityAt = getChatRecencyTimestamp(instance);
-    const previous = latestActivityBySpace.get(instance.spaceId) ?? Number.NEGATIVE_INFINITY;
-    if (activityAt >= previous) {
-      latestActivityBySpace.set(instance.spaceId, activityAt);
-      latestChatIdBySpace[instance.spaceId] = instance.id;
-    }
-  }
-
   useEffect(() => {
     syncVisibleDirs(groupDirs);
   }, [groupDirs, groupDirsKey, syncVisibleDirs]);
@@ -85,11 +70,8 @@ export function useProjectNavigationModel() {
 
   return {
     chatsLoadingByProjectId,
-    spacesLoadingByDir,
     groups,
-    latestChatIdBySpace,
     projectByDir,
-    projectSpaces,
     projects,
     projectsLoading,
     registeredDirs,

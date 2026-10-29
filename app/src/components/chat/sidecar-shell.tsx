@@ -19,7 +19,7 @@ interface SidecarShellProps {
 }
 
 /**
- * Shared chrome for the chat sidecar and space sidebar: outer container,
+ * Shared chrome for the chat sidecar: outer container,
  * tab header, tab switching, and content slot. Callers build the tab list
  * and render content per active tab key.
  */

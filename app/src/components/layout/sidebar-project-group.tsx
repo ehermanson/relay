@@ -4,19 +4,11 @@
 
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import {
-  ChevronDown,
-  ChevronRight,
-  GitBranch,
-  MessageSquarePlus,
-  MoreVertical,
-  Plus,
-} from "lucide-react";
-import type { InstanceInfo, Project, SpaceInfo } from "@shared/types";
+import { ChevronDown, ChevronRight, MoreVertical, Plus } from "lucide-react";
+import type { InstanceInfo, Project } from "@shared/types";
 import { getInstanceProjectRouteId, getProjectName } from "../../lib/project-route";
 import { getChatRecencyTimestamp } from "@/lib/utils";
 import { isAttachedReviewInstance } from "@/lib/review-session";
-import { isSpaceOwnedInstance } from "../../lib/space-membership";
 import { useSidebarActions } from "../../context/sidebar-actions-context";
 import { EmptyProjectActions } from "../empty-project-actions";
 import { Button } from "../ui/button";
@@ -25,7 +17,6 @@ import { Menu } from "../ui/menu";
 import { Tooltip } from "../ui/tooltip";
 import { ProjectActionsMenuContent } from "./project-actions-menu";
 import { SidebarItem } from "./sidebar-item";
-import { SidebarSpaceGroup } from "./sidebar-space-group";
 
 const MAX_SIDEBAR_SESSIONS = 10;
 // Stopped chats idle longer than this collapse into "+N more", except the
@@ -57,9 +48,6 @@ interface SidebarProjectGroupProps {
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   onMoveToBottom?: () => void;
-  spaces?: SpaceInfo[];
-  latestChatIdBySpace?: Record<string, string>;
-  activeSpaceId?: string;
   loading?: boolean;
 }
 
@@ -78,15 +66,11 @@ export function SidebarProjectGroup({
   onMoveUp,
   onMoveDown,
   onMoveToBottom,
-  spaces,
-  latestChatIdBySpace,
-  activeSpaceId,
   loading,
 }: SidebarProjectGroupProps) {
   const navigate = useNavigate();
   const actions = useSidebarActions();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [iconHovered, setIconHovered] = useState(false);
   const [imgError, setImgError] = useState(false);
 
@@ -107,9 +91,7 @@ export function SidebarProjectGroup({
     name: project?.name ?? dirName,
     directory: dir,
   };
-  const mainInstances = groupInstances.filter(
-    (instance) => !isSpaceOwnedInstance(instance, spaces) && !isAttachedReviewInstance(instance),
-  );
+  const mainInstances = groupInstances.filter((instance) => !isAttachedReviewInstance(instance));
 
   const childIds = new Set<string>();
   const parentChildren = new Map<string, InstanceInfo[]>();
@@ -230,50 +212,19 @@ export function SidebarProjectGroup({
           </Collapsible.Trigger>
 
           <div className="flex shrink-0 items-center gap-1">
-            <Menu.Root open={newMenuOpen} onOpenChange={setNewMenuOpen}>
-              <Tooltip content="New" side="top">
-                <Menu.Trigger
-                  onClick={(event: React.MouseEvent) => {
-                    event.stopPropagation();
-                  }}
-                  className="sidebar-menu-trigger flex h-7 w-7 items-center justify-center rounded-md text-muted opacity-0 transition-all group-hover/project:opacity-100 hover:bg-surface-hover hover:text-text"
-                >
-                  <Plus size={15} strokeWidth={2.5} />
-                </Menu.Trigger>
-              </Tooltip>
-              <Menu.Content align="start">
-                <Menu.Item
-                  className="!items-start"
-                  onClick={(event: React.MouseEvent) => {
-                    event.stopPropagation();
-                    actions.quickCreate(dir);
-                  }}
-                >
-                  <MessageSquarePlus size={13} strokeWidth={2} className="mt-1 text-muted" />
-                  <div>
-                    <div>New Chat</div>
-                    <div className="text-[0.6875rem] text-muted">
-                      Work with an agent on this branch
-                    </div>
-                  </div>
-                </Menu.Item>
-                <Menu.Item
-                  className="!items-start"
-                  onClick={(event: React.MouseEvent) => {
-                    event.stopPropagation();
-                    actions.createSpace(dir);
-                  }}
-                >
-                  <GitBranch size={13} strokeWidth={2} className="mt-1 text-muted" />
-                  <div>
-                    <div>New Space</div>
-                    <div className="text-[0.6875rem] text-muted">
-                      Start an isolated worktree and merge back later
-                    </div>
-                  </div>
-                </Menu.Item>
-              </Menu.Content>
-            </Menu.Root>
+            <Tooltip content="New chat" side="top">
+              <button
+                type="button"
+                aria-label="New chat"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  actions.quickCreate(dir);
+                }}
+                className="sidebar-menu-trigger flex h-7 w-7 items-center justify-center rounded-md text-muted opacity-0 transition-all group-hover/project:opacity-100 hover:bg-surface-hover hover:text-text"
+              >
+                <Plus size={15} strokeWidth={2.5} />
+              </button>
+            </Tooltip>
 
             {menuOpen ? (
               <Menu.Root open={menuOpen} onOpenChange={setMenuOpen}>
@@ -316,22 +267,6 @@ export function SidebarProjectGroup({
 
         <Collapsible.Content>
           <div className="px-2">
-            {/* Active spaces */}
-            {spaces &&
-              spaces.filter((s) => !s.isDefault && s.status === "active").length > 0 &&
-              spaces
-                .filter((s) => !s.isDefault && s.status === "active")
-                .map((space) => (
-                  <SidebarSpaceGroup
-                    key={space.id}
-                    space={space}
-                    projectId={routeProjectId}
-                    latestChatId={latestChatIdBySpace?.[space.id]}
-                    isActive={activeSpaceId === space.id}
-                    chats={groupInstances.filter((inst) => inst.spaceId === space.id)}
-                  />
-                ))}
-
             {/* Chats */}
             {visible.map(renderSessionItem)}
 
@@ -347,8 +282,6 @@ export function SidebarProjectGroup({
             )}
 
             {visible.length === 0 &&
-              (!spaces ||
-                spaces.filter((s) => !s.isDefault && s.status === "active").length === 0) &&
               (loading ? (
                 <div className="space-y-1.5 px-2 py-1">
                   <div className="h-7 w-full animate-pulse rounded-md bg-surface-hover/60" />
@@ -356,11 +289,7 @@ export function SidebarProjectGroup({
                 </div>
               ) : (
                 <div className="px-2 py-1">
-                  <EmptyProjectActions
-                    size="compact"
-                    onNewChat={() => actions.quickCreate(dir)}
-                    onNewSpace={() => actions.createSpace(dir)}
-                  />
+                  <EmptyProjectActions size="compact" onNewChat={() => actions.quickCreate(dir)} />
                 </div>
               ))}
           </div>

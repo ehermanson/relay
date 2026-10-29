@@ -12,13 +12,7 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { Spinner } from "../ui/spinner";
 import { Tooltip } from "../ui/tooltip";
 
-const GENERATED_PATTERNS = [
-  /package-lock\.json$/,
-  /yarn\.lock$/,
-  /pnpm-lock\.yaml$/,
-  /\.lock$/,
-  /\.relay\/space-context\.md$/,
-];
+const GENERATED_PATTERNS = [/package-lock\.json$/, /yarn\.lock$/, /pnpm-lock\.yaml$/, /\.lock$/];
 
 function isGenerated(path: string): boolean {
   return GENERATED_PATTERNS.some((re) => re.test(path));
@@ -149,7 +143,7 @@ export function DiffDrawer({
   }, [allFileDiffs, knownRelPaths]);
 
   // When scoped to "all", show tracked + other; when "chat", tracked only.
-  // If knownFiles isn't available (e.g. space diff), "chat" scope has no meaning — show all.
+  // If knownFiles isn't available, "chat" scope has no meaning — show all.
   const hasScope = !!knownRelPaths;
   const visibleFiles = diffScope === "all" || !hasScope ? [...tracked, ...other] : tracked;
   const showOtherSection = diffScope === "all" && other.length > 0 && hasScope;

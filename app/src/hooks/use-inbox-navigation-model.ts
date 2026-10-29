@@ -1,11 +1,11 @@
 /**
- * Groups the project navigation model into one recency-sorted inbox of
- * standalone chats and named spaces across every project.
+ * Flattens the project navigation model into one recency-sorted inbox of chats
+ * across every project.
  *
  * Deliberately reuses `useSidebarNavigationController` rather than fetching
- * anything of its own: the merged REST-summaries + live-WS instance set, the
- * space lists, and the project icons are already assembled there, so both
- * sidebar layouts render from exactly the same data. The rules themselves live
+ * anything of its own: the merged REST-summaries + live-WS instance set and the
+ * project icons are already assembled there, so both sidebar layouts render
+ * from exactly the same data. The rules themselves live
  * in `@/lib/inbox` so they can be tested without mounting the sidebar.
  */
 

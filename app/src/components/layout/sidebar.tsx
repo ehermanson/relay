@@ -15,7 +15,6 @@ export function Sidebar({
 }: { onCollapse?: () => void; onSearchOpen?: () => void; showLogo?: boolean } = {}) {
   const { isSyncing } = useWSState();
   const {
-    latestChatIdBySpace,
     moveDown,
     moveToBottom,
     moveToTop,
@@ -27,7 +26,6 @@ export function Sidebar({
     toggleCollapsed: toggleDir,
     currentChatId,
     currentProjectId,
-    currentSpaceId,
     projectEntries,
     createNewChat,
   } = useSidebarNavigationController();
@@ -56,7 +54,6 @@ export function Sidebar({
   return (
     <SidebarActionsProvider
       currentProjectId={currentProjectId}
-      currentSpaceId={currentSpaceId}
       projectByDir={projectByDir}
       createNewChat={createNewChat}
     >
@@ -113,9 +110,6 @@ export function Sidebar({
                     )
                   }
                   onMoveToBottom={() => moveToBottom(entry.dir)}
-                  spaces={entry.spaces}
-                  latestChatIdBySpace={latestChatIdBySpace}
-                  activeSpaceId={currentSpaceId}
                   loading={entry.loading}
                 />
               ))}

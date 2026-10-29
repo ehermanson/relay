@@ -25,7 +25,6 @@ describe("repo status subscription store", () => {
 
   it("keys targets by kind and id", () => {
     expect(repoStatusTargetKey(target)).toBe("instance:chat-1");
-    expect(repoStatusTargetKey({ kind: "space", spaceId: "s" })).toBe("space:s");
     expect(repoStatusTargetKey({ kind: "project", projectId: "p" })).toBe("project:p");
   });
 
@@ -50,6 +49,6 @@ describe("repo status subscription store", () => {
 
   it("ignores status for targets nobody holds", () => {
     // Must not throw or create state for an unheld target.
-    applyRepoStatusMessage({ kind: "space", spaceId: "gone" }, null);
+    applyRepoStatusMessage({ kind: "instance", instanceId: "gone" }, null);
   });
 });

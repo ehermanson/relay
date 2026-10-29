@@ -1,4 +1,4 @@
-import type { SpaceInfo, Task, TaskStatus, TasksChangedMessage } from "@shared/types";
+import type { Task, TaskStatus, TasksChangedMessage } from "@shared/types";
 
 export type TaskListView = "unfinished" | "history";
 
@@ -24,30 +24,14 @@ export function hasRevisionedTaskShape(tasks: Task[] | null | undefined): tasks 
   );
 }
 
-export function taskScopeKey(spaceId?: string | null): string {
-  return spaceId || "main";
+export function taskQueryKey(projectId: string, view: TaskListView = "unfinished") {
+  return ["tasks", projectId, view] as const;
 }
 
-export function normalizeTaskSpaceId(
-  spaceId: string | null | undefined,
-  spaces: Pick<SpaceInfo, "id" | "isDefault">[] | null | undefined,
-): string | undefined {
-  if (!spaceId) return undefined;
-  return spaces?.some((space) => space.id === spaceId && space.isDefault) ? undefined : spaceId;
-}
-
-export function taskQueryKey(
-  projectId: string,
-  spaceId?: string,
-  view: TaskListView = "unfinished",
-) {
-  return ["tasks", projectId, taskScopeKey(spaceId), view] as const;
-}
-
+/** Tasks are read from the Project's main checkout; changes elsewhere don't apply. */
 export function taskChangeMatchesScope(
   message: Pick<TasksChangedMessage, "projectId" | "spaceId">,
   projectId: string,
-  spaceId?: string,
 ): boolean {
-  return message.projectId === projectId && taskScopeKey(message.spaceId) === taskScopeKey(spaceId);
+  return message.projectId === projectId && !message.spaceId;
 }

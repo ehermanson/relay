@@ -1,5 +1,5 @@
 /**
- * Shared debug drawer shell used by both chat and space debug surfaces.
+ * Debug drawer shell used by the chat debug surface.
  * Provides the drawer chrome (title, close, body) — callers compose
  * their own content inside.
  */

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
-import { useTerminalStore } from "@/stores/terminal-store";
+import { scopeKey as terminalScopeKey, useTerminalStore } from "@/stores/terminal-store";
 import type { ServerMessage, TerminalScope } from "@shared/types";
 
 /**
@@ -47,15 +47,11 @@ export function useTerminalMessages(scope: TerminalScope | null) {
   // dev-server restart, mobile tab suspend).
   //
   // Key on a primitive scope identifier rather than the object itself so that
-  // unmemoized callers (e.g. `{ type: "space", spaceId }` recreated each render)
+  // unmemoized callers (e.g. `{ type: "instance", instanceId }` recreated each render)
   // don't trip an infinite re-fetch loop. The list response updates the
   // terminal store, which triggers re-renders, which would otherwise produce a
   // fresh scope reference and re-fire the effect indefinitely.
-  const scopeKey = scope
-    ? scope.type === "space"
-      ? `space:${scope.spaceId}`
-      : `instance:${scope.instanceId}`
-    : null;
+  const scopeKey = scope ? terminalScopeKey(scope) : null;
   useEffect(() => {
     if (!scope) return;
     // Yield one task after each WS connect so enclosing instance subscriptions

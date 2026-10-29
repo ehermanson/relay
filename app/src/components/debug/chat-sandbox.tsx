@@ -86,7 +86,7 @@ const PLAN_SAMPLE = `## Implementation Plan
 
 1. **Refactor the debug panel** — Extract shared tabs into a reusable \`DebugTabs\` component
 2. **Add JSON tree viewer** — Interactive expand/collapse with search and path copy
-3. **Unify chat and space debug** — Both surfaces share the drawer shell and core tabs
+3. **Shared debug shell** — The drawer shell and core tabs are shared components
 4. **Add state overrides** — Preset-based and manual field toggles for previewing UI states
 
 ### Notes

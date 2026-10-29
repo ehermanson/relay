@@ -6,8 +6,6 @@ function reset() {
   useSidecarStore.setState({
     chatTab: "tasks",
     chatOpen: true,
-    spaceTab: "brief",
-    spaceOpen: true,
     sidebarWidth: null,
     mobileOpen: false,
   });
@@ -19,7 +17,7 @@ describe("useSidecarStore", () => {
   describe("selectTab", () => {
     it("switches the active tab and opens the sidecar", () => {
       useSidecarStore.setState({ chatTab: "tasks", chatOpen: false });
-      useSidecarStore.getState().selectTab("chat", "files");
+      useSidecarStore.getState().selectTab("files");
       const s = useSidecarStore.getState();
       expect(s.chatTab).toBe("files");
       expect(s.chatOpen).toBe(true);
@@ -27,7 +25,7 @@ describe("useSidecarStore", () => {
 
     it("closes the sidecar when clicking the active tab while open", () => {
       useSidecarStore.setState({ chatTab: "tasks", chatOpen: true });
-      useSidecarStore.getState().selectTab("chat", "tasks");
+      useSidecarStore.getState().selectTab("tasks");
       const s = useSidecarStore.getState();
       expect(s.chatTab).toBe("tasks"); // preserved
       expect(s.chatOpen).toBe(false);
@@ -36,27 +34,29 @@ describe("useSidecarStore", () => {
     it("reopens to the same tab when clicked again after close", () => {
       const { selectTab } = useSidecarStore.getState();
       useSidecarStore.setState({ chatTab: "tasks", chatOpen: true });
-      selectTab("chat", "tasks"); // close
-      selectTab("chat", "tasks"); // reopen
+      selectTab("tasks"); // close
+      selectTab("tasks"); // reopen
       const s = useSidecarStore.getState();
       expect(s.chatTab).toBe("tasks");
       expect(s.chatOpen).toBe(true);
     });
 
-    it("keeps chat and space scopes isolated", () => {
-      const { selectTab } = useSidecarStore.getState();
-      selectTab("chat", "tasks");
-      selectTab("space", "files");
-      const s = useSidecarStore.getState();
-      expect(s.chatTab).toBe("tasks");
-      expect(s.spaceTab).toBe("files");
+    it("ignores a persisted space scope from older builds", () => {
+      localStorage.setItem(
+        "relay-sidecar-prefs",
+        JSON.stringify({ chatTab: "files", chatOpen: false, spaceTab: "brief", spaceOpen: true }),
+      );
+      useSidecarStore.getState().selectTab("tasks");
+      const stored = JSON.parse(localStorage.getItem("relay-sidecar-prefs") ?? "{}");
+      expect(stored).not.toHaveProperty("spaceTab");
+      expect(stored).not.toHaveProperty("spaceOpen");
     });
   });
 
   describe("closeSidecar", () => {
     it("closes the sidecar without changing the remembered tab", () => {
       useSidecarStore.setState({ chatTab: "files", chatOpen: true });
-      useSidecarStore.getState().closeSidecar("chat");
+      useSidecarStore.getState().closeSidecar();
       const s = useSidecarStore.getState();
       expect(s.chatOpen).toBe(false);
       expect(s.chatTab).toBe("files");
@@ -84,7 +84,6 @@ describe("useSidecarPanels hook", () => {
   it("returns sidecarContentCount based on content flags", () => {
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: true,
         hasFilesContent: true,
@@ -98,7 +97,6 @@ describe("useSidecarPanels hook", () => {
   it("returns allContentPanels based on content flags", () => {
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: true,
         hasFilesContent: false,
@@ -117,7 +115,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: true,
         hasFilesContent: true,
@@ -135,7 +132,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: false,
         hasFilesContent: true,
@@ -154,7 +150,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: false,
         hasFilesContent: false,
@@ -172,7 +167,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: true,
         hasFilesContent: false,
@@ -190,7 +184,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: true,
         hasTasksContent: true,
         hasFilesContent: false,
@@ -207,7 +200,6 @@ describe("useSidecarPanels hook", () => {
 
     const { result } = renderHook(() =>
       useSidecarPanels({
-        scope: "chat",
         isMobile: false,
         hasTasksContent: true,
         hasFilesContent: false,
@@ -221,35 +213,5 @@ describe("useSidecarPanels hook", () => {
     act(() => result.current.selectTab("tasks"));
     expect(result.current.isOpen).toBe(false);
     expect(result.current.showDesktopSidecar).toBe(false);
-  });
-
-  it("chat and space scopes do not share tab state", () => {
-    act(() => useSidecarStore.setState({ chatTab: "tasks", spaceTab: "brief" }));
-
-    const { result: chat } = renderHook(() =>
-      useSidecarPanels({
-        scope: "chat",
-        isMobile: false,
-        hasTasksContent: true,
-        hasFilesContent: false,
-        hasPlanContent: false,
-        hasStats: false,
-      }),
-    );
-
-    const { result: space } = renderHook(() =>
-      useSidecarPanels({
-        scope: "space",
-        isMobile: false,
-        hasTasksContent: false,
-        hasFilesContent: false,
-        hasPlanContent: false,
-        hasStats: false,
-        hasBriefContent: true,
-      }),
-    );
-
-    expect(chat.current.activeTab).toBe("tasks");
-    expect(space.current.activeTab).toBe("brief");
   });
 });

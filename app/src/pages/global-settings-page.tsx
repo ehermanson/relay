@@ -1,5 +1,5 @@
 import { hasInstallableProviderUpdate } from "@shared/provider-update";
-import { useRef, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
@@ -39,7 +39,6 @@ import { CheckboxField } from "@/components/ui/checkbox";
 import { Dialog } from "@/components/ui/dialog";
 import { Input, Select } from "../components/ui/input";
 import { MarkdownEditor } from "../components/ui/markdown-editor";
-import { RadioGroup, RadioGroupField } from "@/components/ui/radio-group";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
 import {
@@ -1559,62 +1558,6 @@ function ProviderDefaultsRow({
         availableProviders={availableProviders}
       />
     </div>
-  );
-}
-
-// ─── Git Section ───────────────────────────────────────────────────────────
-
-export function GitSettingsSection() {
-  const { data: settings } = useGlobalSettings();
-  const save = useAutoSave();
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const handleBranchChange = useCallback(
-    (value: string) => {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        save.mutate({ defaultSpaceBranch: value.trim() || null });
-      }, 600);
-    },
-    [save],
-  );
-
-  const handleBranchSourceChange = (value: string) => {
-    save.mutate({ spaceBranchSource: value as "local" | "remote" });
-  };
-
-  return (
-    <SettingsSection
-      title="Git"
-      description="Default branch settings for new spaces. Projects can override these."
-    >
-      <SettingRow
-        label="Default Space Branch"
-        description="Base branch for new spaces when a project doesn't specify one."
-      >
-        <Input
-          defaultValue={settings?.defaultSpaceBranch ?? ""}
-          onChange={(e) => handleBranchChange(e.target.value)}
-          placeholder="e.g. main"
-          className="w-48"
-        />
-      </SettingRow>
-
-      <SettingRow
-        label="Branch Source"
-        description="Whether to branch from local or remote tracking branches."
-      >
-        <RadioGroup
-          value={settings?.spaceBranchSource ?? "local"}
-          onValueChange={handleBranchSourceChange}
-          className="flex items-center gap-4"
-          name="g-space-branch-source"
-        >
-          <RadioGroupField value="local" label="Local" />
-          <RadioGroupField value="remote" label="Remote" />
-        </RadioGroup>
-      </SettingRow>
-    </SettingsSection>
   );
 }
 

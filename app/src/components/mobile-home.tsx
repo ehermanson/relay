@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
-import { ChevronRight, GitBranch, Plus } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ProjectAvatar } from "@/components/ui/project-avatar";
 import { MobileSidebarToggle } from "@/components/ui/view-header";
@@ -9,13 +9,7 @@ import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { AddProjectDialog } from "@/components/layout/sidebar-chrome";
 import { buildInboxProjectOptions, getAttentionLabel, type InboxSourceGroup } from "@/lib/inbox";
-import {
-  buildMobileHome,
-  homeEntryChat,
-  homeEntryInstances,
-  type HomeEntry,
-} from "@/lib/mobile-home";
-import { getInboxSpaceRoute } from "@/lib/space-navigation";
+import { buildMobileHome, type HomeEntry } from "@/lib/mobile-home";
 import { getInstanceChatRoute } from "@/lib/project-route";
 import { formatTimeAgo } from "@/lib/utils";
 import { findProviderModelLabel } from "@shared/provider-catalog";
@@ -30,29 +24,18 @@ const ROW_TRANSITION = { type: "spring", stiffness: 500, damping: 40 } as const;
  */
 const SETTLE_DELAY_MS = 300;
 
-/** Why a row is in Needs input: the single reason, or a count when several chats wait. */
+/** Why a row is in Needs input. */
 function attentionReason(entry: HomeEntry): string | null {
-  const waiting = homeEntryInstances(entry).filter(
-    (chat) =>
-      chat.status !== "stopped" &&
-      (chat.status === "error" || chat.pendingPermission || chat.pendingPlan || chat.pendingTool),
-  );
-  if (waiting.length === 0) return null;
-  if (waiting.length === 1) return getAttentionLabel(waiting[0]);
-  return `${waiting.length} chats need input`;
+  return entry.attention > 0 ? getAttentionLabel(entry.instance) : null;
 }
 
 function HomeRow({ entry, animate }: { entry: HomeEntry; animate: boolean }) {
-  const route =
-    entry.kind === "space" ? getInboxSpaceRoute(entry) : getInstanceChatRoute(entry.instance);
-  const destinationChatId = "chatId" in route.params ? route.params.chatId : undefined;
-  const chat = homeEntryChat(entry, destinationChatId);
-  const modelId =
-    chat?.providerStatus?.effectiveModel ?? chat?.stats?.model ?? chat?.preferredModel;
-  const modelLabel =
-    modelId && chat ? (findProviderModelLabel(chat.provider, modelId) ?? modelId) : null;
+  const chat = entry.instance;
+  const route = getInstanceChatRoute(chat);
+  const modelId = chat.providerStatus?.effectiveModel ?? chat.stats?.model ?? chat.preferredModel;
+  const modelLabel = modelId ? (findProviderModelLabel(chat.provider, modelId) ?? modelId) : null;
   const reason = attentionReason(entry);
-  const preview = chat?.lastMessage?.text.trim();
+  const preview = chat.lastMessage?.text.trim();
   return (
     <motion.div
       // Static until the initial load settles: the cache, each project's
@@ -74,24 +57,19 @@ function HomeRow({ entry, animate }: { entry: HomeEntry; animate: boolean }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-[0.625rem] text-muted">
             <span className="min-w-0 truncate">{entry.projectName}</span>
-            {chat && (
-              <span className="flex min-w-0 items-center gap-1">
-                <span className="shrink-0 text-muted/40">·</span>
-                <span role="img" aria-label={`${chat.provider} provider`} className="shrink-0">
-                  <ProviderLogo provider={chat.provider} className="h-3 w-3" />
-                </span>
-                {modelLabel && <span className="truncate">{modelLabel}</span>}
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="shrink-0 text-muted/40">·</span>
+              <span role="img" aria-label={`${chat.provider} provider`} className="shrink-0">
+                <ProviderLogo provider={chat.provider} className="h-3 w-3" />
               </span>
-            )}
+              {modelLabel && <span className="truncate">{modelLabel}</span>}
+            </span>
             {entry.recencyAt > 0 && (
               <span className="ml-auto shrink-0">{formatTimeAgo(entry.recencyAt)}</span>
             )}
           </div>
           <div className="mt-0.5 flex items-center gap-1.5 text-[0.8125rem] font-medium text-text">
-            {entry.kind === "space" && <GitBranch size={13} className="shrink-0 text-muted" />}
-            <span className="truncate">
-              {entry.kind === "space" ? entry.space.name : entry.instance.name}
-            </span>
+            <span className="truncate">{chat.name}</span>
           </div>
           {/* One line: what needs a decision, or what the agent is doing, then
               the last message so the row is decidable without opening it. */}
@@ -100,15 +78,11 @@ function HomeRow({ entry, animate }: { entry: HomeEntry; animate: boolean }) {
               {reason ? (
                 <span className="shrink-0 font-medium text-warning">{reason}</span>
               ) : (
-                entry.running > 0 && (
-                  <span className="shrink-0 text-accent">
-                    {entry.kind === "space" ? `${entry.running} running` : "Running"}
-                  </span>
-                )
+                entry.running > 0 && <span className="shrink-0 text-accent">Running</span>
               )}
               {preview && (
                 <span className="min-w-0 truncate">
-                  {chat?.lastMessage?.from === "user" && (
+                  {chat.lastMessage?.from === "user" && (
                     <span className="text-muted/70">You: </span>
                   )}
                   {preview}

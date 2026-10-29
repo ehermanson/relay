@@ -1,17 +1,16 @@
-/**
- * Space + chat route: /projects/:projectId/spaces/:spaceId/:chatId
- *
- * Re-uses the SpaceView component from the index route, which reads chatId
- * from URL params to determine which tab is active.
- */
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { validateChatSearch } from "@/routes/_app/projects/$projectId/chats/-search";
-import { SpaceView } from "./index";
 
+// Spaces were removed: every chat lives at the chats route. Keep the old path
+// as a permanent redirect so old tabs, bookmarks and push links still open the
+// chat.
 export const Route = createFileRoute("/_app/projects/$projectId/spaces/$spaceId/$chatId")({
-  // SpaceView owns chat selection recovery. Keeping this loader passive avoids
-  // stale REST data fighting with the pending new-chat flow.
-  loader: async () => {},
-  component: SpaceView,
   validateSearch: validateChatSearch,
+  beforeLoad: ({ params, search }) => {
+    throw redirect({
+      to: "/projects/$projectId/chats/$chatId",
+      params: { projectId: params.projectId, chatId: params.chatId },
+      search,
+    });
+  },
 });

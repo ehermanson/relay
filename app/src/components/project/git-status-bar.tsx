@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   GitBranch,
@@ -32,9 +31,7 @@ import {
 } from "../ui/command";
 import { Tooltip } from "../ui/tooltip";
 import { ErrorBoundary } from "../ui/error-boundary";
-import { useProjectsQuery } from "../../hooks/use-projects-query";
 import { useRepoStatus } from "../../hooks/use-repo-status";
-import { CreateSpaceDialog, useCreateSpaceDialog } from "../spaces/create-space-dialog";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -48,17 +45,14 @@ function BranchSelector({
   projectId,
   current,
   onBranchChanged,
-  onConvertWorktree,
 }: {
   projectId: string;
   current: string | null;
   onBranchChanged: () => void;
-  onConvertWorktree: (worktreePath: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const switchingRef = useRef(false);
-  const navigate = useNavigate();
 
   const { data } = useQuery({
     queryKey: ["branches", projectId],
@@ -79,20 +73,8 @@ function BranchSelector({
         setOpen(false);
         return;
       }
-      const worktree = worktreesByBranch.get(branch);
-      if (worktree?.spaceId) {
-        navigate({
-          to: "/projects/$projectId/spaces/$spaceId",
-          params: { projectId, spaceId: worktree.spaceId },
-        });
-        setOpen(false);
-        return;
-      }
-      if (worktree) {
-        onConvertWorktree(worktree.path);
-        setOpen(false);
-        return;
-      }
+      // A branch checked out in another worktree can't be checked out here.
+      if (worktreesByBranch.has(branch)) return;
       // One checkout at a time — a second click while one runs is ignored.
       if (switchingRef.current) return;
       switchingRef.current = true;
@@ -109,26 +91,24 @@ function BranchSelector({
         setSwitching(false);
       }
     },
-    [projectId, current, onBranchChanged, worktreesByBranch, navigate, onConvertWorktree],
+    [projectId, current, onBranchChanged, worktreesByBranch],
   );
 
   const localBranches = data?.local ?? [];
   const remoteBranches = (data?.remote ?? []).filter((b) => !localBranches.includes(b));
 
   const renderBranchRow = (b: string) => {
-    const worktree = worktreesByBranch.get(b);
-    const isWorktree = !!worktree;
-    const isUnconvertedWorktree = isWorktree && !worktree.spaceId;
+    const isWorktree = worktreesByBranch.has(b);
     return (
-      <CommandItem key={b} disabled={switching} onSelect={() => void handleSelect(b)}>
+      <CommandItem key={b} disabled={switching || isWorktree} onSelect={() => void handleSelect(b)}>
         {isWorktree ? (
           <FolderGit2 size={13} className="shrink-0 text-muted" />
         ) : (
           <GitBranch size={13} className="shrink-0 text-muted" />
         )}
         <span className="truncate">{b}</span>
-        {isUnconvertedWorktree && (
-          <span className="ml-1 text-[0.625rem] uppercase tracking-wide text-muted">convert</span>
+        {isWorktree && (
+          <span className="ml-1 text-[0.625rem] uppercase tracking-wide text-muted">worktree</span>
         )}
         {b === current && <Check size={13} className="ml-auto shrink-0 text-accent" />}
       </CommandItem>
@@ -219,21 +199,6 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
     },
     [],
   );
-  const spaceDialog = useCreateSpaceDialog();
-  const { data: projects = [] } = useProjectsQuery();
-  const project = projects.find((p) => p.slug === projectId || p.id === projectId);
-
-  const handleConvertWorktree = useCallback(
-    (worktreePath: string) => {
-      if (!project) {
-        toast.error("Project not found");
-        return;
-      }
-      spaceDialog.open(project.directory, { mode: "convert", worktreePath });
-    },
-    [project, spaceDialog],
-  );
-
   // Branch/ahead/behind/dirty refetch when the server's repo_status
   // fingerprint changes (Relay git ops, agent turn end, background fetch);
   // focus refetch stays as a fallback. No interval polling.
@@ -313,12 +278,7 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
   return (
     <div className="flex items-center gap-1">
       <ErrorBoundary inline name="Branch picker">
-        <BranchSelector
-          projectId={projectId}
-          current={current}
-          onBranchChanged={invalidate}
-          onConvertWorktree={handleConvertWorktree}
-        />
+        <BranchSelector projectId={projectId} current={current} onBranchChanged={invalidate} />
       </ErrorBoundary>
 
       {error && (
@@ -384,17 +344,6 @@ export function GitStatusBar({ projectId }: GitStatusBarProps) {
         loading={pendingOp === "push"}
         disabled={busy || !current || (hasUpstream && (ahead === 0 || behind > 0))}
         onClick={() => void handlePush()}
-      />
-
-      <CreateSpaceDialog
-        dir={spaceDialog.dir}
-        mode={spaceDialog.mode}
-        preselectedWorktreePath={spaceDialog.preselectedWorktreePath}
-        projectName={project?.name ?? spaceDialog.dir ?? ""}
-        projectId={project?.id}
-        defaultBaseBranch={project?.defaultSpaceBranch ?? undefined}
-        spaceBranchSource={project?.spaceBranchSource ?? undefined}
-        onOpenChange={(open) => !open && spaceDialog.close()}
       />
     </div>
   );

@@ -3,19 +3,19 @@
  * one flat, recency-sorted list and partitioning it into active vs done.
  *
  * Kept out of the hook so the rules that decide what appears in the inbox —
- * review-chat exclusion, closed-space chats counting as done, pinned ordering —
- * are testable without mounting the whole sidebar.
+ * review-chat and delegated-child exclusion, done state, pinned ordering — are
+ * testable without mounting the whole sidebar.
  */
 
 import { isAttachedReviewInstance } from "@/lib/review-session";
 import { isDelegatedChildInstance } from "@/lib/delegation";
 import { getChatRecencyTimestamp, getChatSortTimestamp, isChatDone } from "@/lib/utils";
-import type { InstanceInfo, SpaceInfo } from "@shared/types";
+import type { InstanceInfo } from "@shared/types";
 
-interface InboxEntryBase {
+export interface InboxEntry {
   /** Namespaced destination id, safe to use as a React key. */
   id: string;
-  kind: "chat" | "space";
+  instance: InstanceInfo;
   /** Directory of the owning project — the stable key for filtering. */
   dir: string;
   /** Display name of the owning project. */
@@ -28,26 +28,6 @@ interface InboxEntryBase {
   recencyAt: number;
 }
 
-export interface InboxChatEntry extends InboxEntryBase {
-  kind: "chat";
-  instance: InstanceInfo;
-  /** Resolved default-space metadata, when present. */
-  space?: SpaceInfo;
-}
-
-export interface InboxSpaceEntry extends InboxEntryBase {
-  kind: "space";
-  space: SpaceInfo;
-  /** Eligible member chats; attached review chats are excluded. */
-  instances: InstanceInfo[];
-  /** Processing chats that are not waiting for the user. */
-  workingCount: number;
-  /** Chats with errors or waiting for permission/an answer. */
-  attentionInstances: InstanceInfo[];
-}
-
-export type InboxEntry = InboxChatEntry | InboxSpaceEntry;
-
 export interface InboxProjectOption {
   dir: string;
   name: string;
@@ -56,15 +36,6 @@ export interface InboxProjectOption {
   /** Registered project UUID, when the directory is a registered project. */
   dbId?: string;
   iconPath?: string;
-  /**
-   * Whether this directory can back a Space. Chat creation tolerates
-   * unregistered dirs (creating one registers the project), but Space creation
-   * needs a registered project to resolve a `projectId` — a session-only group
-   * (e.g. an external chat in an unregistered directory) would dead-end the
-   * create-space dialog on "Project not found". Set from the registered-project
-   * signal `group.project`.
-   */
-  spaceCapable: boolean;
 }
 
 /** The subset of a sidebar navigation entry the inbox actually reads. */
@@ -74,7 +45,6 @@ export interface InboxSourceGroup {
   projectId: string;
   iconPath?: string;
   groupInstances: InstanceInfo[];
-  spaces: SpaceInfo[];
   project?: { id?: string };
 }
 
@@ -88,112 +58,51 @@ export function getAttentionLabel(instance: InstanceInfo): string {
   return "Needs attention";
 }
 
-function isAttentionInstance(instance: InstanceInfo): boolean {
-  if (instance.status === "stopped") return false;
-  // These are provider-normalized fields; no driver-specific tool/status names
-  // belong in inbox grouping.
-  return (
-    instance.status === "error" ||
-    !!instance.pendingPermission ||
-    !!instance.pendingPlan ||
-    !!instance.pendingTool
-  );
-}
-
 function compareInboxEntries(a: InboxEntry, b: InboxEntry): number {
   const pinnedDelta = Number(b.pinned) - Number(a.pinned);
   if (pinnedDelta !== 0) return pinnedDelta;
   return b.recencyAt - a.recencyAt || a.id.localeCompare(b.id);
 }
 
-/** Flatten project groups into one destination list, grouping named spaces. */
+/** Flatten project groups into one chat list. */
 export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEntry[] {
   const entries: InboxEntry[] = [];
   for (const group of groups) {
-    const spacesById = new Map(group.spaces.map((space) => [space.id, space]));
-    const instancesBySpace = new Map<string, InstanceInfo[]>();
     for (const instance of group.groupInstances) {
       // Review chats stay attached to the chat they audit — surfacing them as
       // peers in a flat list would double-count the same work.
       // Delegated child chats live behind their parent's card and sidecar row.
       if (isAttachedReviewInstance(instance) || isDelegatedChildInstance(instance)) continue;
-      const space = instance.spaceId ? spacesById.get(instance.spaceId) : undefined;
-      // Missing metadata can be a transient loading state. Keep the chat
-      // visible until its named space is actually resolved.
-      if (space && !space.isDefault) {
-        const members = instancesBySpace.get(space.id) ?? [];
-        members.push(instance);
-        instancesBySpace.set(space.id, members);
-        continue;
-      }
-      const recencyAt = getChatSortTimestamp(instance);
       entries.push({
         id: `chat:${instance.id}`,
-        kind: "chat",
         instance,
         dir: group.dir,
         projectName: group.name,
         projectId: group.projectId,
         iconPath: group.iconPath,
-        space,
-        done: isChatDone(instance, space?.status),
+        done: isChatDone(instance),
         pinned: !!instance.pinned,
-        recencyAt,
-      });
-    }
-
-    for (const space of group.spaces) {
-      if (space.isDefault) continue;
-      const instances = instancesBySpace.get(space.id) ?? [];
-      const attentionInstances = instances.filter(isAttentionInstance);
-      const attentionIds = new Set(attentionInstances.map((instance) => instance.id));
-      const workingCount = instances.filter(
-        (instance) => instance.status === "processing" && !attentionIds.has(instance.id),
-      ).length;
-      const memberRecency = instances.reduce(
-        (latest, instance) => Math.max(latest, getChatSortTimestamp(instance)),
-        0,
-      );
-      entries.push({
-        id: `space:${space.id}`,
-        kind: "space",
-        dir: group.dir,
-        projectName: group.name,
-        projectId: group.projectId,
-        iconPath: group.iconPath,
-        space,
-        instances,
-        workingCount,
-        attentionInstances,
-        done: space.status === "completed" || space.status === "archived",
-        pinned: !!space.pinned,
-        recencyAt: Math.max(space.lastActivityAt ?? 0, space.createdAt ?? 0, memberRecency),
+        recencyAt: getChatSortTimestamp(instance),
       });
     }
   }
   return entries.sort(compareInboxEntries);
 }
 
-export function isInboxEntryCurrent(entry: InboxEntry, chatId?: string, spaceId?: string): boolean {
-  if (entry.kind === "chat") return !!chatId && entry.instance.id === chatId;
-  return (
-    entry.space.id === spaceId || (!!chatId && entry.instances.some((item) => item.id === chatId))
-  );
+export function isInboxEntryCurrent(entry: InboxEntry, chatId?: string): boolean {
+  return !!chatId && entry.instance.id === chatId;
 }
 
-/** Apply a list cap while retaining the current chat or space destination. */
+/** Apply a list cap while retaining the current chat. */
 export function capInboxEntries(
   entries: readonly InboxEntry[],
   limit: number,
   chatId?: string,
-  spaceId?: string,
   extraEntries: readonly InboxEntry[] = [],
 ): InboxEntry[] {
   const visible = entries.slice(0, limit);
-  if (visible.some((entry) => isInboxEntryCurrent(entry, chatId, spaceId))) return visible;
-  const current = [...entries, ...extraEntries].find((entry) =>
-    isInboxEntryCurrent(entry, chatId, spaceId),
-  );
+  if (visible.some((entry) => isInboxEntryCurrent(entry, chatId))) return visible;
+  const current = [...entries, ...extraEntries].find((entry) => isInboxEntryCurrent(entry, chatId));
   if (current && !visible.some((entry) => entry.id === current.id)) visible.push(current);
   return visible;
 }
@@ -241,14 +150,9 @@ export function selectStaleInboxEntries(
   entries: readonly InboxEntry[],
   now: number,
   days: number = STALE_CHAT_DONE_DAYS,
-): InboxChatEntry[] {
+): InboxEntry[] {
   const cutoff = now - days * DAY_MS;
-  return entries.filter((entry): entry is InboxChatEntry => {
-    if (entry.kind !== "chat") return false;
-    // An unresolved space is a loading state, not a standalone chat. Keep its
-    // fallback row visible, but never let the bulk sweep mutate it before the
-    // space metadata arrives and groups it under its real destination.
-    if (entry.instance.spaceId && !entry.space) return false;
+  return entries.filter((entry) => {
     if (entry.done || entry.instance.status === "processing") return false;
     const recencyAt = getChatRecencyTimestamp(entry.instance);
     return recencyAt > 0 && recencyAt < cutoff;
@@ -265,49 +169,5 @@ export function buildInboxProjectOptions(
     dbId:
       group.project?.id ?? group.groupInstances.find((instance) => instance.projectId)?.projectId,
     iconPath: group.iconPath,
-    // Only a registered project (`group.project` present) can resolve a
-    // projectId for the create-space dialog; a session-only group can't.
-    spaceCapable: !!group.project,
   }));
-}
-
-/**
- * What a shared "New" trigger should render, resolved from the target set. The
- * component stays a thin renderer over this so the branching — direct-create vs
- * picker, chat-only vs combined, and the space-capability filter — is unit
- * testable without mounting a menu.
- *
- * Space creation is offered only for `spaceCapable` targets. When none apply
- * (space disabled, or the sole/only targets can't back a space) the shape falls
- * back to the original chat-only behavior, including direct-create for a lone
- * target.
- */
-export type NewMenuShape =
-  | { kind: "chat-direct"; dir: string }
-  | { kind: "chat-picker"; chatProjects: InboxProjectOption[] }
-  | { kind: "combined-direct"; dir: string }
-  | {
-      kind: "combined-picker";
-      chatProjects: InboxProjectOption[];
-      spaceProjects: InboxProjectOption[];
-    };
-
-export function resolveNewMenuShape(
-  projectOptions: readonly InboxProjectOption[],
-  soleTarget: string | null,
-  spaceEnabled: boolean,
-): NewMenuShape {
-  const spaceProjects = spaceEnabled ? projectOptions.filter((option) => option.spaceCapable) : [];
-
-  if (soleTarget) {
-    const canSpace = spaceProjects.some((option) => option.dir === soleTarget);
-    return canSpace
-      ? { kind: "combined-direct", dir: soleTarget }
-      : { kind: "chat-direct", dir: soleTarget };
-  }
-
-  if (spaceProjects.length > 0) {
-    return { kind: "combined-picker", chatProjects: [...projectOptions], spaceProjects };
-  }
-  return { kind: "chat-picker", chatProjects: [...projectOptions] };
 }

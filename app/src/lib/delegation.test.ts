@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { AgentInfo, InstanceInfo } from "@shared/types";
 import { buildAgentTree, gateAgentsByCapability, isMainStreamAgent } from "@/lib/agents";
 import { findDelegationRoot, isDelegatedChildInstance, relayTaskIdOf } from "@/lib/delegation";
-import { selectSpaceChat } from "@/lib/space-navigation";
-import { buildSpaceInstances } from "@/lib/space-view";
 
 function chat(overrides: Partial<InstanceInfo> & { id: string }): InstanceInfo {
   return {
@@ -42,25 +40,15 @@ describe("delegation helpers", () => {
     expect(findDelegationRoot(child("orphan", "gone"), byId).id).toBe("orphan");
   });
 
-  it("keeps a delegated child out of space tabs unless the URL names it", () => {
-    const chats = [chat({ id: "main", spaceId: "s" }), { ...child("kid", "main"), spaceId: "s" }];
-    expect(buildSpaceInstances("s", chats, []).map((i) => i.id)).toEqual(["main"]);
-    expect(buildSpaceInstances("s", chats, [], "kid").map((i) => i.id)).toEqual(["main", "kid"]);
-    expect(selectSpaceChat("s", chats, "kid")).toBe("main");
-  });
-
-  it("treats an isolated child as its own Space's chat", () => {
+  it("treats a legacy space-isolated child like any delegated child", () => {
     const isolated = chat({
       id: "kid",
-      spaceId: "own",
       delegation: { parentInstanceId: "main", taskId: "t", isolation: "space" },
     });
-    expect(isDelegatedChildInstance(isolated)).toBe(false);
-    expect(buildSpaceInstances("own", [isolated], []).map((i) => i.id)).toEqual(["kid"]);
-    expect(selectSpaceChat("own", [isolated], null)).toBe("kid");
+    expect(isDelegatedChildInstance(isolated)).toBe(true);
     const grandchild = child("gc", "kid");
     const byId = new Map([chat({ id: "main" }), isolated, grandchild].map((i) => [i.id, i]));
-    expect(findDelegationRoot(grandchild, byId).id).toBe("kid");
+    expect(findDelegationRoot(grandchild, byId).id).toBe("main");
   });
 });
 

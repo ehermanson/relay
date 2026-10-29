@@ -28,14 +28,14 @@ import {
   getChatSortTimestamp,
 } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
-import type { InboxChatEntry } from "@/lib/inbox";
+import type { InboxEntry } from "@/lib/inbox";
 
 /**
  * The model this chat is actually running, preferring what the provider last
  * reported over what the user picked. Never falls back to a project or global
  * default — showing a model a chat has never used would be a lie.
  */
-function resolveModelLabel(entry: InboxChatEntry): string | null {
+function resolveModelLabel(entry: InboxEntry): string | null {
   const { instance } = entry;
   const modelId =
     instance.providerStatus?.effectiveModel ?? instance.stats?.model ?? instance.preferredModel;
@@ -59,7 +59,7 @@ function resolveModelLabel(entry: InboxChatEntry): string | null {
  * collapsed rail — where the avatar is all there is, so the hover is the only
  * place project, branch, model, recency and status can appear.
  */
-export function InboxChatSummary({ entry }: { entry: InboxChatEntry }) {
+export function InboxChatSummary({ entry }: { entry: InboxEntry }) {
   const { instance } = entry;
   const status = deriveInstanceStatusPresentation(instance);
   const modelLabel = resolveModelLabel(entry);
@@ -111,7 +111,7 @@ export function InboxAvatar({
   tooltip,
   className = "mt-0.5",
 }: {
-  entry: InboxChatEntry;
+  entry: InboxEntry;
   unread: boolean;
   isActive: boolean;
   size?: number;
@@ -160,7 +160,7 @@ export function InboxAvatar({
 }
 
 interface InboxItemProps {
-  entry: InboxChatEntry;
+  entry: InboxEntry;
   isActive: boolean;
   /** Currently active chatId — used to offer "Open in split view". */
   activeChatId?: string;
@@ -174,11 +174,8 @@ export function InboxItem({ entry, isActive, activeChatId }: InboxItemProps) {
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Terminals attach to the space when the chat belongs to one, else to the
-  // chat itself — mirror the scope the chat view uses to open terminals.
-  const terminalScope: TerminalScope = instance.spaceId
-    ? { type: "space", spaceId: instance.spaceId }
-    : { type: "instance", instanceId: instance.id };
+  // Mirror the scope the chat view uses to open terminals.
+  const terminalScope: TerminalScope = { type: "instance", instanceId: instance.id };
 
   useEffect(() => {
     if (editing) {
@@ -315,7 +312,6 @@ export function InboxItem({ entry, isActive, activeChatId }: InboxItemProps) {
               </Menu.Trigger>
               <ChatActionsMenuContent
                 instance={instance}
-                spaceStatus={entry.space?.status}
                 activeChatId={activeChatId}
                 onRename={startEditing}
               />

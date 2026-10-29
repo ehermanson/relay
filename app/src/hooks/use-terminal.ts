@@ -48,7 +48,7 @@ export function useTerminal({
   useEffect(() => {
     if (!terminalId) return;
 
-    // Yield one task after each WS connect so the enclosing chat/space view can
+    // Yield one task after each WS connect so the enclosing chat view can
     // re-establish its instance subscription first. The socket preserves send
     // order, so this avoids the reconnect race without widening terminal auth.
     const subscribeTimer = setTimeout(() => {

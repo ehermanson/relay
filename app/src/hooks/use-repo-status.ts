@@ -2,7 +2,7 @@
  * Push-based repository status (`repo_status` over the WebSocket).
  *
  * Components never poll git endpoints. Instead they subscribe to a target
- * (chat / space / project); the server publishes a snapshot on subscribe and
+ * (chat / project); the server publishes a snapshot on subscribe and
  * again whenever the repo's fingerprint changes (agent turn end, Relay git
  * mutations, background fetch). Components invalidate their git queries when
  * the fingerprint changes.

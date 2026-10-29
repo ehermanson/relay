@@ -6,7 +6,7 @@ import { getInstanceChatRoute } from "@/lib/project-route";
 
 /**
  * A `relay://chat/<id>` link: the chat's provider logo and live title,
- * opening it in its own Project/Space route. An author-written label wins
+ * opening it in its own Project chat route. An author-written label wins
  * over the title. Chats that aren't loaded (or were deleted) render inert.
  */
 export function ChatLinkChip({

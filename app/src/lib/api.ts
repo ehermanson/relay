@@ -13,8 +13,6 @@ import type {
   ProviderModelsResponse,
   ProjectArtifacts,
   SpinOffInfo,
-  SpaceInfo,
-  SpacePrStatusResponse,
   UpdateInstallResult,
   UpdateSnapshot,
 } from "@shared/types";
@@ -61,7 +59,7 @@ export interface HealthResponse {
   instances: number;
   version: string;
   authRequired: boolean;
-  git: { branch: string; isWorktree: boolean; spaceName?: string } | null;
+  git: { branch: string; isWorktree: boolean } | null;
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
@@ -505,16 +503,11 @@ interface UpdateTaskInput {
 }
 
 export interface TaskScopeOptions {
-  spaceId?: string;
   includeArchived?: boolean;
 }
 
 function taskScopeQuery(options: TaskScopeOptions = {}): string {
-  const params = new URLSearchParams();
-  if (options.spaceId) params.set("spaceId", options.spaceId);
-  if (options.includeArchived) params.set("includeArchived", "true");
-  const query = params.toString();
-  return query ? `?${query}` : "";
+  return options.includeArchived ? "?includeArchived=true" : "";
 }
 
 async function taskApiError(res: Response, fallback: string): Promise<TaskApiError> {
@@ -577,10 +570,8 @@ export async function deleteTaskApi(
   projectId: string,
   taskId: string,
   expectedRevision: string,
-  options: TaskScopeOptions = {},
 ): Promise<void> {
   const params = new URLSearchParams();
-  if (options.spaceId) params.set("spaceId", options.spaceId);
   params.set("expectedRevision", expectedRevision);
   const res = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?${params}`,
@@ -716,12 +707,6 @@ export async function setInstancesDone(instanceIds: string[], done: boolean): Pr
   }
   const data = (await res.json()) as { updated?: number };
   return data.updated ?? 0;
-}
-
-export async function fetchSpaceChats(spaceId: string): Promise<InstanceInfo[]> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/chats`);
-  if (!res.ok) return [];
-  return res.json();
 }
 
 export async function openNativePath(target: {
@@ -869,8 +854,6 @@ export async function updateProject(
     name?: string;
     targetBranch?: string | null;
     customInstructions?: string | null;
-    defaultSpaceBranch?: string | null;
-    spaceBranchSource?: "local" | "remote" | null;
     defaultProvider?: string | null;
     defaultModel?: string | null;
     /** Account membership (`Account.id[]`); at least one id. */
@@ -914,186 +897,11 @@ export async function removeProject(id: string): Promise<void> {
   }
 }
 
-// =========================================================================
-// Space API
-// =========================================================================
-
-export async function createSpace(
-  projectId: string,
-  opts?: { name?: string; baseBranch?: string; description?: string },
-): Promise<SpaceInfo> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/spaces`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts ?? {}),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to create space" }));
-    throw new Error(data.error || "Failed to create space");
-  }
-  return res.json();
-}
-
-export interface ConvertibleWorktree {
-  path: string;
-  branch: string;
-}
-
-export async function fetchConvertibleWorktrees(projectId: string): Promise<ConvertibleWorktree[]> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/convertible-worktrees`);
-  if (!res.ok) throw new Error("Failed to fetch convertible worktrees");
-  const data: { worktrees: ConvertibleWorktree[] } = await res.json();
-  return data.worktrees;
-}
-
-export async function convertWorktreeToSpace(
-  projectId: string,
-  opts: { worktreePath: string; name?: string; description?: string },
-): Promise<SpaceInfo> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/convert-worktree`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to convert worktree" }));
-    throw new Error(data.error || "Failed to convert worktree");
-  }
-  return res.json();
-}
-
-export async function fetchSpaceDetail(spaceId: string): Promise<SpaceInfo> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`);
-  if (!res.ok) throw new Error("Failed to fetch space");
-  return res.json();
-}
-
-export async function setSpacePinned(spaceId: string, pinned: boolean): Promise<SpaceInfo> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/pinned`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pinned }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to pin space" }));
-    throw new Error(data.error || "Failed to pin space");
-  }
-  return res.json();
-}
-
-/**
- * Complete refused (nothing merged). `errorKind === "conflict"` carries the
- * conflicting paths; the message already includes resolution guidance.
- */
-export class SpaceCompleteError extends Error {
-  readonly errorKind?: string;
-  readonly conflicts: string[];
-  readonly targetBranch?: string;
-  readonly worktreePath?: string | null;
-  constructor(data: {
-    error?: string;
-    errorKind?: string;
-    conflicts?: string[];
-    targetBranch?: string;
-    worktreePath?: string | null;
-  }) {
-    super(data.error || "Failed to complete space");
-    this.name = "SpaceCompleteError";
-    this.errorKind = data.errorKind;
-    this.conflicts = Array.isArray(data.conflicts) ? data.conflicts : [];
-    this.targetBranch = data.targetBranch;
-    this.worktreePath = data.worktreePath;
-  }
-}
-
-export async function completeSpace(
-  spaceId: string,
-  opts?: { mergeMethod?: string; squashMessage?: string },
-): Promise<{
-  success: boolean;
-  targetBranch: string;
-  mergeCommit?: string;
-  mergeMethod?: string;
-  /** Checkout whose files were updated, or null when only the branch ref moved. */
-  updatedCheckout?: string | null;
-  alreadyMerged?: boolean;
-}> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/complete`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts ?? {}),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to complete space" }));
-    throw new SpaceCompleteError(data);
-  }
-  return res.json();
-}
-
-export async function markSpaceMerged(
-  spaceId: string,
-): Promise<{ success: boolean; targetBranch: string }> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/mark-merged`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to mark space as merged" }));
-    throw new Error(data.error || "Failed to mark space as merged");
-  }
-  return res.json();
-}
-
-export async function fetchAllSpaces(projectId: string): Promise<SpaceInfo[]> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/spaces/all`);
-  if (!res.ok) throw new Error("Failed to fetch spaces");
-  return res.json();
-}
-
-export async function deleteSpace(spaceId: string): Promise<void> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to delete space" }));
-    throw new Error(data.error || "Failed to delete space");
-  }
-}
-
-export async function fetchSpaceDiff(spaceId: string): Promise<string> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/diff`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: "Failed to fetch space diff" }));
-    throw new Error(data.error || "Failed to fetch space diff");
-  }
-  const data = await res.json();
-  return data.diff;
-}
-
-export async function fetchSpacePrStatus(
-  spaceId: string,
-  opts?: { refresh?: boolean },
-): Promise<SpacePrStatusResponse> {
-  const query = opts?.refresh ? "?refresh=1" : "";
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/pr${query}`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error || "Failed to fetch PR status");
-  }
-  return res.json();
-}
-
-export async function fetchSpaceContext(spaceId: string): Promise<string | null> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/context`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.content;
-}
 // ─── Branch & Git Operations ──────────────────────────────────────────────
 
 export interface WorktreeBranchInfo {
   branch: string;
   path: string;
-  spaceId?: string;
 }
 
 interface BranchesResponse {
@@ -1122,9 +930,9 @@ interface GitWorktreeStatus {
   /** False when the branch has no upstream (aheadBehind is then 0/0). */
   hasUpstream?: boolean;
   /**
-   * True when the worktree is dirty OR (in a space) commits exist on the
-   * space branch that aren't in the base branch. Broader than `dirty` —
-   * captures committed-but-unmerged space work.
+   * True when the worktree is dirty OR commits exist on the branch that aren't
+   * in the base branch. Broader than `dirty` — captures committed-but-unmerged
+   * work.
    */
   reviewableDiff?: boolean;
 }
@@ -1180,33 +988,6 @@ export async function gitPush(
     body: JSON.stringify(opts ?? {}),
   });
   return res.json();
-}
-
-// ─── Space Commit ────────────────────────────────────────────────────────
-
-export async function commitSpace(
-  spaceId: string,
-  opts?: { message?: string },
-): Promise<GitOpResult> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/commit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts ?? {}),
-  });
-  return res.json();
-}
-
-// ─── Space Push ───────────────────────────────────────────────────────────
-
-interface PushSpaceResult {
-  pushed: boolean;
-  prUrl?: string;
-  /** `opened_existing` when an open PR for the branch already existed. */
-  prAction?: "created" | "opened_existing";
-  error?: string;
-  errorKind?: string;
-  ghNotFound?: boolean;
-  ghNotAuthenticated?: boolean;
 }
 
 // ─── Global Settings ──────────────────────────────────────────────────────
@@ -1294,18 +1075,6 @@ export async function probeAccount(id: string): Promise<AccountStatus> {
   return res.json();
 }
 
-export async function pushSpace(
-  spaceId: string,
-  opts?: { createPR?: boolean },
-): Promise<PushSpaceResult> {
-  const res = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/push`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts ?? {}),
-  });
-  return res.json();
-}
-
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
@@ -1314,7 +1083,6 @@ export interface SearchResultItem {
   instanceId: string;
   source: "session" | "managed";
   projectId: string | null;
-  spaceId: string | null;
   lastActivityAt: number;
   lastMessageAt: number | null;
   createdAt: number;

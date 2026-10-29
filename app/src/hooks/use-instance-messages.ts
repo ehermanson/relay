@@ -557,7 +557,7 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
 
 /**
  * Process raw history entries into ChatItem[] for display.
- * Extracted so it can be reused outside the hook (e.g. space debug modal).
+ * Extracted so it can be reused outside the hook (e.g. a debug modal).
  */
 export function replayHistoryToItems(history: HistoryEntry[]): ChatItem[] {
   return replayHistory(history).items;

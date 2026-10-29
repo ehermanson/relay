@@ -37,8 +37,6 @@ import { RelayLogo } from "@/components/ui/relay-logo";
 import { useInstanceViewContext } from "@/components/chat/instance-view-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useProviderGlobalState } from "@/stores/provider-runtime-store";
-import { useActiveAccount } from "@/hooks/use-active-account";
-import { chatBelongsToAccount } from "@/lib/account-scope";
 import { createSpinOff, createInstance, markSpinOffSent } from "@/lib/api";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { toast } from "sonner";
@@ -343,18 +341,6 @@ function SpinOffPrepDialog({
 export function InstanceViewContent() {
   const { shared, actions } = useInstanceViewContext();
   const { instances: allInstances } = useWSState();
-  // Space siblings ("send to chat") are scoped to the active account, like the
-  // space's tabs; with a single account every chat is a sibling.
-  const account = useActiveAccount();
-  const siblingCandidates = useMemo(
-    () =>
-      account.isMulti
-        ? allInstances.filter((inst) =>
-            chatBelongsToAccount(inst, account.activeId, account.accounts),
-          )
-        : allInstances,
-    [allInstances, account.isMulti, account.activeId, account.accounts],
-  );
   // Provider state is per login: read the state of the login this chat is bound to.
   const currentProviderGlobalState = useProviderGlobalState(
     shared.instance.provider,
@@ -364,7 +350,6 @@ export function InstanceViewContent() {
   const navigate = useNavigate();
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
-  const spaceId = shared.instance.spaceId;
   const instanceId = shared.id;
   const projectId = shared.instance.projectId;
   const workingDirectory = shared.instance.workingDirectory;
@@ -486,44 +471,30 @@ export function InstanceViewContent() {
       );
       const draftBody = stripSpinOffPrefix(mergedText);
 
-      if (spaceId) {
-        // Space chat: dispatch event so the space view creates a tab
-        window.dispatchEvent(
-          new CustomEvent("relay:send-to-new-chat", {
-            detail: {
-              spaceId,
-              message: draftBody,
-              spinOffId: draft.id,
-              spinOffSourceName: sourceName,
-            },
-          }),
-        );
-      } else {
-        // Standalone chat: create a new instance, prefill draft, navigate
-        // The spin-off stays in the source chat's account.
-        const created = await createInstance({ workingDirectory, accountId: sourceAccountId });
-        // Store source metadata for the styled bar
-        storeSpinOffMeta(created.id, { sourceName, spinOffId: draft.id });
-        // Seed the composer draft so the user can review/edit before sending
-        try {
-          sessionStorage.setItem(`relay:draft:${created.id}`, draftBody);
-        } catch {
-          // sessionStorage unavailable — fall back to sending directly
-          send({
-            type: "instance_message",
-            instanceId: created.id,
-            text: mergedText,
-          });
-        }
-        markSpinOffSent(draft.id, created.id).catch(() => {
-          // Non-fatal — packet was already delivered as a message
+      // Create a new instance, prefill draft, navigate.
+      // The spin-off stays in the source chat's account.
+      const created = await createInstance({ workingDirectory, accountId: sourceAccountId });
+      // Store source metadata for the styled bar
+      storeSpinOffMeta(created.id, { sourceName, spinOffId: draft.id });
+      // Seed the composer draft so the user can review/edit before sending
+      try {
+        sessionStorage.setItem(`relay:draft:${created.id}`, draftBody);
+      } catch {
+        // sessionStorage unavailable — fall back to sending directly
+        send({
+          type: "instance_message",
+          instanceId: created.id,
+          text: mergedText,
         });
-        if (projectId) {
-          void navigate({
-            to: "/projects/$projectId/chats/$chatId",
-            params: { projectId, chatId: created.id },
-          });
-        }
+      }
+      markSpinOffSent(draft.id, created.id).catch(() => {
+        // Non-fatal — packet was already delivered as a message
+      });
+      if (projectId) {
+        void navigate({
+          to: "/projects/$projectId/chats/$chatId",
+          params: { projectId, chatId: created.id },
+        });
       }
       setSpinOffDialogOpen(false);
       setSpinOffDialogState(null);
@@ -542,7 +513,6 @@ export function InstanceViewContent() {
     navigate,
     projectId,
     send,
-    spaceId,
     spinOffDialogState,
     spinOffEdits,
     spinOffIncludeTouchedFiles,
@@ -568,7 +538,7 @@ export function InstanceViewContent() {
     s.conditions?.some((c) => c === "has-changes" || c === "has-reviewable-diff"),
   );
 
-  // Per-instance dirty check — a space chat's worktree may differ from the project
+  // Per-instance dirty check — a chat's worktree may differ from the project
   // root, so project-level branch data would give the wrong answer here.
   const { data: instanceGitStatus } = useQuery({
     ...chatGitStatusQueryOptions(instanceId),
@@ -577,7 +547,6 @@ export function InstanceViewContent() {
   });
 
   // Filter suggestions by conditions the client can evaluate
-  const isInSpace = !!spaceId && siblingCandidates.filter((i) => i.spaceId === spaceId).length > 1;
   const hasChanges = instanceGitStatus?.dirty ?? false;
   // Fall back to `dirty` if server didn't populate `reviewableDiff` (older builds).
   const hasReviewableDiff = instanceGitStatus?.reviewableDiff ?? instanceGitStatus?.dirty ?? false;
@@ -590,14 +559,15 @@ export function InstanceViewContent() {
     const conditionState: Partial<Record<SuggestionCondition, boolean>> = {
       "has-changes": hasChanges,
       "has-reviewable-diff": hasReviewableDiff,
-      "in-space": isInSpace,
+      // Spaces are gone; suggestions that need one never apply.
+      "in-space": false,
     };
 
     return resolvedSuggestions.filter((s) => {
       if (!s.conditions?.length) return true;
       return s.conditions.every((c) => conditionState[c] ?? true);
     });
-  }, [resolvedSuggestions, hasChanges, hasReviewableDiff, isInSpace]);
+  }, [resolvedSuggestions, hasChanges, hasReviewableDiff]);
 
   const clearPendingDraft = useCallback(() => setPendingDraft(null), []);
 
@@ -606,37 +576,8 @@ export function InstanceViewContent() {
     const relaySource =
       embeddedSourceChat ??
       (reviewSource ? { id: reviewSource.id, name: reviewSource.name } : undefined);
-    const siblings =
-      isReviewMode || embeddedSourceChat
-        ? []
-        : spaceId
-          ? siblingCandidates
-              .filter((inst) => inst.spaceId === spaceId && inst.id !== instanceId)
-              .map((inst) => ({ id: inst.id, name: inst.name, status: inst.status }))
-          : [];
-
     return {
-      siblings,
       instanceId,
-      onSendToChat: (targetId: string, messageText: string) => {
-        const sourceChat = allInstances.find((inst) => inst.id === instanceId);
-        const sourceName = sourceChat?.name || "Unknown";
-        const attributed = `[From: ${sourceName}] ${messageText}`;
-        send({ type: "instance_message", instanceId: targetId, text: attributed });
-      },
-      onSendToNewChat: (messageText: string) => {
-        if (isReviewMode || embeddedSourceChat) return;
-        const sourceChat = allInstances.find((inst) => inst.id === instanceId);
-        const sourceName = sourceChat?.name || "Unknown";
-        const attributed = `[From: ${sourceName}] ${messageText}`;
-        if (spaceId) {
-          window.dispatchEvent(
-            new CustomEvent("relay:send-to-new-chat", {
-              detail: { spaceId, message: attributed },
-            }),
-          );
-        }
-      },
       sourceChat: relaySource,
       onSendToSourceChat: relaySource
         ? (messageText: string) => {
@@ -668,10 +609,7 @@ export function InstanceViewContent() {
       },
     };
   }, [
-    spaceId,
     instanceId,
-    allInstances,
-    siblingCandidates,
     isReviewMode,
     reviewSource,
     send,
@@ -840,7 +778,6 @@ export function InstanceViewContent() {
               onReconnect={reconnectNow}
               instanceId={shared.id}
               projectId={shared.instance.projectId}
-              spaceId={shared.instance.spaceId}
               isStopped={shared.isStopped}
               provider={shared.instance.provider}
               preferredModel={shared.instance.preferredModel}

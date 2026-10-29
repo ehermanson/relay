@@ -4,7 +4,7 @@ import { useTerminalStore, scopeKey } from "@/stores/terminal-store";
 import type { TerminalScope } from "@shared/types";
 
 /**
- * Sidebar badge that flags a chat or space with live (running) terminals.
+ * Sidebar badge that flags a chat with live (running) terminals.
  *
  * Reads the global per-scope live-terminal count maintained by the
  * `terminal_scopes` broadcast, so it lights up even for scopes the user

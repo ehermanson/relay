@@ -1,17 +1,12 @@
-import { GitBranch, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import { Button } from "./ui/button";
 
 interface EmptyProjectActionsProps {
   onNewChat: () => void;
-  onNewSpace: () => void;
   size?: "default" | "compact";
 }
 
-export function EmptyProjectActions({
-  onNewChat,
-  onNewSpace,
-  size = "default",
-}: EmptyProjectActionsProps) {
+export function EmptyProjectActions({ onNewChat, size = "default" }: EmptyProjectActionsProps) {
   if (size === "compact") {
     return (
       <div className="flex items-center gap-1">
@@ -23,15 +18,6 @@ export function EmptyProjectActions({
         >
           <MessageSquare size={11} />
           New Chat
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onNewSpace}
-          className="flex-1 text-[0.6875rem] border border-border bg-bg hover:border-border-bright"
-        >
-          <GitBranch size={11} />
-          New Space
         </Button>
       </div>
     );
@@ -47,15 +33,6 @@ export function EmptyProjectActions({
       >
         <MessageSquare size={14} />
         New Chat
-      </Button>
-      <Button
-        variant="ghost"
-        size="lg"
-        onClick={onNewSpace}
-        className="flex-1 border border-border bg-bg hover:border-border-bright"
-      >
-        <GitBranch size={14} />
-        New Space
       </Button>
     </div>
   );

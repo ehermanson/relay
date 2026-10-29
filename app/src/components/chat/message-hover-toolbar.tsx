@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Copy, Check, Send, GitBranchPlus, Reply } from "lucide-react";
-import { Menu } from "@/components/ui/menu";
+import { Copy, Check, GitBranchPlus, Reply } from "lucide-react";
 import { useMessageRelay } from "@/components/chat/message-relay-context";
 import { toast } from "sonner";
 
@@ -49,9 +48,7 @@ export function MessageHoverToolbar({
 }: MessageHoverToolbarProps) {
   const relay = useMessageRelay();
   const [copied, setCopied] = useState(false);
-  const [hoveredIcon, setHoveredIcon] = useState<"copy" | "spin-off" | "send" | "source" | null>(
-    null,
-  );
+  const [hoveredIcon, setHoveredIcon] = useState<"copy" | "spin-off" | "source" | null>(null);
 
   if (!visible) return null;
 
@@ -65,13 +62,8 @@ export function MessageHoverToolbar({
     }
   };
 
-  const hasSiblings = relay && relay.siblings.length > 0;
-  const showSendMenu = hasSiblings;
-
   const positionClasses =
     position === "top" ? "absolute -top-4 right-2 z-10" : "absolute bottom-3 right-2 z-10";
-
-  const menuSide = position === "top" ? "bottom" : "top";
 
   return (
     <div
@@ -141,51 +133,6 @@ export function MessageHoverToolbar({
                 <Reply size={12} />
               </button>
             </div>
-          )}
-
-          {showSendMenu && (
-            <Menu.Root>
-              <div className="relative">
-                <ToolbarIconTooltip
-                  content="Send to chat"
-                  visible={hoveredIcon === "send"}
-                  align="end"
-                />
-                <Menu.Trigger
-                  onMouseEnter={() => setHoveredIcon("send")}
-                  onMouseLeave={() => setHoveredIcon(null)}
-                  onFocus={() => setHoveredIcon("send")}
-                  onBlur={() => setHoveredIcon(null)}
-                  className="rounded p-1 text-muted transition-colors hover:bg-surface-hover hover:text-text"
-                  aria-label="Send to chat"
-                >
-                  <Send size={12} />
-                </Menu.Trigger>
-              </div>
-              <Menu.Content side={menuSide} align="end">
-                {relay.siblings.map((sibling) => (
-                  <Menu.Item
-                    key={sibling.id}
-                    onClick={() => {
-                      relay.onSendToChat(sibling.id, text);
-                      toast.success(`Sent to "${sibling.name}"`);
-                    }}
-                  >
-                    <span className="truncate">{sibling.name}</span>
-                    <span className="ml-auto text-[0.6875rem] text-muted">{sibling.status}</span>
-                  </Menu.Item>
-                ))}
-                <Menu.Separator />
-                <Menu.Item
-                  onClick={() => {
-                    relay.onSendToNewChat(text);
-                    toast.success("Sent to new chat");
-                  }}
-                >
-                  <span className="text-accent">New chat</span>
-                </Menu.Item>
-              </Menu.Content>
-            </Menu.Root>
           )}
         </>
       )}

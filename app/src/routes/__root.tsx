@@ -44,7 +44,6 @@ const PERSISTED_QUERY_KEYS = new Set([
   "projectArtifacts",
   "projectIcons",
   "global-settings",
-  "spaces",
 ]);
 
 const persister = createSyncStoragePersister({
@@ -69,7 +68,8 @@ const persistOptions = {
   // v6: Accounts became bundles of per-provider logins; chat summaries carry
   // `accountId` and project membership holds account ids. A cache from the
   // login-profile shape would scope chats to the wrong account until refetch.
-  buster: "v6",
+  // v7: Spaces were removed from the UI; drop persisted `spaces` queries.
+  buster: "v7",
   dehydrateOptions: {
     // Structurally typed (not `Query`) to avoid nominal-type clashes between
     // the query-core copies hoisted by react-query vs the persist packages.

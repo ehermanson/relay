@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EmptyProjectActions } from "@/components/empty-project-actions";
 import { EmptyState } from "@/components/empty-state";
-import { CreateSpaceDialog, useCreateSpaceDialog } from "@/components/spaces/create-space-dialog";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useProjectContext } from "@/context/project-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
@@ -14,7 +13,7 @@ import { useActionToasts } from "@/context/action-toast-context";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { chatBelongsToAccount } from "@/lib/account-scope";
-import { fetchProjectChats, fetchAllSpaces } from "@/lib/api";
+import { fetchProjectChats } from "@/lib/api";
 import { getInstanceChatRoute, instanceMatchesProject } from "@/lib/project-route";
 import { isAttachedReviewInstance } from "@/lib/review-session";
 import { isDelegatedChildInstance } from "@/lib/delegation";
@@ -153,16 +152,9 @@ export function ProjectChatList() {
   const { trackInstanceCreate } = useActionToasts();
   const account = useActiveAccount();
   const [searchQuery, setSearchQuery] = useState("");
-  const spaceDialog = useCreateSpaceDialog();
   const projectId = artifacts.projectId || routeProjectId;
-  const spacesQueryKey = ["spaces", projectId] as const;
   const chatsQueryKey = ["projectChats", projectId] as const;
 
-  const { data: spaces = [] } = useQuery({
-    queryKey: spacesQueryKey,
-    queryFn: () => fetchAllSpaces(projectId),
-    enabled: !!projectId,
-  });
   const { data: chatSummaries = [] } = useQuery({
     queryKey: chatsQueryKey,
     queryFn: () => fetchProjectChats(projectId),
@@ -171,16 +163,12 @@ export function ProjectChatList() {
 
   useEffect(() => {
     return addMessageHandler((message) => {
-      if (message.type === "space_list" && message.projectDirectory === artifacts.directory) {
-        queryClient.setQueryData(spacesQueryKey, message.spaces);
-        return;
-      }
       if (message.type === "instance_created" || message.type === "instance_removed") {
         void queryClient.invalidateQueries({ queryKey: chatsQueryKey });
         return;
       }
     });
-  }, [addMessageHandler, artifacts.directory, chatsQueryKey, queryClient, spacesQueryKey]);
+  }, [addMessageHandler, chatsQueryKey, queryClient]);
 
   // Overview is a per-account view too: with several accounts only chats bound
   // to the active one are listed (the sidebar applies the same rule).
@@ -200,18 +188,7 @@ export function ProjectChatList() {
     projectInstancesMap.set(inst.id, inst);
   }
   const projectInstances = Array.from(projectInstancesMap.values()).sort(compareChatListOrder);
-  // Resolve a chat's space tag (branch, falling back to space name). Default
-  // ("main") space chats are untagged standalone chats.
-  const spacesById = new Map(spaces.map((s) => [s.id, s]));
-  const spaceLabelFor = (inst: InstanceInfo): string | undefined => {
-    if (!inst.spaceId) return undefined;
-    const space = spacesById.get(inst.spaceId);
-    if (!space || space.isDefault) return undefined;
-    return space.gitBranch ?? space.name;
-  };
-
-  // One flat list on every viewport — standalone + space chats together, each
-  // space chat tagged with its branch. The Spaces tab handles space lifecycle.
+  // One flat list on every viewport.
   const listInstances = projectInstances.filter(
     (inst) => !isAttachedReviewInstance(inst) && !isDelegatedChildInstance(inst),
   );
@@ -236,7 +213,6 @@ export function ProjectChatList() {
         (inst) =>
           inst.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           inst.gitBranch?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          spaceLabelFor(inst)?.toLowerCase().includes(searchQuery.toLowerCase()) ||
           inst.lastMessage?.text?.toLowerCase().includes(searchQuery.toLowerCase()),
       )
     : listInstances;
@@ -249,12 +225,6 @@ export function ProjectChatList() {
         workingDirectory: artifacts.directory,
         accountId: account.accountIdParam,
       });
-    }
-  };
-
-  const handleNewSpace = () => {
-    if (artifacts.directory) {
-      spaceDialog.open(artifacts.directory);
     }
   };
 
@@ -276,10 +246,10 @@ export function ProjectChatList() {
         <EmptyState
           icon={<MessageSquare size={24} strokeWidth={1.5} />}
           title="No chats yet"
-          description="Start a chat or create a space to get going"
+          description="Start a chat to get going"
         >
           <div className="mt-5">
-            <EmptyProjectActions onNewChat={handleNewChat} onNewSpace={handleNewSpace} />
+            <EmptyProjectActions onNewChat={handleNewChat} />
           </div>
         </EmptyState>
       ) : filtered.length === 0 ? (
@@ -289,7 +259,7 @@ export function ProjectChatList() {
       ) : isMobile ? (
         <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/80 bg-surface">
           {filtered.map((inst) => (
-            <ChatListRow key={inst.id} instance={inst} showModel spaceLabel={spaceLabelFor(inst)} />
+            <ChatListRow key={inst.id} instance={inst} showModel />
           ))}
         </div>
       ) : (
@@ -309,13 +279,6 @@ export function ProjectChatList() {
           ))}
         </div>
       )}
-
-      <CreateSpaceDialog
-        dir={spaceDialog.dir}
-        projectName={artifacts.directory?.split("/").pop() || artifacts.directory || ""}
-        projectId={projectId}
-        onOpenChange={(open) => !open && spaceDialog.close()}
-      />
     </>
   );
 }

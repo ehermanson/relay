@@ -11,7 +11,6 @@ import {
   CircleDashed,
   CircleX,
   EllipsisVertical,
-  GitBranch,
   ListChecks,
   MessageSquarePlus,
   Send,
@@ -35,7 +34,7 @@ import { useProjectContext } from "@/context/project-context";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useScopedTasks } from "@/hooks/use-scoped-tasks";
-import type { SpaceInfo, Task, TaskComment, TaskStatus, TaskType } from "@shared/types";
+import type { Task, TaskComment, TaskStatus, TaskType } from "@shared/types";
 import {
   TaskApiError,
   addTaskCommentApi,
@@ -46,11 +45,9 @@ import {
   deleteTaskApi,
   initTasksApi,
   createInstance,
-  createSpace,
-  fetchAllSpaces,
   searchChats,
 } from "@/lib/api";
-import { getInstanceChatRoute, getSpaceRoute } from "@/lib/project-route";
+import { getInstanceChatRoute } from "@/lib/project-route";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { buildTaskReference } from "@/lib/task-links";
 import { formatTimeAgo, getChatRecencyTimestamp } from "@/lib/utils";
@@ -58,9 +55,7 @@ import { patchTasksSearch } from "@/routes/_app/projects/$projectId/tasks/-searc
 import {
   filterTasksForView,
   hasRevisionedTaskShape,
-  normalizeTaskSpaceId,
   TASK_VIEW_STATUSES,
-  taskScopeKey,
   type TaskListView,
 } from "@/lib/task-scope";
 
@@ -210,12 +205,10 @@ function TaskCard({
   task,
   onClick,
   onStartChat,
-  canStartChat = true,
 }: {
   task: Task;
   onClick: () => void;
   onStartChat: (task: Task) => void;
-  canStartChat?: boolean;
 }) {
   const timeAgo = formatTimeAgo(task.updatedAt);
   const blockerCount = task.blockedBy?.length ?? 0;
@@ -237,19 +230,17 @@ function TaskCard({
         <span className="text-[0.8125rem] font-medium leading-snug text-text-bright">
           {task.title}
         </span>
-        {canStartChat && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="ml-auto h-7 shrink-0 px-2 text-[0.6875rem]"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStartChat(task);
-            }}
-          >
-            Start Chat
-          </Button>
-        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-7 shrink-0 px-2 text-[0.6875rem]"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStartChat(task);
+          }}
+        >
+          Start Chat
+        </Button>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="shrink-0 font-mono text-[0.625rem] text-muted/70">{task.id}</span>
@@ -281,28 +272,22 @@ function TaskCard({
 
 function TaskDrawerBody({
   projectId,
-  spaceId,
   task,
   allTasks,
   onSelectTask,
   onUpdate,
   onDelete,
   onStartChat,
-  onStartSpace,
-  readOnly,
   showBack,
   onBack,
 }: {
   projectId: string;
-  spaceId?: string;
   task: Task;
   allTasks: Task[];
   onSelectTask: (id: string) => void;
   onUpdate: (task: Task, patch: Partial<Task>) => void;
   onDelete: (task: Task) => void;
   onStartChat: (task: Task) => void;
-  onStartSpace: (task: Task) => void;
-  readOnly?: boolean;
   showBack?: boolean;
   onBack?: () => void;
 }) {
@@ -317,14 +302,14 @@ function TaskDrawerBody({
   const [commentError, setCommentError] = useState("");
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const queryClient = useQueryClient();
-  const commentsQueryKey = ["taskComments", projectId, spaceId ?? "main", task.id] as const;
+  const commentsQueryKey = ["taskComments", projectId, task.id] as const;
   const {
     data: comments = [],
     isLoading: commentsLoading,
     isError: commentsError,
   } = useQuery({
     queryKey: commentsQueryKey,
-    queryFn: () => fetchTaskComments(projectId, task.id, { spaceId }),
+    queryFn: () => fetchTaskComments(projectId, task.id),
   });
 
   const handleSave = () => {
@@ -349,14 +334,12 @@ function TaskDrawerBody({
   const parentTask = task.parent ? allTasks.find((t) => t.id === task.parent) : null;
   const navigate = useNavigate({ from: "/projects/$projectId/tasks/" });
   const { data: relatedChats = [], isLoading: relatedChatsLoading } = useQuery({
-    queryKey: ["taskRelatedChats", projectId, spaceId ?? "main", task.id],
+    queryKey: ["taskRelatedChats", projectId, task.id],
     queryFn: async () => {
       const results = await searchChats(`@task:${task.id}`, { projectId, limit: 50 });
-      return results
-        .filter((chat) => taskScopeKey(chat.spaceId) === taskScopeKey(spaceId))
-        .sort(
-          (a, b) => (b.lastMessageAt ?? b.lastActivityAt) - (a.lastMessageAt ?? a.lastActivityAt),
-        );
+      return results.sort(
+        (a, b) => (b.lastMessageAt ?? b.lastActivityAt) - (a.lastMessageAt ?? a.lastActivityAt),
+      );
     },
     enabled: Boolean(projectId),
   });
@@ -401,25 +384,19 @@ function TaskDrawerBody({
                 <EllipsisVertical size={14} />
               </Menu.Trigger>
               <Menu.Content>
-                {!readOnly && (
-                  <Menu.Item onClick={() => onStartChat(task)}>
-                    <MessageSquarePlus size={13} strokeWidth={2} className="text-muted" />
-                    Start Chat
-                  </Menu.Item>
-                )}
-                <Menu.Item onClick={() => onStartSpace(task)}>
-                  <GitBranch size={13} strokeWidth={2} className="text-muted" />
-                  Start Space
+                <Menu.Item onClick={() => onStartChat(task)}>
+                  <MessageSquarePlus size={13} strokeWidth={2} className="text-muted" />
+                  Start Chat
                 </Menu.Item>
                 <Menu.Separator />
-                {!task.archived && !readOnly && (
+                {!task.archived && (
                   <Menu.Item onClick={() => setEditing(true)}>
                     <Pencil size={13} strokeWidth={2} className="text-muted" />
                     Edit
                   </Menu.Item>
                 )}
-                {!task.archived && !readOnly && <Menu.Separator />}
-                {!task.archived && !readOnly && (
+                {!task.archived && <Menu.Separator />}
+                {!task.archived && (
                   <Menu.Item danger onClick={() => setConfirmDelete(true)}>
                     <Trash2 size={13} />
                     Delete
@@ -434,13 +411,13 @@ function TaskDrawerBody({
       <Drawer.Body className="px-5 py-4">
         {/* Status + metadata */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          {task.archived || readOnly ? (
+          {task.archived ? (
             <>
               <Badge>
                 <StatusIcon status={task.status} size={10} />
                 {statusLabels[task.status]}
               </Badge>
-              {task.archived && !readOnly && (
+              {task.archived && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -547,15 +524,10 @@ function TaskDrawerBody({
           ) : relatedChats.length > 0 ? (
             <div className="flex flex-col gap-1">
               {relatedChats.map((chat) => {
-                const route = chat.spaceId
-                  ? {
-                      to: "/projects/$projectId/spaces/$spaceId/$chatId" as const,
-                      params: { projectId, spaceId: chat.spaceId, chatId: chat.instanceId },
-                    }
-                  : {
-                      to: "/projects/$projectId/chats/$chatId" as const,
-                      params: { projectId, chatId: chat.instanceId },
-                    };
+                const route = {
+                  to: "/projects/$projectId/chats/$chatId" as const,
+                  params: { projectId, chatId: chat.instanceId },
+                };
                 return (
                   <button
                     key={chat.instanceId}
@@ -630,47 +602,38 @@ function TaskDrawerBody({
           ) : (
             <p className="mb-3 text-[0.75rem] text-muted">No discussion yet.</p>
           )}
-          {!readOnly && (
-            <div className="flex items-end gap-2">
-              <Textarea
-                value={commentBody}
-                onChange={(event) => setCommentBody(event.target.value)}
-                rows={2}
-                inputSize="sm"
-                placeholder="Add a comment"
-                className="flex-1"
-              />
-              <Button
-                variant="primary"
-                size="sm"
-                className="max-[768px]:min-h-10"
-                disabled={commentSubmitting || !commentBody.trim()}
-                onClick={async () => {
-                  setCommentSubmitting(true);
-                  setCommentError("");
-                  try {
-                    await addTaskCommentApi(
-                      projectId,
-                      task.id,
-                      { body: commentBody.trim() },
-                      { spaceId },
-                    );
-                    setCommentBody("");
-                    await queryClient.invalidateQueries({ queryKey: commentsQueryKey });
-                  } catch (error) {
-                    setCommentError(
-                      error instanceof Error ? error.message : "Failed to add comment",
-                    );
-                  } finally {
-                    setCommentSubmitting(false);
-                  }
-                }}
-              >
-                <Send size={12} />
-                Comment
-              </Button>
-            </div>
-          )}
+          <div className="flex items-end gap-2">
+            <Textarea
+              value={commentBody}
+              onChange={(event) => setCommentBody(event.target.value)}
+              rows={2}
+              inputSize="sm"
+              placeholder="Add a comment"
+              className="flex-1"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              className="max-[768px]:min-h-10"
+              disabled={commentSubmitting || !commentBody.trim()}
+              onClick={async () => {
+                setCommentSubmitting(true);
+                setCommentError("");
+                try {
+                  await addTaskCommentApi(projectId, task.id, { body: commentBody.trim() });
+                  setCommentBody("");
+                  await queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+                } catch (error) {
+                  setCommentError(error instanceof Error ? error.message : "Failed to add comment");
+                } finally {
+                  setCommentSubmitting(false);
+                }
+              }}
+            >
+              <Send size={12} />
+              Comment
+            </Button>
+          </div>
           {commentError && <p className="mt-2 text-[0.75rem] text-error">{commentError}</p>}
         </div>
       </Drawer.Body>
@@ -704,7 +667,6 @@ interface StackItem {
 
 function StackedDrawer({
   projectId,
-  spaceId,
   item,
   task,
   allTasks,
@@ -715,11 +677,8 @@ function StackedDrawer({
   onUpdate,
   onDelete,
   onStartChat,
-  onStartSpace,
-  readOnly,
 }: {
   projectId: string;
-  spaceId?: string;
   item: StackItem;
   task: Task | null;
   allTasks: Task[];
@@ -730,16 +689,14 @@ function StackedDrawer({
   onUpdate: (task: Task, patch: Partial<Task>) => void;
   onDelete: (task: Task) => void;
   onStartChat: (task: Task) => void;
-  onStartSpace: (task: Task) => void;
-  readOnly?: boolean;
 }) {
   const {
     data: fetchedTask,
     isLoading: taskLoading,
     isError: taskError,
   } = useQuery({
-    queryKey: ["task", projectId, spaceId ?? "main", item.taskId],
-    queryFn: () => fetchTask(projectId, item.taskId, { spaceId }),
+    queryKey: ["task", projectId, item.taskId],
+    queryFn: () => fetchTask(projectId, item.taskId),
     enabled: item.open && !task,
   });
   const lastTask = useRef<Task | null>(null);
@@ -763,15 +720,12 @@ function StackedDrawer({
           <TaskDrawerBody
             key={display.id}
             projectId={projectId}
-            spaceId={spaceId}
             task={display}
             allTasks={allTasks}
             onSelectTask={onSelectTask}
             onUpdate={onUpdate}
             onDelete={onDelete}
             onStartChat={onStartChat}
-            onStartSpace={onStartSpace}
-            readOnly={readOnly}
             showBack={!isFirst}
             onBack={onClose}
           />
@@ -779,9 +733,7 @@ function StackedDrawer({
         {!display && taskLoading && <div className="p-5 text-sm text-muted">Loading task…</div>}
         {!display && !taskLoading && (
           <div className="p-5 text-sm text-muted">
-            {taskError
-              ? "This task could not be loaded."
-              : "This task was not found in this Space."}
+            {taskError ? "This task could not be loaded." : "This task was not found."}
           </div>
         )}
       </Drawer.Content>
@@ -797,14 +749,12 @@ function KanbanColumn({
   mobile,
   onSelectTask,
   onStartChat,
-  canStartChat,
 }: {
   status: string;
   tasks: Task[];
   mobile?: boolean;
   onSelectTask: (id: string) => void;
   onStartChat: (task: Task) => void;
-  canStartChat?: boolean;
 }) {
   if (tasks.length === 0) return null;
 
@@ -828,7 +778,6 @@ function KanbanColumn({
             task={task}
             onClick={() => onSelectTask(task.id)}
             onStartChat={onStartChat}
-            canStartChat={canStartChat}
           />
         ))}
       </div>
@@ -840,12 +789,10 @@ function KanbanColumn({
 
 function CreateTaskForm({
   projectId,
-  spaceId,
   allTasks,
   onCreated,
 }: {
   projectId: string;
-  spaceId?: string;
   allTasks: Task[];
   onCreated: () => void;
 }) {
@@ -879,21 +826,17 @@ function CreateTaskForm({
     setSubmitting(true);
     setError("");
     try {
-      await createTaskApi(
-        projectId,
-        {
-          title: title.trim(),
-          description: description.trim() || undefined,
-          priority,
-          type,
-          tags: tags
-            .split(",")
-            .map((t) => t.trim())
-            .filter(Boolean),
-          parent: parent || null,
-        },
-        { spaceId },
-      );
+      await createTaskApi(projectId, {
+        title: title.trim(),
+        description: description.trim() || undefined,
+        priority,
+        type,
+        tags: tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        parent: parent || null,
+      });
       const createdTitle = title.trim();
       close();
       onCreated();
@@ -1012,7 +955,6 @@ export function TasksPage() {
   const {
     task: selectedId,
     sort: sortParam,
-    space: spaceParam,
     view: viewParam,
   } = useSearch({
     from: "/_app/projects/$projectId/tasks/",
@@ -1023,20 +965,10 @@ export function TasksPage() {
   const projectId = artifacts.projectId;
   const queryClient = useQueryClient();
   const view: TaskListView = viewParam === "history" ? "history" : "unfinished";
-  const { data: spaces = artifacts.spaces } = useQuery({
-    queryKey: ["spaces", projectId],
-    queryFn: () => fetchAllSpaces(projectId),
-    initialData: artifacts.spaces,
-  });
-  const spaceId = normalizeTaskSpaceId(spaceParam, spaces);
-  const selectedSpace = spaces.find((space) => space.id === spaceId);
-  const scopeName = selectedSpace?.name ?? (spaceId ? "the selected Space" : "Main");
-  const scopeIsWritable = !selectedSpace || selectedSpace.status === "active";
-
-  const tasksQuery = useScopedTasks(projectId, spaceId, {
+  const tasksQuery = useScopedTasks(projectId, {
     view,
     initialData:
-      !spaceId && view === "unfinished" && hasRevisionedTaskShape(artifacts.tasks)
+      view === "unfinished" && hasRevisionedTaskShape(artifacts.tasks)
         ? artifacts.tasks
         : undefined,
   });
@@ -1048,7 +980,7 @@ export function TasksPage() {
       : "priority";
 
   const refreshTasks = async () => {
-    await queryClient.invalidateQueries({ queryKey: ["tasks", projectId, taskScopeKey(spaceId)] });
+    await queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
   };
 
   const handleMutationError = async (error: unknown, fallback: string) => {
@@ -1072,16 +1004,9 @@ export function TasksPage() {
 
   const handleUpdate = async (task: Task, patch: Partial<Task>) => {
     try {
-      await updateTaskApi(
-        projectId,
-        task.id,
-        { ...patch, expectedRevision: task.revision },
-        { spaceId },
-      );
+      await updateTaskApi(projectId, task.id, { ...patch, expectedRevision: task.revision });
       await refreshTasks();
-      await queryClient.invalidateQueries({
-        queryKey: ["task", projectId, taskScopeKey(spaceId), task.id],
-      });
+      await queryClient.invalidateQueries({ queryKey: ["task", projectId, task.id] });
       if (patch.title || patch.description || patch.priority != null || patch.type || patch.tags) {
         toast.success("Task updated");
       }
@@ -1092,7 +1017,7 @@ export function TasksPage() {
 
   const handleDelete = async (task: Task) => {
     try {
-      await deleteTaskApi(projectId, task.id, task.revision, { spaceId });
+      await deleteTaskApi(projectId, task.id, task.revision);
       setStack([]);
       navigate({ search: patchTasksSearch({ task: undefined }) });
       await refreshTasks();
@@ -1102,34 +1027,24 @@ export function TasksPage() {
     }
   };
 
-  const maybePromoteTaskToInProgress = async (task: Task, targetSpaceId = spaceId) => {
+  const maybePromoteTaskToInProgress = async (task: Task) => {
     if (task.status !== "open") return true;
     const previousStatus = task.status;
     try {
-      const updated = await updateTaskApi(
-        projectId,
-        task.id,
-        { status: "in_progress", expectedRevision: task.revision },
-        { spaceId: targetSpaceId },
-      );
-      await queryClient.invalidateQueries({
-        queryKey: ["tasks", projectId, taskScopeKey(targetSpaceId)],
+      const updated = await updateTaskApi(projectId, task.id, {
+        status: "in_progress",
+        expectedRevision: task.revision,
       });
+      await queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
       toast.success("Task moved to In Progress", {
         action: {
           label: "Undo",
           onClick: () => {
-            void updateTaskApi(
-              projectId,
-              task.id,
-              { status: previousStatus, expectedRevision: updated.revision },
-              { spaceId: targetSpaceId },
-            )
-              .then(() =>
-                queryClient.invalidateQueries({
-                  queryKey: ["tasks", projectId, taskScopeKey(targetSpaceId)],
-                }),
-              )
+            void updateTaskApi(projectId, task.id, {
+              status: previousStatus,
+              expectedRevision: updated.revision,
+            })
+              .then(() => queryClient.invalidateQueries({ queryKey: ["tasks", projectId] }))
               .catch(() => {
                 toast.error("Failed to restore task status");
               });
@@ -1150,12 +1065,10 @@ export function TasksPage() {
       return;
     }
     try {
-      const created = spaceId
-        ? await createInstance({ spaceId, accountId: accountIdParam })
-        : await createInstance({
-            workingDirectory: artifacts.directory,
-            accountId: accountIdParam,
-          });
+      const created = await createInstance({
+        workingDirectory: artifacts.directory,
+        accountId: accountIdParam,
+      });
       const draft = buildTaskReference(task);
       sessionStorage.setItem(`relay:draft:${created.id}`, draft);
       await maybePromoteTaskToInProgress(task);
@@ -1164,43 +1077,6 @@ export function TasksPage() {
       if (!reportCreateInstanceError(e, () => handleStartChat(task))) {
         toast.error(e instanceof Error ? e.message : "Failed to start chat");
       }
-    }
-  };
-
-  const handleStartSpace = async (task: Task) => {
-    // Create the chat for an existing space. Capacity-only failures retry just
-    // this step so we don't create a second space for the one already made.
-    const startChatInSpace = async (newSpaceId: string) => {
-      try {
-        const created = await createInstance({ spaceId: newSpaceId, accountId: accountIdParam });
-        const draft = buildTaskReference(task);
-        sessionStorage.setItem(`relay:draft:${created.id}`, draft);
-        const taskInNewSpace = await fetchTask(projectId, task.id, { spaceId: newSpaceId });
-        if (taskInNewSpace) {
-          await maybePromoteTaskToInProgress(taskInNewSpace, newSpaceId);
-        } else {
-          toast.warning(
-            "Space created, but this task is not in its worktree. Commit the task file before creating a Space, or add it to the new Space.",
-          );
-        }
-        await queryClient.invalidateQueries({ queryKey: ["spaces", projectId] });
-        await navigate(getSpaceRoute(projectId, newSpaceId, created.id));
-      } catch (e) {
-        if (!reportCreateInstanceError(e, () => startChatInSpace(newSpaceId))) {
-          toast.error(e instanceof Error ? e.message : "Failed to start space");
-        }
-      }
-    };
-
-    try {
-      const space = await createSpace(projectId, {
-        name: task.title,
-        description: task.description || undefined,
-        baseBranch: selectedSpace?.gitBranch || undefined,
-      });
-      await startChatInSpace(space.id);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to start space");
     }
   };
 
@@ -1276,30 +1152,8 @@ export function TasksPage() {
 
   // ─── Empty state: init tasks or migrate ─────────────────────────────────
 
-  const scopeControls = (
+  const viewControls = (
     <div className="flex flex-wrap items-center gap-2">
-      <Select
-        value={spaceId ?? ""}
-        onChange={(event) => {
-          const nextSpaceId = event.target.value || undefined;
-          setStack([]);
-          navigate({
-            search: patchTasksSearch({ space: nextSpaceId, task: undefined }),
-            replace: true,
-          });
-        }}
-        aria-label="Task Space"
-      >
-        <option value="">Main</option>
-        {spaces
-          .filter((space: SpaceInfo) => !space.isDefault)
-          .map((space: SpaceInfo) => (
-            <option key={space.id} value={space.id}>
-              {space.name}
-              {space.status === "active" ? "" : ` (${space.status})`}
-            </option>
-          ))}
-      </Select>
       <div className="flex rounded-md border border-border p-0.5">
         {(["unfinished", "history"] as TaskListView[]).map((option) => (
           <button
@@ -1330,7 +1184,7 @@ export function TasksPage() {
       <PageShell>
         <EmptyState
           icon={<ListChecks size={24} strokeWidth={1.5} />}
-          title={`Could not load tasks from ${scopeName}`}
+          title="Could not load tasks"
           description={
             tasksQuery.error instanceof Error
               ? tasksQuery.error.message
@@ -1338,7 +1192,7 @@ export function TasksPage() {
           }
         >
           <div className="mt-5 flex flex-col items-center gap-3">
-            {scopeControls}
+            {viewControls}
             <Button size="sm" onClick={() => tasksQuery.refetch()}>
               Retry
             </Button>
@@ -1354,15 +1208,15 @@ export function TasksPage() {
         <EmptyState
           icon={<ListChecks size={24} strokeWidth={1.5} />}
           title="No tasks initialized"
-          description={`Initialize task tracking in ${scopeName}`}
+          description="Initialize task tracking for this project"
         >
           <div className="mt-5 flex flex-col items-center gap-4">
-            {scopeControls}
+            {viewControls}
             <Button
               size="sm"
               onClick={async () => {
                 try {
-                  const result = await initTasksApi(projectId, { spaceId });
+                  const result = await initTasksApi(projectId);
                   setSnippet(result.snippet);
                   await refreshTasks();
                   toast.success("Initialized tasks");
@@ -1414,7 +1268,6 @@ export function TasksPage() {
       <StackedDrawer
         key={item.key}
         projectId={projectId}
-        spaceId={spaceId}
         item={item}
         task={task}
         allTasks={tasks}
@@ -1425,8 +1278,6 @@ export function TasksPage() {
         onUpdate={handleUpdate}
         onDelete={handleDelete}
         onStartChat={handleStartChat}
-        onStartSpace={handleStartSpace}
-        readOnly={!scopeIsWritable}
       />
     );
   });
@@ -1439,19 +1290,14 @@ export function TasksPage() {
           title={view === "history" ? "No completed or cancelled tasks" : "No unfinished tasks"}
           description={
             view === "history"
-              ? `Task history in ${scopeName} will appear here.`
-              : `Create a task in ${scopeName} to start tracking work.`
+              ? "Task history will appear here."
+              : "Create a task to start tracking work."
           }
         >
           <div className="mt-5 flex flex-col items-center gap-3">
-            {scopeControls}
-            {view === "unfinished" && scopeIsWritable && (
-              <CreateTaskForm
-                projectId={projectId}
-                spaceId={spaceId}
-                allTasks={tasks}
-                onCreated={refreshTasks}
-              />
+            {viewControls}
+            {view === "unfinished" && (
+              <CreateTaskForm projectId={projectId} allTasks={tasks} onCreated={refreshTasks} />
             )}
           </div>
         </EmptyState>
@@ -1504,14 +1350,9 @@ export function TasksPage() {
     return (
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-1">
-          {scopeControls}
-          {view === "unfinished" && scopeIsWritable && (
-            <CreateTaskForm
-              projectId={projectId}
-              spaceId={spaceId}
-              allTasks={tasks}
-              onCreated={refreshTasks}
-            />
+          {viewControls}
+          {view === "unfinished" && (
+            <CreateTaskForm projectId={projectId} allTasks={tasks} onCreated={refreshTasks} />
           )}
           {sortMenu}
         </div>
@@ -1524,7 +1365,6 @@ export function TasksPage() {
               mobile
               onSelectTask={selectTask}
               onStartChat={handleStartChat}
-              canStartChat={scopeIsWritable}
             />
           ))}
         </div>
@@ -1536,15 +1376,10 @@ export function TasksPage() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-6 pt-3 pb-1">
-        {scopeControls}
+        {viewControls}
         <div className="flex items-center gap-2">
-          {view === "unfinished" && scopeIsWritable && (
-            <CreateTaskForm
-              projectId={projectId}
-              spaceId={spaceId}
-              allTasks={tasks}
-              onCreated={refreshTasks}
-            />
+          {view === "unfinished" && (
+            <CreateTaskForm projectId={projectId} allTasks={tasks} onCreated={refreshTasks} />
           )}
           {sortMenu}
         </div>
@@ -1557,7 +1392,6 @@ export function TasksPage() {
             tasks={grouped[s]}
             onSelectTask={selectTask}
             onStartChat={handleStartChat}
-            canStartChat={scopeIsWritable}
           />
         ))}
       </div>

@@ -1,4 +1,4 @@
-import type { InstanceInfo, ProviderKind, ProviderRateLimitStatus, SpaceInfo } from "@shared/types";
+import type { InstanceInfo, ProviderKind, ProviderRateLimitStatus } from "@shared/types";
 import type { StatusDotVariant } from "@/components/ui/status-dot";
 
 export interface InstanceStatusPresentation {
@@ -129,7 +129,7 @@ export function getChatRecencyTimestamp(
 /**
  * The branch a chat is on: the live HEAD of the directory it works in
  * (`gitInfo`, refreshed by the server — follows checkouts and agent-entered
- * worktrees), falling back to the branch it was assigned (space/worktree).
+ * worktrees), falling back to the branch it was assigned (worktree).
  */
 export function getChatBranch(
   instance: Pick<InstanceInfo, "gitInfo" | "gitBranch">,
@@ -165,14 +165,10 @@ export function compareChatListOrder(
  *
  * `doneAt` is a timestamp, not a flag, so any activity after the user marked
  * the chat done automatically revives it — no server-side clearing needed.
- * Chats in a closed space are permanently done: the work is merged or
- * archived, so later activity shouldn't drag them back into the inbox.
  */
 export function isChatDone(
   instance: Pick<InstanceInfo, "doneAt" | "lastMessage" | "lastActivityAt">,
-  spaceStatus?: SpaceInfo["status"],
 ): boolean {
-  if (spaceStatus === "completed" || spaceStatus === "archived") return true;
   if (instance.doneAt == null) return false;
   return getChatRecencyTimestamp(instance) <= instance.doneAt;
 }

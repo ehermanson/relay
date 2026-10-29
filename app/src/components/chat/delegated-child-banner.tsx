@@ -7,8 +7,8 @@ import { getInstanceChatRoute } from "@/lib/project-route";
 /**
  * Breadcrumb at the top of a Relay-delegated child chat: "Delegated by
  * <parent>", linking back. A child has no inbox/sidebar row of its own, so
- * this is the way back to the chat that owns it. Renders the same on desktop,
- * mobile, and inside a space view.
+ * this is the way back to the chat that owns it. Renders the same on desktop
+ * and mobile.
  */
 export function DelegatedChildBanner({ instance }: { instance: Pick<InstanceInfo, "delegation"> }) {
   const parentId = instance.delegation?.parentInstanceId;

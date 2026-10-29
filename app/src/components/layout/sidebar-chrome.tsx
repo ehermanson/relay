@@ -49,15 +49,11 @@ export function useSidebarDocumentTitle() {
   });
 
   useEffect(() => {
-    if (health?.git?.isWorktree && health.git.spaceName) {
-      document.title = health.git.spaceName;
-    } else {
-      const tags: string[] = [];
-      if (import.meta.env.DEV) tags.push("Dev");
-      if (health?.git?.isWorktree) tags.push(health.git.branch ?? "Worktree");
-      document.title = tags.length > 0 ? `Relay (${tags.join(", ")})` : "Relay";
-    }
-  }, [health?.git?.isWorktree, health?.git?.branch, health?.git?.spaceName]);
+    const tags: string[] = [];
+    if (import.meta.env.DEV) tags.push("Dev");
+    if (health?.git?.isWorktree) tags.push(health.git.branch ?? "Worktree");
+    document.title = tags.length > 0 ? `Relay (${tags.join(", ")})` : "Relay";
+  }, [health?.git?.isWorktree, health?.git?.branch]);
 
   return health;
 }

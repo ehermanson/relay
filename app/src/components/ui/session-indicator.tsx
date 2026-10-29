@@ -4,7 +4,7 @@ import { deriveInstanceStatusPresentation } from "@/lib/utils";
 import type { InstanceInfo } from "@shared/types";
 
 /**
- * Unified session indicator for sidebar items and space tabs.
+ * Unified session indicator for sidebar items.
  *
  * Always renders a fixed-width column to reserve space. The inner
  * content (terminal icon or dot) appears/disappears based on state.

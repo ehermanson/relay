@@ -401,7 +401,6 @@ export function InstanceView({
         provider: targetProvider,
         name: resolvedInstance.customTitle ? resolvedInstance.name : undefined,
         workingDirectory: resolvedInstance.workingDirectory,
-        spaceId: resolvedInstance.spaceId,
         // The replacement chat stays in the account of the chat it replaces.
         accountId: resolvedInstance.accountId,
         runtimeMode: resolvedInstance.runtimeMode,
@@ -433,7 +432,6 @@ export function InstanceView({
       ...nextInstance,
       projectId: nextInstance.projectId ?? resolvedInstance.projectId,
       originalDirectory: nextInstance.originalDirectory ?? resolvedInstance.originalDirectory,
-      spaceId: nextInstance.spaceId ?? resolvedInstance.spaceId,
     });
 
     await navigate({
@@ -466,7 +464,6 @@ export function InstanceView({
         provider: selection.provider,
         name: `Review: ${instance.name}`,
         workingDirectory: instance.workingDirectory,
-        spaceId: instance.spaceId,
         accountId: instance.accountId,
         runtimeMode: selection.runtimeMode,
         model: selection.model,
@@ -497,13 +494,7 @@ export function InstanceView({
   };
 
   // ── Terminal panel state ──────────────────────────────────────────
-  const terminalScope: TerminalScope = useMemo(
-    () =>
-      instance?.spaceId
-        ? { type: "space", spaceId: instance.spaceId }
-        : { type: "instance", instanceId: id! },
-    [instance?.spaceId, id],
-  );
+  const terminalScope: TerminalScope = useMemo(() => ({ type: "instance", instanceId: id! }), [id]);
   const {
     isPanelOpen: isTerminalPanelOpen,
     isPanelCollapsed: isTerminalPanelCollapsed,
@@ -542,7 +533,7 @@ export function InstanceView({
 
   // Ctrl+` keyboard shortcut to toggle terminal (skip in compact mode —
   // compact InstanceViews never render the terminal panel; the parent
-  // space page owns the shortcut instead).
+  // view owns the shortcut instead).
   useTerminalShortcut(compact ? null : handleToggleTerminal);
 
   const isMobile = useMediaQuery("(max-width: 768px)");
@@ -611,7 +602,6 @@ export function InstanceView({
     allContentPanels,
     showDesktopSidecar,
   } = useSidecarPanels({
-    scope: "chat",
     isMobile,
     hasTasksContent,
     hasAgentsContent,

@@ -7,7 +7,7 @@
  * collapsed rail's avatar button, and the compact pill in the mobile Home
  * header. Renders nothing below two accounts, so a single-account install
  * never grows a control. Switching changes the per-browser choice, re-runs
- * route loaders, and leaves a project-scoped route (chat, space, project page)
+ * route loaders, and leaves a project-scoped route (chat, project page)
  * for the app root so the previous account's chat can't stay open unlabelled;
  * it never boots anything.
  */

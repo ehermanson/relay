@@ -12,7 +12,7 @@ import { getInstanceProjectRouteId } from "@/lib/project-route";
 import { formatTimeAgo, getChatBranch, getChatSortTimestamp } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
-import type { InstanceInfo, SpaceInfo } from "@shared/types";
+import type { InstanceInfo } from "@shared/types";
 
 interface SidebarItemProps {
   instance: InstanceInfo;
@@ -23,8 +23,6 @@ interface SidebarItemProps {
   params: Record<string, string>;
   /** Currently active chatId — used to offer "Open in split view". */
   activeChatId?: string;
-  /** Status of the owning space, when the chat belongs to one. */
-  spaceStatus?: SpaceInfo["status"];
 }
 
 export function SidebarItem({
@@ -35,7 +33,6 @@ export function SidebarItem({
   to,
   params,
   activeChatId,
-  spaceStatus,
 }: SidebarItemProps) {
   const navigate = useNavigate({ from: "/projects/$projectId/chats/$chatId" });
   const actions = useSidebarActions();
@@ -44,11 +41,8 @@ export function SidebarItem({
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Terminals attach to the space when the chat belongs to one, else to the
-  // chat itself — mirror the scope the chat view uses to open terminals.
-  const terminalScope: TerminalScope = instance.spaceId
-    ? { type: "space", spaceId: instance.spaceId }
-    : { type: "instance", instanceId: instance.id };
+  // Mirror the scope the chat view uses to open terminals.
+  const terminalScope: TerminalScope = { type: "instance", instanceId: instance.id };
   const hasMenu = true; // always show menu for rename/delete
 
   // Focus input when entering edit mode
@@ -207,7 +201,6 @@ export function SidebarItem({
                 </Menu.Trigger>
                 <ChatActionsMenuContent
                   instance={instance}
-                  spaceStatus={spaceStatus}
                   activeChatId={activeChatId}
                   onRename={startEditing}
                 />

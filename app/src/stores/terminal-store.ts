@@ -84,7 +84,7 @@ interface TerminalState {
   /** Custom terminal names (terminalId → name). Persisted to localStorage. */
   terminalNames: Record<string, string>;
   /**
-   * Global count of live terminals per scope key (`instance:<id>` / `space:<id>`).
+   * Global count of live terminals per scope key (`instance:<id>`).
    * Sourced from the server's `terminal_scopes` broadcast so the sidebar can
    * flag scopes with running terminals without opening each one.
    */

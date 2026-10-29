@@ -1,20 +1,19 @@
 /**
  * Zustand store for sidecar panel visibility.
  *
- * Header-tab model: each scope (chat / space) tracks the user's last-selected
- * tab plus an open/closed flag. Header buttons act as tab switches — clicking
- * one switches to that tab and opens the sidecar; clicking the active tab
- * closes the sidecar (preserving the selection so reopening goes back there).
+ * Header-tab model: the store tracks the user's last-selected tab plus an
+ * open/closed flag. Header buttons act as tab switches — clicking one switches
+ * to that tab and opens the sidecar; clicking the active tab closes the sidecar
+ * (preserving the selection so reopening goes back there).
  *
- * Preferences are GLOBAL: one tab/open state per scope, shared across chats
- * and spaces. Sidebar width is also global and shared between scopes.
+ * Preferences are GLOBAL: one tab/open state and sidebar width shared across
+ * chats.
  */
 
 import { useCallback, useMemo } from "react";
 import { create } from "zustand";
 
-export type SidecarTab = "tasks" | "agents" | "files" | "plan" | "context" | "brief" | "review";
-export type SidecarScope = "chat" | "space";
+export type SidecarTab = "tasks" | "agents" | "files" | "plan" | "context" | "review";
 
 const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
   "tasks",
@@ -22,7 +21,6 @@ const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
   "files",
   "plan",
   "context",
-  "brief",
   "review",
 ]);
 
@@ -33,27 +31,24 @@ const FALLBACK_ORDER: readonly SidecarTab[] = [
   "files",
   "plan",
   "context",
-  "brief",
   "review",
 ];
 
 // ── Persistence ─────────────────────────────────────────────────────────────
+// Older builds also stored `spaceTab`/`spaceOpen`; they are ignored on load and
+// dropped on the next write.
 
 const STORAGE_KEY = "relay-sidecar-prefs";
 
 interface PersistedState {
   chatTab: SidecarTab;
   chatOpen: boolean;
-  spaceTab: SidecarTab;
-  spaceOpen: boolean;
   sidebarWidth: number | null;
 }
 
 const DEFAULTS: PersistedState = {
   chatTab: "tasks",
   chatOpen: true,
-  spaceTab: "brief",
-  spaceOpen: true,
   sidebarWidth: null,
 };
 
@@ -69,8 +64,6 @@ function loadPersisted(): PersistedState {
     return {
       chatTab: isValidTab(parsed.chatTab) ? parsed.chatTab : DEFAULTS.chatTab,
       chatOpen: typeof parsed.chatOpen === "boolean" ? parsed.chatOpen : DEFAULTS.chatOpen,
-      spaceTab: isValidTab(parsed.spaceTab) ? parsed.spaceTab : DEFAULTS.spaceTab,
-      spaceOpen: typeof parsed.spaceOpen === "boolean" ? parsed.spaceOpen : DEFAULTS.spaceOpen,
       sidebarWidth: typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : null,
     };
   } catch {
@@ -91,24 +84,15 @@ function persist(state: PersistedState): void {
 interface SidecarState {
   chatTab: SidecarTab;
   chatOpen: boolean;
-  spaceTab: SidecarTab;
-  spaceOpen: boolean;
   sidebarWidth: number | null;
   mobileOpen: boolean;
 
   /** Click-tab semantics: same+open ⇒ close; otherwise switch to and open. */
-  selectTab: (scope: SidecarScope, panel: SidecarTab) => void;
+  selectTab: (panel: SidecarTab) => void;
   /** Force the sidecar closed without changing the remembered tab. */
-  closeSidecar: (scope: SidecarScope) => void;
+  closeSidecar: () => void;
   setMobileOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
-}
-
-function tabKey(scope: SidecarScope): "chatTab" | "spaceTab" {
-  return scope === "chat" ? "chatTab" : "spaceTab";
-}
-function openKey(scope: SidecarScope): "chatOpen" | "spaceOpen" {
-  return scope === "chat" ? "chatOpen" : "spaceOpen";
 }
 
 export const useSidecarStore = create<SidecarState>()((set, get) => {
@@ -119,8 +103,6 @@ export const useSidecarStore = create<SidecarState>()((set, get) => {
     return {
       chatTab: s.chatTab,
       chatOpen: s.chatOpen,
-      spaceTab: s.spaceTab,
-      spaceOpen: s.spaceOpen,
       sidebarWidth: s.sidebarWidth,
     };
   };
@@ -128,41 +110,30 @@ export const useSidecarStore = create<SidecarState>()((set, get) => {
   return {
     chatTab: loaded.chatTab,
     chatOpen: loaded.chatOpen,
-    spaceTab: loaded.spaceTab,
-    spaceOpen: loaded.spaceOpen,
     sidebarWidth: loaded.sidebarWidth,
     mobileOpen: false,
 
-    selectTab: (scope, panel) =>
+    selectTab: (panel) =>
       set((state) => {
-        const tk = tabKey(scope);
-        const ok = openKey(scope);
-        const sameAsActive = state[tk] === panel;
-        const isOpen = state[ok];
         const next =
-          sameAsActive && isOpen
-            ? { ...state, [ok]: false }
-            : { ...state, [tk]: panel, [ok]: true };
+          state.chatTab === panel && state.chatOpen
+            ? { ...state, chatOpen: false }
+            : { ...state, chatTab: panel, chatOpen: true };
         persist({
           chatTab: next.chatTab,
           chatOpen: next.chatOpen,
-          spaceTab: next.spaceTab,
-          spaceOpen: next.spaceOpen,
           sidebarWidth: next.sidebarWidth,
         });
         return next;
       }),
 
-    closeSidecar: (scope) =>
+    closeSidecar: () =>
       set((state) => {
-        const ok = openKey(scope);
-        if (!state[ok]) return state;
-        const next = { ...state, [ok]: false };
+        if (!state.chatOpen) return state;
+        const next = { ...state, chatOpen: false };
         persist({
           chatTab: next.chatTab,
           chatOpen: next.chatOpen,
-          spaceTab: next.spaceTab,
-          spaceOpen: next.spaceOpen,
           sidebarWidth: next.sidebarWidth,
         });
         return next;
@@ -180,13 +151,11 @@ export const useSidecarStore = create<SidecarState>()((set, get) => {
 // ── Hook ────────────────────────────────────────────────────────────────────
 
 interface UseSidecarPanelsOptions {
-  scope: SidecarScope;
   isMobile: boolean;
   hasTasksContent: boolean;
   hasFilesContent: boolean;
   hasPlanContent: boolean;
   hasStats: boolean;
-  hasBriefContent?: boolean;
   /** Delegated agents exist AND the provider advertises `supportsAgentActivity`. */
   hasAgentsContent?: boolean;
   /**
@@ -223,29 +192,24 @@ export interface UseSidecarPanelsResult {
 }
 
 export function useSidecarPanels({
-  scope,
   isMobile,
   hasTasksContent,
   hasFilesContent,
   hasPlanContent,
   hasStats,
-  hasBriefContent = false,
   hasAgentsContent = false,
   contentLoading = false,
   hasReviewContent = false,
 }: UseSidecarPanelsOptions): UseSidecarPanelsResult {
-  const activeTab = useSidecarStore((s) => (scope === "chat" ? s.chatTab : s.spaceTab));
-  const isOpen = useSidecarStore((s) => (scope === "chat" ? s.chatOpen : s.spaceOpen));
+  const activeTab = useSidecarStore((s) => s.chatTab);
+  const isOpen = useSidecarStore((s) => s.chatOpen);
   const mobileOpen = useSidecarStore((s) => s.mobileOpen);
   const storeSelectTab = useSidecarStore((s) => s.selectTab);
   const storeCloseSidecar = useSidecarStore((s) => s.closeSidecar);
   const storeSetMobileOpen = useSidecarStore((s) => s.setMobileOpen);
 
-  const selectTab = useCallback(
-    (panel: SidecarTab) => storeSelectTab(scope, panel),
-    [storeSelectTab, scope],
-  );
-  const closeSidecar = useCallback(() => storeCloseSidecar(scope), [storeCloseSidecar, scope]);
+  const selectTab = useCallback((panel: SidecarTab) => storeSelectTab(panel), [storeSelectTab]);
+  const closeSidecar = useCallback(() => storeCloseSidecar(), [storeCloseSidecar]);
   const setMobileOpen = useCallback(
     (open: boolean) => storeSetMobileOpen(open),
     [storeSetMobileOpen],
@@ -264,8 +228,6 @@ export function useSidecarPanels({
           return hasPlanContent;
         case "context":
           return hasStats;
-        case "brief":
-          return hasBriefContent;
         case "review":
           return hasReviewContent;
       }
@@ -276,7 +238,6 @@ export function useSidecarPanels({
       hasFilesContent,
       hasPlanContent,
       hasStats,
-      hasBriefContent,
       hasReviewContent,
     ],
   );

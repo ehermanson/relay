@@ -1,6 +1,5 @@
 /**
- * FilesPanel — Reusable file-change tree used in both the chat sidecar
- * and the space sidebar.
+ * FilesPanel — Reusable file-change tree used in the chat sidecar.
  */
 
 import { DesktopFileActions } from "@/components/chat/desktop-file-actions";

@@ -6,7 +6,7 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { Settings2, Cpu, GitBranch, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
+import { Settings2, Cpu, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { MobileSidebarToggle } from "@/components/ui/view-header";
 
@@ -23,7 +23,6 @@ const NAV_ITEMS = [
     description: "AI provider configuration",
     icon: Cpu,
   },
-  { to: "/settings/git", label: "Git", description: "Version control settings", icon: GitBranch },
   {
     to: "/settings/suggestions",
     label: "Suggestions",

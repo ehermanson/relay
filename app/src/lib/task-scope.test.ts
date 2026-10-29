@@ -3,10 +3,8 @@ import type { Task } from "@shared/types";
 import {
   filterTasksForView,
   hasRevisionedTaskShape,
-  normalizeTaskSpaceId,
   taskChangeMatchesScope,
   taskQueryKey,
-  taskScopeKey,
 } from "./task-scope";
 
 function task(status: Task["status"], archived = false): Task {
@@ -29,44 +27,16 @@ function task(status: Task["status"], archived = false): Task {
 }
 
 describe("task scopes", () => {
-  it("normalizes omitted scopes to Main", () => {
-    expect(taskScopeKey()).toBe("main");
-    expect(taskQueryKey("project-1")).toEqual(["tasks", "project-1", "main", "unfinished"]);
+  it("keys queries by Project and view", () => {
+    expect(taskQueryKey("project-1")).toEqual(["tasks", "project-1", "unfinished"]);
+    expect(taskQueryKey("project-1", "history")).toEqual(["tasks", "project-1", "history"]);
   });
 
-  it("normalizes the explicit default Space ID to Main", () => {
-    const spaces = [
-      { id: "default-space", isDefault: true },
-      { id: "named-space", isDefault: false },
-    ];
-    expect(normalizeTaskSpaceId("default-space", spaces)).toBeUndefined();
-    expect(normalizeTaskSpaceId("named-space", spaces)).toBe("named-space");
-  });
-
-  it("keeps Space and history queries isolated", () => {
-    expect(taskQueryKey("project-1", "space-1", "history")).toEqual([
-      "tasks",
-      "project-1",
-      "space-1",
-      "history",
-    ]);
-  });
-
-  it("matches change events only to their Project and Space", () => {
+  it("matches change events only to the Project's main checkout", () => {
     expect(taskChangeMatchesScope({ projectId: "project-1" }, "project-1")).toBe(true);
+    expect(taskChangeMatchesScope({ projectId: "project-2" }, "project-1")).toBe(false);
     expect(
-      taskChangeMatchesScope(
-        { projectId: "project-1", spaceId: "space-1" },
-        "project-1",
-        "space-1",
-      ),
-    ).toBe(true);
-    expect(
-      taskChangeMatchesScope(
-        { projectId: "project-1", spaceId: "space-2" },
-        "project-1",
-        "space-1",
-      ),
+      taskChangeMatchesScope({ projectId: "project-1", spaceId: "space-1" }, "project-1"),
     ).toBe(false);
   });
 

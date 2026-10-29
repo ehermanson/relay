@@ -34,7 +34,7 @@ export function DialogContent({
       {/* Top-anchored on mobile: the on-screen keyboard covers the lower half
           of the viewport, so a vertically centered dialog ends up hidden or
           jumping when an input inside it focuses. The content box is capped
-          and scrolls internally: on a phone a long dialog (Complete space)
+          and scrolls internally: on a phone a long dialog
           otherwise runs off the bottom with its buttons unreachable. */}
       <BaseDialog.Popup
         className={`fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none max-[768px]:items-start max-[768px]:pt-[max(8dvh,var(--app-top-inset))]`}

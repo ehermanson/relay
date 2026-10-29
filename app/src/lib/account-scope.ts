@@ -114,28 +114,7 @@ export function chatAccountMismatch<A extends AccountRef>(
 }
 
 /**
- * The account a project belongs to when the active one isn't among its
- * members, else null — the space-view analog of `chatAccountMismatch`. A
- * project with several owners names the first registered one (the switch
- * action needs a single target). Null below two accounts.
- */
-export function projectAccountMismatch<A extends AccountRef>(
-  project: Pick<Project, "accountIds">,
-  activeId: string,
-  accounts: ReadonlyArray<A>,
-): A | null {
-  if (!isMultiAccount(accounts)) return null;
-  const ids = projectAccountIds(project);
-  if (ids.includes(activeId)) return null;
-  return (
-    accounts.find((account) => ids.includes(account.id)) ??
-    accounts.find((account) => account.id === DEFAULT_ACCOUNT_ID) ??
-    null
-  );
-}
-
-/**
- * Whether a pathname is inside a project (chat, space, project page). Switching
+ * Whether a pathname is inside a project (chat, project page). Switching
  * accounts leaves such routes for the app root, since what they show belongs
  * to the account just left; Settings and Home stay put.
  */

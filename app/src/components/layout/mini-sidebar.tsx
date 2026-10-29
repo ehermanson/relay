@@ -8,8 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Menu } from "@/components/ui/menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ChatActionsMenuContent } from "@/components/layout/chat-actions-menu";
-import { InboxSpaceItem } from "@/components/layout/inbox-space-item";
-import { capInboxEntries, isInboxEntryCurrent, type InboxChatEntry } from "@/lib/inbox";
+import { capInboxEntries, isInboxEntryCurrent } from "@/lib/inbox";
 import { InboxAvatar, InboxChatSummary } from "@/components/layout/inbox-item";
 import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
@@ -23,9 +22,9 @@ import {
   type InboxProjectOption,
 } from "@/hooks/use-inbox-navigation-model";
 import { useSystemUpdate } from "@/hooks/use-system-update";
-import { getInstanceProjectRouteId, getProjectName, getSpaceRoute } from "@/lib/project-route";
+import { getInstanceProjectRouteId, getProjectName } from "@/lib/project-route";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
-import type { InstanceInfo, SpaceInfo } from "@shared/types";
+import type { InstanceInfo } from "@shared/types";
 // The rail can be the only sidebar mounted (app booted collapsed), so it has
 // to pull in the shared sidebar styles itself rather than rely on Sidebar.
 import "./sidebar.css";
@@ -36,25 +35,16 @@ function ProjectFlyout({
   dir,
   projectId,
   instances,
-  spaces,
-  latestChatIdBySpace,
   currentId,
-  activeSpaceId,
   onNewChat,
 }: {
   dir: string;
   projectId: string;
   instances: InstanceInfo[];
-  spaces?: SpaceInfo[];
-  latestChatIdBySpace: Record<string, string>;
   currentId?: string;
-  activeSpaceId?: string;
   onNewChat: (dir: string) => void;
 }) {
   const name = getProjectName(dir);
-  const mainInstances = instances.filter((inst) => !inst.spaceId);
-  const visibleSpaces =
-    spaces?.filter((space) => !space.isDefault && space.status === "active") ?? [];
 
   return (
     <div className="flex max-h-full flex-col overflow-hidden">
@@ -80,42 +70,16 @@ function ProjectFlyout({
 
       {/* Session list */}
       <div className="flex-1 overflow-y-auto px-1 py-1">
-        {visibleSpaces.length > 0 && (
-          <div className="px-2 pb-2">
-            <div className="px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted/70">
-              Spaces
-            </div>
-            <div className="space-y-0.5">
-              {visibleSpaces.map((space) => (
-                <Link
-                  key={space.id}
-                  {...getSpaceRoute(projectId, space.id, latestChatIdBySpace[space.id])}
-                  className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-[0.75rem] transition-colors ${
-                    activeSpaceId === space.id
-                      ? "bg-accent-dim text-accent"
-                      : "text-text hover:bg-surface-hover"
-                  }`}
-                >
-                  <span className="truncate font-medium">{space.name}</span>
-                  {space.gitBranch && (
-                    <span className="truncate text-[0.625rem] text-muted">{space.gitBranch}</span>
-                  )}
-                </Link>
-              ))}
-            </div>
-          </div>
-        )}
-
         <div className="px-2 pb-1">
           <div className="px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted/70">
             Chats
           </div>
         </div>
 
-        {mainInstances.length === 0 ? (
+        {instances.length === 0 ? (
           <div className="px-2 py-4 text-center text-[0.75rem] text-muted">No sessions</div>
         ) : (
-          mainInstances.map((inst) => (
+          instances.map((inst) => (
             <SidebarItem
               key={inst.id}
               instance={inst}
@@ -147,7 +111,7 @@ function MiniInboxRailItem({
   currentId,
   onRename,
 }: {
-  entry: InboxChatEntry;
+  entry: InboxEntry;
   isActive: boolean;
   currentId?: string;
   onRename: () => void;
@@ -201,7 +165,6 @@ function MiniInboxRailItem({
         </span>
         <ChatActionsMenuContent
           instance={instance}
-          spaceStatus={entry.space?.status}
           activeChatId={currentId}
           onRename={onRename}
           side="right"
@@ -221,7 +184,7 @@ function RenameChatDialog({
   open,
   onOpenChange,
 }: {
-  entry: InboxChatEntry;
+  entry: InboxEntry;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -273,7 +236,6 @@ function MiniInboxRail({
   doneEntries,
   projectOptions,
   currentId,
-  currentSpaceId,
   onNewChat,
 }: {
   entries: InboxEntry[];
@@ -281,27 +243,23 @@ function MiniInboxRail({
   doneEntries: InboxEntry[];
   projectOptions: InboxProjectOption[];
   currentId?: string;
-  currentSpaceId?: string;
   onNewChat: (dir: string) => void;
 }) {
-  const actions = useSidebarActions();
   const visible = useMemo(
-    () => capInboxEntries(entries, MINI_INBOX_LIMIT, currentId, currentSpaceId, doneEntries),
-    [entries, doneEntries, currentId, currentSpaceId],
+    () => capInboxEntries(entries, MINI_INBOX_LIMIT, currentId, doneEntries),
+    [entries, doneEntries, currentId],
   );
-  const [renaming, setRenaming] = useState<InboxChatEntry | null>(null);
+  const [renaming, setRenaming] = useState<InboxEntry | null>(null);
 
   return (
     <div className="mini-rail-scroll flex flex-1 flex-col items-center gap-1 overflow-y-auto">
       {/* The rail has no project headers to hang creation off, so it carries
-          its own "New" menu (chat + space) the way the flyout does in projects
-          mode. Class matches the chat buttons below so the column is one width. */}
+          its own "New chat" trigger the way the flyout does in projects mode. Class matches the chat buttons below so the column is one width. */}
       {projectOptions.length > 0 && (
         <NewChatMenu
           projectOptions={projectOptions}
           soleTarget={projectOptions.length === 1 ? projectOptions[0].dir : null}
           onCreate={onNewChat}
-          onCreateSpace={actions.createSpace}
           icon={<Plus size={15} strokeWidth={2.5} />}
           tooltipSide="right"
           align="start"
@@ -309,24 +267,15 @@ function MiniInboxRail({
         />
       )}
 
-      {visible.map((entry) =>
-        entry.kind === "space" ? (
-          <InboxSpaceItem
-            key={entry.id}
-            entry={entry}
-            compact
-            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
-          />
-        ) : (
-          <MiniInboxRailItem
-            key={entry.id}
-            entry={entry}
-            isActive={isInboxEntryCurrent(entry, currentId, currentSpaceId)}
-            currentId={currentId}
-            onRename={() => setRenaming(entry)}
-          />
-        ),
-      )}
+      {visible.map((entry) => (
+        <MiniInboxRailItem
+          key={entry.id}
+          entry={entry}
+          isActive={isInboxEntryCurrent(entry, currentId)}
+          currentId={currentId}
+          onRename={() => setRenaming(entry)}
+        />
+      ))}
 
       {/* One dialog for the whole rail rather than one mounted per item. */}
       {renaming && (
@@ -424,10 +373,8 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
   );
   const layout = useSidebarLayout();
   const {
-    latestChatIdBySpace,
     currentChatId,
     currentProjectId,
-    currentSpaceId,
     projectByDir,
     projectEntries,
     createNewChat,
@@ -484,7 +431,6 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
   return (
     <SidebarActionsProvider
       currentProjectId={currentProjectId}
-      currentSpaceId={currentSpaceId}
       projectByDir={projectByDir}
       createNewChat={createNewChat}
     >
@@ -513,7 +459,6 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
               doneEntries={inboxDoneEntries}
               projectOptions={projectOptions}
               currentId={currentId}
-              currentSpaceId={currentSpaceId}
               onNewChat={handleNewChat}
             />
           ) : (
@@ -608,10 +553,7 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
               dir={flyoutEntry.dir}
               projectId={flyoutEntry.projectId}
               instances={flyoutEntry.groupInstances}
-              spaces={flyoutEntry.spaces}
-              latestChatIdBySpace={latestChatIdBySpace}
               currentId={currentId}
-              activeSpaceId={currentSpaceId}
               onNewChat={handleNewChat}
             />
           </div>

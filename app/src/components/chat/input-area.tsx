@@ -40,7 +40,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { expandTaskReferences, getTaskReferenceIds } from "@/lib/composer-mentions";
 import { fetchTask } from "@/lib/api";
 import { useScopedTasks } from "@/hooks/use-scoped-tasks";
-import { hasRevisionedTaskShape, normalizeTaskSpaceId } from "@/lib/task-scope";
+import { hasRevisionedTaskShape } from "@/lib/task-scope";
 import { shouldAutoFocusComposer } from "@/lib/composer-focus";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -71,7 +71,6 @@ interface InputAreaProps {
   onReconnect?: () => void;
   instanceId: string;
   projectId?: string;
-  spaceId?: string;
   isStopped?: boolean;
   provider: ProviderKind;
   preferredModel?: string;
@@ -207,7 +206,6 @@ export function InputArea({
   isConnected,
   instanceId,
   projectId,
-  spaceId,
   isStopped,
   provider,
   preferredModel,
@@ -242,12 +240,10 @@ export function InputArea({
   const isMobile = useMediaQuery("(max-width: 768px)");
   const projectCtx = useContext(ProjectContext);
   const taskProjectId = projectId ?? projectCtx?.artifacts.projectId;
-  const taskSpaceId = normalizeTaskSpaceId(spaceId, projectCtx?.artifacts.spaces);
-  const { data: scopedTasks } = useScopedTasks(taskProjectId, taskSpaceId, {
-    initialData:
-      !taskSpaceId && hasRevisionedTaskShape(projectCtx?.artifacts.tasks)
-        ? projectCtx.artifacts.tasks
-        : undefined,
+  const { data: scopedTasks } = useScopedTasks(taskProjectId, {
+    initialData: hasRevisionedTaskShape(projectCtx?.artifacts.tasks)
+      ? projectCtx.artifacts.tasks
+      : undefined,
   });
   const { send } = useWSMethods();
   const {
@@ -540,7 +536,7 @@ export function InputArea({
         const missingIds = getTaskReferenceIds(text).filter((id) => !taskMap.has(id));
         if (missingIds.length > 0) {
           const resolved = await Promise.allSettled(
-            missingIds.map((taskId) => fetchTask(taskProjectId, taskId, { spaceId: taskSpaceId })),
+            missingIds.map((taskId) => fetchTask(taskProjectId, taskId)),
           );
           for (const result of resolved) {
             const task = result.status === "fulfilled" ? result.value : null;
@@ -1158,7 +1154,6 @@ export function InputArea({
             ) : null}
             <ComposerPanel
               projectId={taskProjectId}
-              spaceId={taskSpaceId}
               tasks={scopedTasks ?? null}
               compact={isMobile}
               disabled={composerDisabled}

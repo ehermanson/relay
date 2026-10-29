@@ -8,7 +8,7 @@ import { getInstanceProjectRouteId, getProjectName } from "@/lib/project-route";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useProjectNavigationModel } from "@/hooks/use-project-navigation-model";
 import { findDelegationRoot, isDelegatedChildInstance } from "@/lib/delegation";
-import type { InstanceInfo, Project, SpaceInfo } from "@shared/types";
+import type { InstanceInfo, Project } from "@shared/types";
 
 export interface SidebarNavigationEntry {
   dir: string;
@@ -16,7 +16,6 @@ export interface SidebarNavigationEntry {
   projectId: string;
   name: string;
   groupInstances: InstanceInfo[];
-  spaces: SpaceInfo[];
   iconPath?: string;
   hasActivity: boolean;
   isActiveProject: boolean;
@@ -30,14 +29,11 @@ export function useSidebarNavigationController() {
   const { trackInstanceCreate } = useActionToasts();
   const { accountIdParam } = useActiveAccount();
   const navigation = useProjectNavigationModel();
-  const {
-    chatId: currentChatId,
-    projectId: currentProjectId,
-    spaceId: currentSpaceId,
-  } = useParams({ strict: false }) as {
+  const { chatId: currentChatId, projectId: currentProjectId } = useParams({
+    strict: false,
+  }) as {
     chatId?: string;
     projectId?: string;
-    spaceId?: string;
   };
 
   const { data: projectIcons = {} } = useQuery({
@@ -80,13 +76,10 @@ export function useSidebarNavigationController() {
         projectId,
         name: project?.name ?? getProjectName(dir),
         groupInstances,
-        spaces: navigation.projectSpaces[dir] ?? [],
         iconPath: projectIcons[dir],
         hasActivity: groupInstances.some((instance) => instance.status === "processing"),
         isActiveProject: currentProjectId === projectId,
-        loading:
-          (project?.id ? (navigation.chatsLoadingByProjectId[project.id] ?? false) : false) ||
-          (navigation.spacesLoadingByDir[dir] ?? false),
+        loading: project?.id ? (navigation.chatsLoadingByProjectId[project.id] ?? false) : false,
       };
     },
   );
@@ -112,7 +105,6 @@ export function useSidebarNavigationController() {
     ...navigation,
     currentChatId: selectedChatId,
     currentProjectId,
-    currentSpaceId,
     projectEntries,
     projectIcons,
     createNewChat,

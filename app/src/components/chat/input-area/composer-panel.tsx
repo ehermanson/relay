@@ -10,7 +10,6 @@ import type { Task } from "@shared/types";
 interface ComposerPanelProps {
   compact: boolean;
   projectId?: string;
-  spaceId?: string;
   tasks: Task[] | null;
   disabled: boolean;
   value: string;
@@ -30,7 +29,6 @@ interface ComposerPanelProps {
 export function ComposerPanel({
   compact,
   projectId,
-  spaceId,
   tasks,
   disabled,
   value,
@@ -52,7 +50,6 @@ export function ComposerPanel({
   const Editor = nativeMobileComposer && isCoarsePointer ? ComposerTextarea : ComposerEditor;
   const { popoverState, close: closeTaskPopover } = useTaskMentionPopover(editorContainerRef, {
     projectId,
-    spaceId,
     tasks,
   });
 

@@ -14,26 +14,6 @@ type StandaloneChatRoute = {
   };
 };
 
-type SpaceChatRoute = {
-  to: "/projects/$projectId/spaces/$spaceId/$chatId";
-  params: {
-    projectId: string;
-    spaceId: string;
-    chatId: string;
-  };
-};
-
-type BareSpaceRoute = {
-  to: "/projects/$projectId/spaces/$spaceId";
-  params: {
-    projectId: string;
-    spaceId: string;
-  };
-};
-
-type InstanceChatRoute = StandaloneChatRoute | SpaceChatRoute;
-type SpaceRoute = BareSpaceRoute | SpaceChatRoute;
-
 export function getProjectName(directory: string): string {
   return directory.split("/").pop() || directory;
 }
@@ -56,51 +36,14 @@ export function getInstanceProjectRouteId(
 export function getInstanceChatRoute(
   instance: Pick<
     InstanceInfo,
-    "id" | "projectId" | "projectSlug" | "workingDirectory" | "originalDirectory" | "spaceId"
+    "id" | "projectId" | "projectSlug" | "workingDirectory" | "originalDirectory"
   >,
-): InstanceChatRoute {
-  const projectId = getInstanceProjectRouteId(instance);
-  if (instance.spaceId) {
-    return {
-      to: "/projects/$projectId/spaces/$spaceId/$chatId",
-      params: {
-        projectId,
-        spaceId: instance.spaceId,
-        chatId: instance.id,
-      },
-    };
-  }
-
+): StandaloneChatRoute {
   return {
     to: "/projects/$projectId/chats/$chatId",
     params: {
-      projectId,
+      projectId: getInstanceProjectRouteId(instance),
       chatId: instance.id,
-    },
-  };
-}
-
-export function getSpaceRoute(
-  projectId: string,
-  spaceId: string,
-  chatId?: string | null,
-): SpaceRoute {
-  if (chatId) {
-    return {
-      to: "/projects/$projectId/spaces/$spaceId/$chatId",
-      params: {
-        projectId,
-        spaceId,
-        chatId,
-      },
-    };
-  }
-
-  return {
-    to: "/projects/$projectId/spaces/$spaceId",
-    params: {
-      projectId,
-      spaceId,
     },
   };
 }
