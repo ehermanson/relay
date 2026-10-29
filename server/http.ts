@@ -41,6 +41,7 @@ import { registerOutboxRoutes } from "#server/routes/outbox.js";
 import { registerPushRoutes } from "#server/routes/push.js";
 import { registerSettingsRoutes } from "#server/routes/settings.js";
 import { registerSearchRoutes } from "#server/routes/search.js";
+import { registerMcpRoutes } from "#server/routes/mcp.js";
 import { registerWorkspaceRoutes } from "#server/routes/workspace.js";
 import { registerRepoStatusRoutes } from "#server/routes/repo-status.js";
 import { registerSpinOffRoutes } from "#server/routes/spin-offs.js";
@@ -317,6 +318,7 @@ export function createRequestHandler(
   registerSearchRoutes(app, deps);
   registerSettingsRoutes(app, deps);
   registerSystemUpdateRoutes(app, deps);
+  registerMcpRoutes(app, deps);
   registerUiRoutes(app, deps);
 
   app.onError((error, c) => {

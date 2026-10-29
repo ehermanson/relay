@@ -240,6 +240,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     reasoningEffortLevels: EXTENDED_EFFORTS,
     composerHints: { helpText: "Use @ for files and / for commands and skills" },
     supportsAgentActivity: true,
+    supportsRelayOrchestration: true,
     supportsAccountLogins: true,
     accountLoginHowTo: {
       exampleDir: "~/.claude-work",
@@ -286,6 +287,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     reasoningEffortLevels: STANDARD_EFFORTS,
     composerHints: { helpText: "Use @ for files, / for commands, and $ for skills" },
     supportsAgentActivity: true,
+    supportsRelayOrchestration: true,
     supportsAccountLogins: true,
     accountLoginHowTo: {
       exampleDir: "~/.codex-work",

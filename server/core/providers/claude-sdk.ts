@@ -36,6 +36,7 @@ import type {
   ProviderRuntimeBinding,
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
+  RelayMcpEndpoint,
   UserInputQuestion,
   SystemEventMessage,
   ProviderRateLimitStatus,
@@ -69,6 +70,13 @@ import {
   type UserMessageOrigin,
 } from "#core/agent-messages.js";
 import { buildSessionInitEvent } from "#core/session-init.js";
+import {
+  RELAY_MCP_CLAUDE_TOOL_PREFIX,
+  RELAY_MCP_SERVER_NAME,
+  RELAY_MCP_TOKEN_ENV,
+  RELAY_ORCHESTRATION_CLAUDE_NOTE,
+  RELAY_ORCHESTRATION_INSTRUCTIONS,
+} from "#core/orchestration/instructions.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { extFromPath } from "#core/paths.js";
 import { createPatch } from "diff";
@@ -231,6 +239,7 @@ interface SDKOptions {
   canUseTool?: CanUseTool;
   env?: Record<string, string | undefined>;
   allowedTools?: string[];
+  mcpServers?: Record<string, { type: "http"; url: string; headers?: Record<string, string> }>;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   settings?: Record<string, unknown>;
   systemPrompt?:
@@ -409,6 +418,8 @@ export interface ClaudeSdkSessionOptions {
    * indexes it, whatever the server process inherited.
    */
   configDir?: string;
+  /** Relay's MCP endpoint and this chat's token (see `ProviderSessionOptions.relayMcp`). */
+  relayMcp?: RelayMcpEndpoint;
 }
 
 export interface ClaudeSdkSession extends ProviderSession {
@@ -1158,6 +1169,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private query: QueryHandle;
   private pendingPermission: PendingPermission | null = null;
   private allowedToolSet: Set<string>;
+  /** Relay's own MCP server is attached; its tools enforce their own policy server-side. */
+  private relayMcpEnabled = false;
   private _runtimeMode: ProviderRuntimeMode = "approval-required";
   /** Streaming state per agent key (ROOT_STREAM_KEY for the main conversation). */
   private streamStates = new Map<string, AgentStreamState>();
@@ -1227,9 +1240,30 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (options.fastMode) flagSettings.fastMode = true;
     if (options.reasoningEffort === ULTRACODE_EFFORT) flagSettings.ultracode = true;
     if (Object.keys(flagSettings).length > 0) sdkOptions.settings = flagSettings;
+    // Relay's MCP server. The system prompt append isn't persisted in the
+    // transcript, so the orchestration guidance rides along on every start,
+    // resumes included — unlike the one-shot bootstrap context.
+    // The SDK serializes `mcpServers` into a `--mcp-config <json>` argument,
+    // which any local user can read with `ps`. So the header carries only an
+    // env reference (Claude Code expands `${VAR}` in MCP config) and the token
+    // itself rides in the child env, like Codex's `bearer_token_env_var`.
+    this.relayMcpEnabled = !!options.relayMcp;
+    if (options.relayMcp) {
+      sdkOptions.env = { ...sdkOptions.env, [RELAY_MCP_TOKEN_ENV]: options.relayMcp.token };
+      sdkOptions.mcpServers = {
+        [RELAY_MCP_SERVER_NAME]: {
+          type: "http",
+          url: options.relayMcp.url,
+          headers: { Authorization: `Bearer \${${RELAY_MCP_TOKEN_ENV}}` },
+        },
+      };
+    }
     const appendedBootstrap = [
       options.bootstrapContext?.baseInstructions,
       options.bootstrapContext?.developerInstructions,
+      options.relayMcp
+        ? `${RELAY_ORCHESTRATION_INSTRUCTIONS}\n\n${RELAY_ORCHESTRATION_CLAUDE_NOTE}`
+        : undefined,
     ]
       .filter((value): value is string => !!value?.trim())
       .join("\n\n");
@@ -1637,6 +1671,12 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
     // If full-access mode is on, allow everything
     if (this._runtimeMode === "full-access") {
+      return Promise.resolve({ behavior: "allow" as const, updatedInput: input });
+    }
+
+    // Relay's own tools never prompt: they run as this chat and apply the
+    // account scope and privilege ceiling on the server.
+    if (this.relayMcpEnabled && toolName.startsWith(RELAY_MCP_CLAUDE_TOOL_PREFIX)) {
       return Promise.resolve({ behavior: "allow" as const, updatedInput: input });
     }
 

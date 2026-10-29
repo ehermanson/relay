@@ -31,6 +31,7 @@ import type {
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
   ProviderRuntimeBinding,
+  RelayMcpEndpoint,
   SessionStats,
   TaskItem,
 } from "#core/types.js";
@@ -116,6 +117,12 @@ interface ProviderSessionOptions {
    * the account whose transcript it continues. Absent = `config.providerDirs`.
    */
   configDir?: string;
+  /**
+   * Relay's MCP endpoint plus this chat's bearer token. Set only for
+   * providers advertising `supportsRelayOrchestration`; the driver injects
+   * the server into the session and adds the orchestration instructions.
+   */
+  relayMcp?: RelayMcpEndpoint;
 }
 
 interface ProviderCaptureContext {
@@ -641,6 +648,7 @@ function createClaudeSession(
         allowedTools: options?.allowedTools,
         bootstrapContext: options?.bootstrapContext,
         configDir,
+        relayMcp: options?.relayMcp,
       },
       context.sdkQueryFn as Parameters<typeof createSdkSessionSync>[1],
     );
@@ -922,6 +930,7 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
         processTimeout: config.processTimeout,
         modelOptions: options?.modelOptions,
         bootstrapContext: options?.bootstrapContext,
+        relayMcp: options?.relayMcp,
       });
     },
     async getModels(context) {

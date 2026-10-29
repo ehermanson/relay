@@ -158,6 +158,7 @@ import type {
   ProviderRuntimeBinding,
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
+  RelayMcpEndpoint,
   SpaceInfo,
   ReasoningEffort,
   ProviderModelOption,
@@ -271,6 +272,8 @@ import { findClaudeBinary, resolveClaudeConfigDir } from "#core/providers/claude
 import { normalizeConfigDir, type DefaultLogins } from "#core/accounts.js";
 import { AccountStore } from "#core/account-store.js";
 import { DEFAULT_ACCOUNT_ID, type Account, type ProviderDefaults } from "#core/types.js";
+import { OrchestrationCredentials } from "#core/orchestration/credentials.js";
+import type { OrchestrationHost, OrchestrationProviderInfo } from "#core/orchestration/tools.js";
 
 // =============================================================================
 // Re-exports
@@ -1532,6 +1535,13 @@ export class InstanceManager extends EventEmitter {
   readonly accounts: AccountStore;
   /** Transcript roots seen at the last account change — a new one triggers a rescan. */
   private knownProviderRoots = new Set<string>();
+  /**
+   * Relay's own MCP endpoint (`/mcp`), set by the server once it listens.
+   * Null = not serving it (tests, embedded use): sessions get no Relay tools.
+   */
+  private orchestrationUrl: string | null = null;
+  /** One bearer token per chat for `/mcp`; see `OrchestrationCredentials`. */
+  private readonly orchestrationCredentials = new OrchestrationCredentials();
   /** Pre-resolved SDK query function — null if SDK not available (falls back to CLI) */
   private _sdkQueryFn: ((params: { prompt: unknown; options?: unknown }) => unknown) | null = null;
   /** Cached project icon paths: dir → absolute file path (null = scanned, not found) */
@@ -2280,9 +2290,12 @@ export class InstanceManager extends EventEmitter {
       bootstrapContext?: ProviderSessionBootstrap;
       /** The chat's bound login (`InstanceInfo.configDir`); absent = server default. */
       configDir?: string;
+      /** The chat this session serves; it gets the Relay MCP token, when served. */
+      instanceId?: string;
     },
   ): ProviderSession {
     const provider = options?.provider ?? "claude";
+    const relayMcp = this.issueRelayMcp(options?.instanceId, provider);
     // A bound chat's config and driver context both point at its login dir,
     // so the spawn and any path the driver derives from `providerDirs` agree
     // on where the transcript lives.
@@ -2292,8 +2305,95 @@ export class InstanceManager extends EventEmitter {
     return createManagedProviderSession(
       provider,
       sessionConfig,
-      options,
+      relayMcp ? { ...options, relayMcp } : options,
       this.getProviderContext({ provider, configDir: options?.configDir }),
+    );
+  }
+
+  // ===========================================================================
+  // Relay orchestration (cross-chat MCP tools)
+  // ===========================================================================
+
+  /**
+   * Serve Relay's MCP endpoint at `url` (null stops serving it). Only sessions
+   * started afterwards get the tools; clearing revokes every token.
+   */
+  setOrchestrationEndpoint(url: string | null): void {
+    this.orchestrationUrl = url;
+    if (!url) this.orchestrationCredentials.revokeAll();
+  }
+
+  /** A fresh endpoint + token for a session about to start, or undefined when not served. */
+  private issueRelayMcp(
+    instanceId: string | undefined,
+    provider: ProviderKind,
+  ): RelayMcpEndpoint | undefined {
+    if (!this.orchestrationUrl || !instanceId) return undefined;
+    if (!getProviderCapabilities(provider).supportsRelayOrchestration) return undefined;
+    return { url: this.orchestrationUrl, token: this.orchestrationCredentials.issue(instanceId) };
+  }
+
+  /** The chat a `/mcp` bearer token belongs to, while that chat still exists. */
+  resolveOrchestrationCaller(token: string | undefined): string | undefined {
+    const instanceId = this.orchestrationCredentials.resolve(token);
+    return instanceId && this.instances.has(instanceId) ? instanceId : undefined;
+  }
+
+  /** The read/act surface Relay's MCP tools run against. */
+  getOrchestrationHost(): OrchestrationHost {
+    return {
+      getChat: (instanceId) =>
+        this.getInstance(instanceId) ?? this.getChatSummary(instanceId) ?? undefined,
+      listProjectChats: (projectId) => this.listProjectChats(projectId),
+      getProject: (projectId) => this._projectManager.getProject(projectId) ?? undefined,
+      getHistory: (instanceId) => this.getHistory(instanceId),
+      accountIdOf: (chat) => {
+        const id = chat.accountId || DEFAULT_ACCOUNT_ID;
+        return this.accounts.get(id) ? id : DEFAULT_ACCOUNT_ID;
+      },
+      listProviders: (accountId) => this.listOrchestrationProviders(accountId),
+    };
+  }
+
+  private async listOrchestrationProviders(
+    accountId: string,
+  ): Promise<OrchestrationProviderInfo[]> {
+    return Promise.all(
+      this.getAvailableProviders().map(async ({ provider, label, capabilities }) => {
+        const login = this.accounts.resolveLogin(accountId, provider);
+        const runtimeModes = capabilities.runtimeModes
+          ? (Object.keys(capabilities.runtimeModes) as ProviderRuntimeMode[])
+          : undefined;
+        if (!login.available) {
+          return {
+            provider,
+            label,
+            available: false,
+            unavailableReason: `No ${label} login in this account.`,
+            models: [],
+            ...(runtimeModes ? { runtimeModes } : {}),
+          };
+        }
+        let models: OrchestrationProviderInfo["models"] = [];
+        try {
+          models = (await this.getProviderModels(provider, login.configDir))
+            .filter((model) => !model.hidden)
+            .map((model) => ({
+              id: model.id,
+              label: model.label,
+              ...(model.isDefault ? { isDefault: true } : {}),
+            }));
+        } catch (err) {
+          this.baseConfig.logger.debug(`[Orchestration] ${provider} model list failed: ${err}`);
+        }
+        return {
+          provider,
+          label,
+          available: true,
+          models,
+          ...(runtimeModes ? { runtimeModes } : {}),
+        };
+      }),
     );
   }
 
@@ -2681,6 +2781,7 @@ export class InstanceManager extends EventEmitter {
       modelOptions,
       bootstrapContext,
       configDir,
+      instanceId: id,
     });
     const deliveredBootstrap = bootstrapContext ?? proc.bootstrapContext;
     const initialBinding = proc.getRuntimeBinding();
@@ -2919,6 +3020,7 @@ export class InstanceManager extends EventEmitter {
     this.staleCounts.delete(id);
     this.missingRunnableCwdWarnings.delete(id);
     this.fileStatsDebouncer.cancel(id);
+    this.orchestrationCredentials.revoke(id);
 
     instance.info.status = "stopped";
 
@@ -3008,6 +3110,8 @@ export class InstanceManager extends EventEmitter {
     }
     // Drop the binding so the active-process count frees a slot.
     instance.process = null;
+    // A stopped chat has no agent to act for; revive issues a fresh token.
+    this.orchestrationCredentials.revoke(id);
 
     // Stop the JSONL watcher; it is re-established on revive.
     const watchInterval = this.watchIntervals.get(id);
@@ -4235,6 +4339,7 @@ export class InstanceManager extends EventEmitter {
         runtimeMode: instance.info.runtimeMode,
         modelOptions: instance.info.modelOptions,
         configDir: instance.info.configDir,
+        instanceId: instance.info.id,
       });
     } catch (err) {
       this.baseConfig.logger.error(`[InstanceManager] Failed to create process for resume: ${err}`);
@@ -4309,6 +4414,7 @@ export class InstanceManager extends EventEmitter {
         runtimeMode: instance.info.runtimeMode,
         modelOptions: instance.info.modelOptions,
         configDir: instance.info.configDir,
+        instanceId: instance.info.id,
       });
     } catch (err) {
       this.baseConfig.logger.error(`[InstanceManager] Failed to create process for revive: ${err}`);
@@ -5182,6 +5288,7 @@ export class InstanceManager extends EventEmitter {
       allowedTools: this.getPersistedAllowedTools(resumeSessionId),
       modelOptions: instance.info.modelOptions,
       configDir: instance.info.configDir,
+      instanceId: instance.info.id,
     });
 
     instance.process = proc;
@@ -10496,6 +10603,7 @@ export class InstanceManager extends EventEmitter {
                   : undefined,
               )?.id),
         modelOptions,
+        instanceId: id,
       });
       instance.process = proc;
       instance.providerBinding = mergeProviderBinding(

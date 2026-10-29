@@ -41,9 +41,16 @@ import type {
   ProviderRequestResponse,
   ProviderRuntimeBinding,
   ProviderRuntimeMode,
+  RelayMcpEndpoint,
   UserInputQuestion,
 } from "#core/types.js";
 import type { CoreConfig } from "#core/config.js";
+import {
+  RELAY_MCP_SERVER_NAME,
+  RELAY_MCP_TOKEN_ENV,
+  RELAY_ORCHESTRATION_INSTRUCTIONS,
+  withoutRelayMcpServer,
+} from "#core/orchestration/instructions.js";
 import type { ProviderSession } from "#core/provider.js";
 import { buildSessionInitEvent } from "#core/session-init.js";
 import { buildTaskListActivityFromPlan } from "#core/tools.js";
@@ -263,6 +270,38 @@ export interface CodexAppServerSessionOptions {
    * server env unchanged.
    */
   codexHome?: string;
+  /** Relay's MCP endpoint and this chat's token (see `ProviderSessionOptions.relayMcp`). */
+  relayMcp?: RelayMcpEndpoint;
+}
+
+/**
+ * `codex app-server` argv for one session. Relay's MCP server is attached with
+ * `-c` config overrides (layered over the user's own `config.toml`); the token
+ * stays out of argv — Codex reads it from `RELAY_MCP_TOKEN` in the env.
+ */
+export function buildCodexAppServerArgs(relayMcp?: RelayMcpEndpoint): string[] {
+  const args = ["app-server", "--listen", "stdio://"];
+  if (relayMcp) {
+    const key = `mcp_servers.${RELAY_MCP_SERVER_NAME}`;
+    args.push(
+      "-c",
+      `${key}.url=${JSON.stringify(relayMcp.url)}`,
+      "-c",
+      `${key}.bearer_token_env_var=${JSON.stringify(RELAY_MCP_TOKEN_ENV)}`,
+    );
+  }
+  return args;
+}
+
+/** Append Relay's orchestration guidance to the session's developer instructions. */
+export function withRelayOrchestrationInstructions(
+  developerInstructions: string | undefined,
+  relayMcp: RelayMcpEndpoint | undefined,
+): string | undefined {
+  if (!relayMcp) return developerInstructions;
+  return [developerInstructions, RELAY_ORCHESTRATION_INSTRUCTIONS]
+    .filter((value): value is string => !!value?.trim())
+    .join("\n\n");
 }
 
 export interface CodexProviderGlobalStateSnapshotOptions {
@@ -796,6 +835,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private _runtimeMode: ProviderRuntimeMode;
   private _modelOptions: ProviderModelOptions;
   readonly bootstrapContext?: ProviderSessionBootstrap;
+  private readonly relayMcp?: RelayMcpEndpoint;
   private _stats: SessionStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -877,6 +917,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     this._runtimeMode = options.runtimeMode ?? "approval-required";
     this._modelOptions = options.modelOptions ?? {};
     this.bootstrapContext = options.bootstrapContext;
+    this.relayMcp = options.relayMcp;
     if (this._preferredModel) {
       this._stats.model = this._preferredModel;
     }
@@ -1122,11 +1163,17 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   // Process lifecycle
   // ===========================================================================
 
+  /** Session spawn env: the account's Codex home plus Relay's MCP token when attached. */
+  private sessionSpawnEnv(): NodeJS.ProcessEnv {
+    const env = buildCodexSpawnEnv(this.codexHome);
+    return this.relayMcp ? { ...env, [RELAY_MCP_TOKEN_ENV]: this.relayMcp.token } : env;
+  }
+
   private spawnAndInit(firstMessage: string): void {
     this._closingIntentionally = false;
-    this.process = this.spawnProcess(this.codexPath, ["app-server", "--listen", "stdio://"], {
+    this.process = this.spawnProcess(this.codexPath, buildCodexAppServerArgs(this.relayMcp), {
       cwd: this.cwd,
-      env: buildCodexSpawnEnv(this.codexHome),
+      env: this.sessionSpawnEnv(),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1144,9 +1191,9 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   private spawnAndCompact(): void {
     this._closingIntentionally = false;
-    this.process = this.spawnProcess(this.codexPath, ["app-server", "--listen", "stdio://"], {
+    this.process = this.spawnProcess(this.codexPath, buildCodexAppServerArgs(this.relayMcp), {
       cwd: this.cwd,
-      env: buildCodexSpawnEnv(this.codexHome),
+      env: this.sessionSpawnEnv(),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1192,7 +1239,13 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         model: this._preferredModel ?? undefined,
         cwd: this.cwd,
         baseInstructions: this.bootstrapContext?.baseInstructions ?? undefined,
-        developerInstructions: this.bootstrapContext?.developerInstructions ?? undefined,
+        // Resumes keep the instructions Codex persisted with the thread; only a
+        // new thread carries the orchestration guidance (the MCP server's own
+        // `initialize` instructions still reach resumed sessions).
+        developerInstructions: withRelayOrchestrationInstructions(
+          this.bootstrapContext?.developerInstructions ?? undefined,
+          this.relayMcp,
+        ),
         approvalPolicy: this.resolveApprovalPolicy(),
         sandbox: this.resolveSandboxMode(),
         experimentalRawEvents: false,
@@ -1259,7 +1312,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private requestStartupSnapshots(): void {
     void this.sendRpc("mcpServerStatus/list", {})
       .then((result) => {
-        const mcpServers = normalizeMcpServerStatusSnapshot(result);
+        const mcpServers = withoutRelayMcpServer(normalizeMcpServerStatusSnapshot(result));
         if (!mcpServers) return;
         this.emit("systemEvent", {
           type: "system_event",
@@ -2189,7 +2242,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
           type: "system_event",
           event: "provider_status",
           payload: {
-            mcpServers: normalizeMcpServerStatusSnapshot(params),
+            mcpServers: withoutRelayMcpServer(normalizeMcpServerStatusSnapshot(params)),
           },
           raw: msg,
         } as SystemEventMessage);

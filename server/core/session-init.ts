@@ -1,4 +1,5 @@
 import { mcpServerId, normalizeMcpAuthentication, normalizeMcpConnectionState } from "#core/mcp.js";
+import { RELAY_MCP_SERVER_NAME, withoutRelayMcpServer } from "#core/orchestration/instructions.js";
 import type { ProviderKind, ProviderMcpServerStatus, SystemEventMessage } from "#core/types.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -259,7 +260,9 @@ export function normalizeSessionInitPayload(
     normalizeAgents(record.agentTypes);
   if (agents) payload.agents = agents;
 
-  const mcpServers = normalizeMcpServers(record.mcp_servers ?? record.mcpServers, provider);
+  const mcpServers = withoutRelayMcpServer(
+    normalizeMcpServers(record.mcp_servers ?? record.mcpServers, provider),
+  );
 
   // mcp_server_errors (SDK/CLI >= 2.1.219): Record<serverName, errorMessage> for servers
   // that failed config validation at startup — these are skipped and never appear in
@@ -269,7 +272,7 @@ export function normalizeSessionInitPayload(
   if (rawErrors && typeof rawErrors === "object" && !Array.isArray(rawErrors)) {
     const knownNames = new Set(mcpServers?.map((s) => s.name) ?? []);
     for (const [name, errorValue] of Object.entries(rawErrors as Record<string, unknown>)) {
-      if (!name.trim()) continue;
+      if (!name.trim() || name === RELAY_MCP_SERVER_NAME) continue;
       // Skip if mcp_servers already includes this server (it will carry its own status)
       if (knownNames.has(name)) continue;
       const detail = typeof errorValue === "string" ? errorValue : undefined;

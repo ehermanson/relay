@@ -422,6 +422,16 @@ export interface ProviderSessionBootstrap {
   developerInstructions?: string;
 }
 
+/**
+ * Relay's MCP endpoint as handed to one provider session: the URL plus the
+ * bearer token issued for that chat. The token is a secret — drivers must pass
+ * it through headers or env, never argv or logs.
+ */
+export interface RelayMcpEndpoint {
+  url: string;
+  token: string;
+}
+
 export interface ProviderSessionContext {
   bootstrap?: ProviderSessionBootstrap;
 }
@@ -501,6 +511,13 @@ export interface ProviderCapabilities {
    * agent cards and the Agents sidecar; when false/absent neither appears.
    */
   supportsAgentActivity?: boolean;
+  /**
+   * The driver injects Relay's own MCP server (`/mcp`, see
+   * `server/core/orchestration/`) into its sessions, so the agent can use
+   * Relay's cross-chat orchestration tools. Without this no endpoint or
+   * credential is issued for the provider's chats.
+   */
+  supportsRelayOrchestration?: boolean;
   /**
    * The provider's login lives in a config dir Relay can point the CLI at
    * (Claude: `CLAUDE_CONFIG_DIR`, Codex: `CODEX_HOME`), so an `Account` other

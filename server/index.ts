@@ -210,6 +210,8 @@ export class Relay {
     }
 
     await this.listenWithRetry();
+    // Sessions started from here on get Relay's MCP tools (needs the real port).
+    this.instanceManager.setOrchestrationEndpoint(relayMcpUrl(this.config.host, this.config.port));
 
     // Background: scan filesystem for new sessions, then start discovery polling.
     // Not awaited — server is already listening.
@@ -336,6 +338,20 @@ export class Relay {
       }
     });
   }
+}
+
+/**
+ * URL provider CLIs on this machine use to reach `/mcp`. A wildcard bind
+ * (or none) is reached over IPv4 loopback; an explicit host is used as-is.
+ */
+export function relayMcpUrl(host: string | undefined, port: number): string {
+  const wildcard = !host || host === "0.0.0.0" || host === "::" || host === "[::]";
+  const target = wildcard
+    ? "127.0.0.1"
+    : host.includes(":") && !host.startsWith("[")
+      ? `[${host}]`
+      : host;
+  return `http://${target}:${port}/mcp`;
 }
 
 /**
