@@ -29,6 +29,7 @@ import {
   readSync,
   closeSync,
   mkdtempSync,
+  realpathSync,
   watch as watchFs,
 } from "fs";
 import type { FSWatcher } from "fs";
@@ -73,7 +74,6 @@ import {
   resolveProviderDefaultModelOption,
 } from "#core/provider-catalog.js";
 import { overlayManagedMcpConfiguration } from "#core/mcp.js";
-import { SpaceManager } from "#core/space-manager.js";
 import { SpinOffManager } from "#core/spin-off-manager.js";
 import { ProjectManager } from "#core/project-manager.js";
 import type { Project } from "#core/types.js";
@@ -164,7 +164,6 @@ import type {
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
   RelayMcpEndpoint,
-  SpaceInfo,
   ReasoningEffort,
   ProviderModelOption,
   UserInputQuestion,
@@ -215,11 +214,9 @@ import {
 import {
   buildSessionBootstrapContext,
   CUSTOM_INSTRUCTIONS_BLOCK_KIND,
-  extractSpaceContextForInjection,
   getDelegationFromRuntimePayload,
   getSessionContextFromRuntimePayload,
   hasSessionBootstrapBlock,
-  SPACE_CONTEXT_BLOCK_KIND,
   TASK_CONTEXT_BLOCK_KIND,
 } from "#core/session-context.js";
 import {
@@ -258,13 +255,7 @@ import {
   getFileDiff,
   withRepoLock,
 } from "#core/git.js";
-import {
-  explicitOrInferredSpaceIdForPersistenceRow,
-  inferSpaceIdForPersistenceRow,
-  type SpaceOwnershipCandidate,
-  resolveExternalRestorePaths,
-  resolveManagedRestorePaths,
-} from "#core/instance-restore.js";
+import { resolveExternalRestorePaths, resolveManagedRestorePaths } from "#core/instance-restore.js";
 import { searchWorkspaceEntries, type WorkspaceEntry } from "#core/workspace-entries.js";
 import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
@@ -364,6 +355,12 @@ function isUsableStoredWorktreePath(
   worktreePath: string | null | undefined,
 ): worktreePath is string {
   return Boolean(worktreePath && existsSync(worktreePath) && isGitRepo(worktreePath));
+}
+
+interface TaskWatchScope {
+  key: string;
+  projectId: string;
+  directory: string;
 }
 
 interface Instance {
@@ -525,8 +522,8 @@ export interface InstanceManagerEvents {
   "instances:changed": [];
   "scan:complete": [];
   "projects:changed": [];
-  /** Invalidate task queries for Main (omitted spaceId) or one active Space. */
-  "tasks:changed": [projectId: string, spaceId?: string];
+  /** Invalidate task queries for a project. */
+  "tasks:changed": [projectId: string];
   "provider_global_state:updated": [
     provider: import("#core/types.js").ProviderKind,
     state: import("#core/types.js").ProviderGlobalState,
@@ -848,7 +845,7 @@ export function extractSearchableText(history: HistoryEntry[]): string {
       const userMsg = msg as UserMessage;
       // Skip hidden server-injected messages (auto-continue, permission grants)
       if (userMsg.internal) continue;
-      // Strip injected wrappers (task context, custom instructions, space context)
+      // Strip injected wrappers (task context, custom instructions, legacy space context)
       // to get the real user text
       let text = userMsg.text;
       if (text && isInternalInjectedUserText(text)) {
@@ -1495,15 +1492,6 @@ function extractResumeSessionId(resumeCursor: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function hasExplicitNonDefaultSpace(
-  spaceManager: SpaceManager,
-  spaceId: string | null | undefined,
-): boolean {
-  if (!spaceId) return false;
-  const space = spaceManager.getSpace(spaceId);
-  return Boolean(space && !space.isDefault);
-}
-
 function statsChanged(before: SessionStats, after: SessionStats): boolean {
   return (
     before.inputTokens !== after.inputTokens ||
@@ -1549,6 +1537,22 @@ export class ProviderUnavailableInAccountError extends Error {
   }
 }
 
+/**
+ * A chat whose working directory (typically a removed worktree) no longer
+ * exists is read-only: it stays readable, but sending, resuming and booting
+ * are refused rather than silently moving it into another checkout.
+ */
+export class ChatReadOnlyError extends Error {
+  readonly code = "chat_read_only";
+  readonly workingDirectory: string;
+
+  constructor(workingDirectory: string) {
+    super(`This chat is read-only: its working directory ${workingDirectory} no longer exists`);
+    this.name = "ChatReadOnlyError";
+    this.workingDirectory = workingDirectory;
+  }
+}
+
 export class InstanceManager extends EventEmitter {
   /**
    * Provider global state (account identity, rate limits, MCP servers,
@@ -1563,15 +1567,14 @@ export class InstanceManager extends EventEmitter {
   private instances = new Map<string, Instance>();
   private instanceMutationChains = new Map<string, Promise<void>>();
   private acceptingMessages = true;
-  private missingRunnableCwdWarnings = new Map<string, string>();
-  /** Space IDs we've already warned about for unusable worktrees — avoids N warnings for N sessions in the same space. */
-  private warnedUnusableSpaces = new Set<string>();
+  /** Missing worktree paths already warned about at restore. */
+  private warnedMissingWorktrees = new Set<string>();
   private baseConfig: CoreConfig;
   private db: SessionDB;
   private instanceCounter = 0;
   private discoveryInterval: ReturnType<typeof setInterval> | null = null;
   private watchIntervals = new Map<string, ReturnType<typeof setInterval>>();
-  /** Filesystem watches exist only for Main plus currently active Spaces. */
+  /** Filesystem watches on each project's task files. */
   private taskWatchInterval: ReturnType<typeof setInterval> | null = null;
   private taskWatchers = new Map<
     string,
@@ -1656,8 +1659,6 @@ export class InstanceManager extends EventEmitter {
    * auto-expired after 60 s — long enough for the process to die.
    */
   private dismissedJsonlPaths = new Map<string, number>();
-  /** Space lifecycle manager */
-  private spaceManager: SpaceManager;
   /** Spin-off generation and persistence */
   private spinOffManager: SpinOffManager;
   /** Project manager for explicit project registration */
@@ -1679,11 +1680,6 @@ export class InstanceManager extends EventEmitter {
     this.accounts = new AccountStore(this.db, () => this.defaultLogins());
     this.knownProviderRoots = this.collectProviderRootKeys();
     this.accounts.onChange(() => this.handleAccountsChanged());
-    this.spaceManager = new SpaceManager(this.db, config.logger);
-    // Complete/Archive stop (never delete) the space's chats before removing its worktree.
-    this.spaceManager.setSpaceChatStopper((spaceId) => this.stopSpaceChats(spaceId));
-    // Merges/pushes/archives refresh pushed repo status (see repo-status-service.ts).
-    this.spaceManager.setRepoStatusInvalidator(invalidateRepoStatus);
     this.spinOffManager = new SpinOffManager(this.db, config.logger);
     this._projectManager = new ProjectManager(this.db, config.logger);
     // Keep in-memory instances aligned with project registration changes.
@@ -1986,152 +1982,6 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  private refreshInstanceSpaceIdsFromDb(): void {
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId) continue;
-
-      if (instance.info.external) {
-        const row = this.db.getByInstanceId(instance.info.id);
-        if (row?.space_id) {
-          instance.info.spaceId = row.space_id;
-        }
-        continue;
-      }
-
-      const row = this.db.getManagedByInstanceId(instance.info.id);
-      if (row?.space_id) {
-        instance.info.spaceId = row.space_id;
-      }
-    }
-  }
-
-  private backfillMissingSpaceIds(): void {
-    // Compatibility shim: stamp explicit ownership onto legacy persisted rows
-    // during scan so the rest of the app can treat `space_id` as canonical.
-    let repaired = 0;
-    const spacesByProjectDirectory = new Map<string, SpaceInfo[]>();
-    const getSpaces = (projectDirectory: string): SpaceInfo[] => {
-      const existing = spacesByProjectDirectory.get(projectDirectory);
-      if (existing) {
-        return existing;
-      }
-      const spaces = this.spaceManager.listAllSpaces(projectDirectory);
-      spacesByProjectDirectory.set(projectDirectory, spaces);
-      return spaces;
-    };
-
-    for (const row of this.db.getAllManagedActive()) {
-      if (row.space_id) continue;
-      if (row.worktree_path) {
-        const directSpace = this.spaceManager.getSpaceByWorktreePath(row.worktree_path);
-        if (directSpace) {
-          this.db.updateManagedSpaceId(row.instance_id, directSpace.id);
-          repaired++;
-          this.logSpaceOwnershipRepair("scan-backfill", `managed:${row.instance_id}`, {
-            previousSpaceId: row.space_id,
-            nextSpaceId: directSpace.id,
-            projectDirectory: getPersistenceRowProjectDirectory(row),
-          });
-          continue;
-        }
-      }
-      const projectDirectory = getPersistenceRowProjectDirectory(row);
-      const project = this._projectManager.getProjectByDirectory(projectDirectory);
-      if (!project) continue;
-      const spaceId = inferSpaceIdForPersistenceRow(row, getSpaces(project.directory));
-      if (spaceId) {
-        this.db.updateManagedSpaceId(row.instance_id, spaceId);
-        repaired++;
-        this.logSpaceOwnershipRepair("scan-backfill", `managed:${row.instance_id}`, {
-          previousSpaceId: row.space_id,
-          nextSpaceId: spaceId,
-          projectDirectory,
-        });
-      }
-    }
-
-    for (const row of this.db.getAllActive()) {
-      if (row.space_id) continue;
-      if (row.worktree_path) {
-        const directSpace = this.spaceManager.getSpaceByWorktreePath(row.worktree_path);
-        if (directSpace) {
-          this.db.updateSessionSpaceId(row.session_id, directSpace.id);
-          repaired++;
-          this.logSpaceOwnershipRepair("scan-backfill", `external:${row.session_id}`, {
-            previousSpaceId: row.space_id,
-            nextSpaceId: directSpace.id,
-            projectDirectory: getPersistenceRowProjectDirectory(row),
-          });
-          continue;
-        }
-      }
-      const projectDirectory = getPersistenceRowProjectDirectory(row);
-      const project = this._projectManager.getProjectByDirectory(projectDirectory);
-      if (!project) continue;
-      const spaceId = inferSpaceIdForPersistenceRow(row, getSpaces(project.directory));
-      if (spaceId) {
-        this.db.updateSessionSpaceId(row.session_id, spaceId);
-        repaired++;
-        this.logSpaceOwnershipRepair("scan-backfill", `external:${row.session_id}`, {
-          previousSpaceId: row.space_id,
-          nextSpaceId: spaceId,
-          projectDirectory,
-        });
-      }
-    }
-
-    if (repaired > 0) {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Backfilled explicit space ownership for ${repaired} persisted row(s) during scan`,
-      );
-    }
-  }
-
-  private inferPersistedSpaceIdForProjectDirectory(
-    projectDirectory: string | null | undefined,
-    row: {
-      space_id: string | null;
-      worktree_path: string | null;
-      git_branch: string | null;
-      original_directory?: string | null;
-      working_directory: string;
-    },
-  ): string | null {
-    // Compatibility shim: convert legacy branch/worktree metadata into
-    // explicit ownership when a current space row already exists.
-    if (!projectDirectory) return null;
-    if (row.worktree_path) {
-      const directSpace = this.spaceManager.getSpaceByWorktreePath(row.worktree_path);
-      if (directSpace) return directSpace.id;
-    }
-    if (row.space_id) return row.space_id;
-    // Runs for every persisted chat on restore, so read candidate rows only —
-    // `listAllSpaces` probes git and counts chats per space on every call.
-    const project = this.getRegisteredProjectForDirectory(projectDirectory);
-    const spaces = new Map<string, SpaceOwnershipCandidate>();
-    for (const candidate of getProjectDirectoryCandidates(projectDirectory)) {
-      for (const space of this.spaceManager.listOwnershipCandidates(candidate)) {
-        spaces.set(space.id, space);
-      }
-    }
-    if (project?.directory) {
-      for (const space of this.spaceManager.listOwnershipCandidates(project.directory)) {
-        spaces.set(space.id, space);
-      }
-    }
-    let inferred = explicitOrInferredSpaceIdForPersistenceRow(row, [...spaces.values()]);
-    if (inferred) return inferred;
-
-    for (const knownProject of this.db.getAllProjects()) {
-      for (const space of this.spaceManager.listOwnershipCandidates(knownProject.directory)) {
-        spaces.set(space.id, space);
-      }
-    }
-
-    inferred = explicitOrInferredSpaceIdForPersistenceRow(row, [...spaces.values()]);
-    return inferred ?? null;
-  }
-
   private getRegisteredProjectForDirectory(directory: string | null | undefined): Project | null {
     for (const candidate of getProjectDirectoryCandidates(directory)) {
       const project = this._projectManager.getProjectByDirectory(candidate);
@@ -2168,20 +2018,6 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  private logSpaceOwnershipRepair(
-    source: "scan-backfill" | "restore" | "persist",
-    rowId: string,
-    details: {
-      previousSpaceId?: string | null;
-      nextSpaceId?: string | null;
-      projectDirectory?: string | null;
-    },
-  ): void {
-    this.baseConfig.logger.warn(
-      `[InstanceManager] Repaired space ownership during ${source} for ${rowId}: ${details.previousSpaceId ?? "null"} -> ${details.nextSpaceId ?? "null"}${details.projectDirectory ? ` (${details.projectDirectory})` : ""}`,
-    );
-  }
-
   private getAttachedReviewIds(source: InstanceInfo, excludingId?: string): string[] {
     return getAttachedReviewIds(
       source,
@@ -2200,26 +2036,6 @@ export class InstanceManager extends EventEmitter {
       jsonlPath: instance.jsonlPath,
       externalJsonlPath: instance.externalState?.jsonlPath,
     };
-  }
-
-  private isSpaceOwnedWorktree(instance: Instance): boolean {
-    if (!instance.worktreePath || !instance.originalDirectory) return false;
-
-    if (instance.info.spaceId) return true;
-
-    if (
-      this.spaceManager
-        .listAllSpaces(instance.originalDirectory)
-        .some((space) => space.worktreePath === instance.worktreePath)
-    ) {
-      return true;
-    }
-
-    if (instance.info.external) {
-      return Boolean(this.db.getByInstanceId(instance.info.id)?.space_id);
-    }
-
-    return Boolean(this.db.getManagedByInstanceId(instance.info.id)?.space_id);
   }
 
   private isRegisteredProjectPath(directory: string): boolean {
@@ -2257,7 +2073,7 @@ export class InstanceManager extends EventEmitter {
     }
 
     // Claude's encoded directory names are lossy for some worktree paths
-    // (notably ~/.relay/worktrees/space-<id>). Fall back to transcript cwd.
+    // (notably ~/.relay/worktrees/<name>). Fall back to transcript cwd.
     try {
       const jsonlFiles = readdirSync(fullProjDir).filter((file) => file.endsWith(".jsonl"));
       for (const jsonlFile of jsonlFiles) {
@@ -2336,13 +2152,6 @@ export class InstanceManager extends EventEmitter {
     const registeredDirectories = new Set(
       this.getKnownDirectories().map((directoryInfo) => directoryInfo.path),
     );
-    for (const project of this._projectManager.listProjects()) {
-      for (const space of this.spaceManager.listAllSpaces(project.directory)) {
-        if (space.worktreePath) {
-          registeredDirectories.add(space.worktreePath);
-        }
-      }
-    }
     const providerDirs = login
       ? this.providerDirsForLogin(login.provider, login.configDir)
       : this.providerDirs;
@@ -2528,8 +2337,11 @@ export class InstanceManager extends EventEmitter {
           "That chat is a terminal session Relay doesn't manage.",
         );
       }
-      if (!this.isSpaceWritable(target)) {
-        throw new McpToolError("chat_not_sendable", "That chat's Space is closed (read-only).");
+      if (!this.isChatWritable(target)) {
+        throw new McpToolError(
+          "chat_not_sendable",
+          "That chat is read-only: its working directory no longer exists.",
+        );
       }
       // Like a wake, a message never revives a chat its user put away.
       if (this.isChatDone(target)) {
@@ -2661,7 +2473,7 @@ export class InstanceManager extends EventEmitter {
 
   /**
    * Start a child chat for `task` on behalf of `parentId`. The child inherits
-   * the parent's account, Space, and checkout; runs at the parent's runtime
+   * the parent's account and checkout; runs at the parent's runtime
    * mode or narrower; and receives only the task text. Idempotent per
    * `clientRequestId`.
    */
@@ -2675,7 +2487,7 @@ export class InstanceManager extends EventEmitter {
       if (existing) return existing;
     }
     try {
-      this.assertSpaceWritable(parent);
+      this.assertChatWritable(parent);
     } catch (err) {
       throw new McpToolError("parent_not_active", errorMessage(err));
     }
@@ -2736,8 +2548,7 @@ export class InstanceManager extends EventEmitter {
         model,
         runtimeMode: mode.mode,
         modelOptions: sameProvider ? parent.info.modelOptions : undefined,
-        spaceId: parent.info.spaceId,
-        workingDirectory: parent.info.workingDirectory,
+        workingDirectory: parent.actualCwd || parent.info.workingDirectory,
         accountId,
         name: title,
         delegation: {
@@ -3060,7 +2871,7 @@ export class InstanceManager extends EventEmitter {
         .listDelegatedTasksForParent(parentId)
         .filter((task) => task.status !== "running" && task.deliveredAt === undefined);
       if (pending.length === 0) return;
-      if (this.isChatDone(parent) || !this.isSpaceWritable(parent)) {
+      if (this.isChatDone(parent) || !this.isChatWritable(parent)) {
         // Record, don't revive: opening the parent shows the finished cards.
         this.db.markDelegatedTasksDelivered(
           pending.map((task) => task.id),
@@ -3253,19 +3064,9 @@ export class InstanceManager extends EventEmitter {
     return recency <= doneAt;
   }
 
-  private isSpaceWritable(instance: Instance): boolean {
-    try {
-      this.assertSpaceWritable(instance);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private buildBootstrapContext(
     project: Project | undefined,
     options?: {
-      spaceId?: string;
       workingDirectory?: string;
       includeProjectInstructions?: boolean;
       includeTaskContext?: boolean;
@@ -3280,11 +3081,6 @@ export class InstanceManager extends EventEmitter {
     const relayInstructionBlocks: ProviderContextBlock[] = [];
     const includeTaskContext = options?.includeTaskContext ?? true;
 
-    const spaceBlock = this.buildSpaceBootstrapContextBlock(
-      options?.spaceId,
-      options?.workingDirectory,
-    );
-    if (spaceBlock) relayInstructionBlocks.push(spaceBlock);
     if (options?.delegatedChildNote) {
       relayInstructionBlocks.push({
         key: "relay-delegated-child",
@@ -3354,42 +3150,6 @@ export class InstanceManager extends EventEmitter {
     return blocks;
   }
 
-  private buildSpaceBootstrapContextBlock(
-    spaceId: string | undefined,
-    workingDirectory: string | undefined,
-  ): ProviderContextBlock | undefined {
-    if (!spaceId) return undefined;
-    const space = this.getSpaceManager().getSpace(spaceId);
-    if (!space) return undefined;
-
-    const guidance =
-      `You are working in a shared Space.\n\n` +
-      `Worktree: \`${space.worktreePath || workingDirectory || space.projectDirectory}\`\n` +
-      `Original project: \`${space.projectDirectory}\`\n\n` +
-      `IMPORTANT: All file reads, writes, and searches must use paths under the worktree, not the original project directory. The worktree is an isolated copy.\n\n` +
-      `The file \`.relay/space-context.md\` is the shared coordination source of truth for this Space. Read it before making decisions that may depend on sibling chats, and re-read it as you work whenever you need the latest shared status, interfaces, decisions, or blockers.\n\n` +
-      `When you complete significant work, update \`.relay/space-context.md\` with decisions, interfaces other chats may depend on, current status, and blockers/questions.`;
-
-    // Inject the brief's current contents (not just a pointer) so every chat in
-    // the space starts with the shared context, mirroring how project custom
-    // instructions inject their text. Skip when the file is empty or only the
-    // seed template (headers/comments). See task b3e9f1a2 — completes the
-    // bootstrap-content port custom_instructions received in 12fc245 (which
-    // left the space brief as a pointer only).
-    const brief = extractSpaceContextForInjection(this.getSpaceManager().readSpaceContext(spaceId));
-    const text = brief
-      ? `${guidance}\n\nCurrent \`.relay/space-context.md\` contents:\n\n${brief}`
-      : guidance;
-
-    return {
-      key: `space:${spaceId}`,
-      kind: SPACE_CONTEXT_BLOCK_KIND,
-      title: `Space: ${space.name}`,
-      source: ".relay/space-context.md",
-      text,
-    };
-  }
-
   /**
    * Check if a provider session is a Claude SDK session (exposes sessionId eagerly).
    */
@@ -3397,63 +3157,33 @@ export class InstanceManager extends EventEmitter {
     return proc.provider === "claude" && "sessionId" in proc;
   }
 
-  private resolveRunnableCwd(instance: Instance): string {
-    const cwd = instance.actualCwd || instance.info.workingDirectory;
-    if (existsSync(cwd)) {
-      if (this.missingRunnableCwdWarnings.get(instance.info.id) === cwd) {
-        this.missingRunnableCwdWarnings.delete(instance.info.id);
-      }
-      return cwd;
-    }
-
-    if (hasExplicitNonDefaultSpace(this.spaceManager, instance.info.spaceId)) {
-      if (this.missingRunnableCwdWarnings.get(instance.info.id) !== cwd) {
-        this.missingRunnableCwdWarnings.set(instance.info.id, cwd);
-        this.baseConfig.logger.warn(
-          `[InstanceManager] Space-owned working directory ${cwd} is missing; keeping stale path to avoid falling back into the main repo`,
-        );
-      }
-      return cwd;
-    }
-
-    if (instance.originalDirectory && existsSync(instance.originalDirectory)) {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Working directory ${cwd} no longer exists, falling back to original directory ${instance.originalDirectory}`,
-      );
-      instance.actualCwd = undefined;
-      instance.worktreePath = undefined;
-      instance.info.workingDirectory = instance.originalDirectory;
-      return instance.originalDirectory;
-    }
-
-    return cwd;
+  /**
+   * The directory a chat's provider runs in. Never rewritten: a chat whose
+   * directory is gone (a removed worktree) is read-only, not moved into
+   * another checkout — see `assertChatWritable`.
+   */
+  private runnableCwd(instance: Instance): string {
+    return instance.actualCwd || instance.info.workingDirectory;
   }
 
-  private getBrokenSpaceWriteError(instance: Instance): string | null {
-    const spaceId = instance.info.spaceId;
-    if (!spaceId) {
-      return null;
-    }
-
-    const space = this.spaceManager.getSpace(spaceId);
-    if (!space) {
-      return `Space ${spaceId} no longer exists`;
-    }
-    if (space.isDefault) {
-      return null;
-    }
-    if (space.worktreePath) {
-      return null;
-    }
-
-    return `Space "${space.name}" is missing its worktree and is currently read-only`;
+  private isChatWritable(instance: Instance): boolean {
+    return existsSync(this.runnableCwd(instance));
   }
 
-  private assertSpaceWritable(instance: Instance): void {
-    const error = this.getBrokenSpaceWriteError(instance);
-    if (error) {
-      throw new Error(error);
+  /** Refuse to send to, resume, or boot a chat whose working directory is gone. */
+  private assertChatWritable(instance: Instance): void {
+    if (!this.isChatWritable(instance)) {
+      throw new ChatReadOnlyError(this.runnableCwd(instance));
     }
+  }
+
+  /** One warning per missing worktree path, not one per restored chat. */
+  private warnMissingWorktree(worktreePath: string): void {
+    if (this.warnedMissingWorktrees.has(worktreePath)) return;
+    this.warnedMissingWorktrees.add(worktreePath);
+    this.baseConfig.logger.warn(
+      `[InstanceManager] Worktree ${worktreePath} no longer exists; its chats are read-only`,
+    );
   }
 
   // ===========================================================================
@@ -3484,7 +3214,6 @@ export class InstanceManager extends EventEmitter {
     runtimeMode?: ProviderRuntimeMode;
     resumeSessionId?: string;
     model?: string;
-    spaceId?: string;
     modelOptions?: ProviderModelOptions;
     parentSessionId?: string;
     review?: import("#core/types.js").ReviewSessionInfo;
@@ -3498,38 +3227,13 @@ export class InstanceManager extends EventEmitter {
 
     const id = randomUUID();
     this.instanceCounter++;
-    let workingDirectory = options?.workingDirectory || this.baseConfig.workingDirectory;
+    const workingDirectory = options?.workingDirectory || this.baseConfig.workingDirectory;
     const now = Date.now();
 
-    // If a space is specified, its worktree path always wins as the CWD
-    const spaceId = options?.spaceId;
-    let spaceOriginalDirectory: string | undefined;
-    let spaceWorktreePath: string | undefined;
-    let spaceGitBranch: string | undefined;
-    if (spaceId) {
-      const space = this.spaceManager.getSpace(spaceId);
-      if (space) {
-        if (!space.isDefault && !space.worktreePath) {
-          throw new Error(
-            `Space "${space.name}" is missing its worktree and is currently read-only`,
-          );
-        }
-        spaceOriginalDirectory = space.projectDirectory;
-        spaceGitBranch = space.gitBranch ?? undefined;
-        if (space.worktreePath) {
-          spaceWorktreePath = space.worktreePath;
-          workingDirectory = space.worktreePath;
-        } else {
-          // Default space — use the project directory
-          workingDirectory = space.projectDirectory;
-        }
-      }
-      this.spaceManager.touchSpace(spaceId);
-    }
     const resumeId = options?.resumeSessionId;
 
     // Auto-register project early so we can apply project-level defaults
-    const projectDirectory = normalizeProjectDirectory(spaceOriginalDirectory ?? workingDirectory);
+    const projectDirectory = normalizeProjectDirectory(workingDirectory);
     let project = this._projectManager.getProjectByDirectory(projectDirectory);
     if (!project) {
       try {
@@ -3638,13 +3342,11 @@ export class InstanceManager extends EventEmitter {
           )?.id);
     const bootstrapContext = resumeId
       ? this.buildBootstrapContext(project, {
-          spaceId,
           workingDirectory,
           includeProjectInstructions: false,
           includeTaskContext: false,
         })
       : this.buildBootstrapContext(project, {
-          spaceId,
           workingDirectory,
           delegatedChildNote: options?.delegation
             ? this.delegatedChildNote(options.delegation)
@@ -3709,7 +3411,6 @@ export class InstanceManager extends EventEmitter {
       createdAt: now,
       lastActivityAt: now,
       gitInfo: initialGitInfo,
-      gitBranch: spaceGitBranch,
       originalGitBranch: initialGitInfo?.branch,
       parentSessionId: options?.parentSessionId,
       preferredModel: isExplicitModel ? model : undefined,
@@ -3717,10 +3418,8 @@ export class InstanceManager extends EventEmitter {
       accountId,
       configDir,
       runtimeMode: resolvedRuntimeMode,
-      originalDirectory: spaceOriginalDirectory,
       projectId: project?.id,
       projectSlug: project?.slug,
-      spaceId,
       sessionContext: deliveredBootstrap ? { bootstrap: deliveredBootstrap } : undefined,
       review: options?.review,
       delegation: options?.delegation,
@@ -3735,10 +3434,6 @@ export class InstanceManager extends EventEmitter {
       history: [],
       fileStateRevision: 0,
       autoTitle: !hasCustomName && !resumeId,
-      worktreePath: spaceWorktreePath,
-      gitBranch: spaceGitBranch,
-      originalDirectory: spaceOriginalDirectory,
-      actualCwd: spaceWorktreePath ? workingDirectory : undefined,
       hydrated: true,
       taskContextInjected: !!deliveredBootstrap?.blocks.some(
         (b) => b.kind === TASK_CONTEXT_BLOCK_KIND,
@@ -3921,7 +3616,6 @@ export class InstanceManager extends EventEmitter {
       this.watchIntervals.delete(id);
     }
     this.staleCounts.delete(id);
-    this.missingRunnableCwdWarnings.delete(id);
     this.fileStatsDebouncer.cancel(id);
     this.orchestrationCredentials.revoke(id);
 
@@ -3942,54 +3636,14 @@ export class InstanceManager extends EventEmitter {
       this.db.archiveManaged(instance.info.id);
     }
 
-    // Only standalone worktree chats own their worktree lifecycle.
-    // Space chats share a worktree owned by SpaceManager, so removing one chat
-    // must not tear down the entire space's git metadata.
-    if (
-      !this.isSpaceOwnedWorktree(instance) &&
-      instance.worktreePath &&
-      instance.gitBranch &&
-      instance.originalDirectory
-    ) {
-      const repoRoot = getRepoRoot(instance.originalDirectory);
-      if (repoRoot) {
-        const { worktreePath, gitBranch } = instance;
-        removeWorktree(repoRoot, worktreePath, gitBranch).then(
-          () =>
-            this.baseConfig.logger.info(
-              `[InstanceManager] Removed worktree ${worktreePath} and branch ${gitBranch}`,
-            ),
-          (err) =>
-            this.baseConfig.logger.warn(`[InstanceManager] Failed to remove worktree: ${err}`),
-        );
-      }
-    }
+    // Deleting a chat never touches its checkout: Relay doesn't create
+    // worktrees, so a chat's worktree is the user's (and may be shared with
+    // other chats). Only "Merge to main" cleans one up (`mergeInstance`).
 
     this.baseConfig.logger.info(
       `[InstanceManager] ${purge ? "Purged" : "Removed"} instance "${instance.info.name}" (${id})`,
     );
     return true;
-  }
-
-  /**
-   * Stop every running managed chat in a space (the same path as a manual
-   * pause). Chats stay listed and resume lazily on their next message.
-   * Returns how many were stopped.
-   */
-  stopSpaceChats(spaceId: string): number {
-    let stopped = 0;
-    // Cancel delegations first, without wakes: a stopped parent woken now would
-    // boot into a worktree that is about to be merged or removed.
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId === spaceId) {
-        this.cascadeDelegatedTasks(instance.info.id, "the Space was closed");
-      }
-    }
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId !== spaceId || !instance.process) continue;
-      if (this.stopInstance(instance.info.id)) stopped++;
-    }
-    return stopped;
   }
 
   /**
@@ -4065,6 +3719,7 @@ export class InstanceManager extends EventEmitter {
     if (!instance.worktreePath || !instance.gitBranch || !instance.originalDirectory) {
       throw new Error("Instance does not have a worktree to merge");
     }
+    this.assertChatWritable(instance);
     const { worktreePath, gitBranch } = instance;
 
     const repoRoot = getRepoRoot(instance.originalDirectory);
@@ -4097,34 +3752,42 @@ export class InstanceManager extends EventEmitter {
       `[InstanceManager] Merged branch ${instance.gitBranch} into ${targetBranch}`,
     );
 
-    // Clean up: remove worktree + archive instance
+    // Clean up: archive the chat, then remove its merged worktree — unless
+    // another chat still works in it.
     this.removeInstance(id);
     this.emit("instance:removed", id);
+    if (this.isWorktreeInUse(worktreePath)) {
+      this.baseConfig.logger.info(
+        `[InstanceManager] Kept worktree ${worktreePath}: another chat still uses it`,
+      );
+    } else {
+      removeWorktree(repoRoot, worktreePath, gitBranch).then(
+        () =>
+          this.baseConfig.logger.info(
+            `[InstanceManager] Removed worktree ${worktreePath} and branch ${gitBranch}`,
+          ),
+        (err) => this.baseConfig.logger.warn(`[InstanceManager] Failed to remove worktree: ${err}`),
+      );
+    }
 
     return { targetBranch };
   }
 
-  // ===========================================================================
-  // Space management (delegates to SpaceManager)
-  // ===========================================================================
-
-  getSpaceManager(): SpaceManager {
-    return this.spaceManager;
-  }
-
-  /**
-   * After a worktree has been converted into a Space, attach any existing
-   * loose chats that already live in that worktree to the new space and
-   * broadcast the updated `spaceId` for any in-memory instances.
-   */
-  claimChatsForSpace(spaceId: string): void {
-    this.backfillMissingSpaceIds();
-    this.refreshInstanceSpaceIdsFromDb();
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId === spaceId) {
-        this.emit("instance:status", instance.info.id, this.deriveInstanceView(instance));
+  /** True when any live chat's checkout is `worktreePath` or inside it. */
+  private isWorktreeInUse(worktreePath: string): boolean {
+    const canonical = (path: string) => {
+      try {
+        return realpathSync(path);
+      } catch {
+        return path;
       }
+    };
+    const root = canonical(worktreePath);
+    for (const other of this.instances.values()) {
+      const dirs = [other.worktreePath, other.actualCwd, other.info.workingDirectory];
+      if (dirs.some((dir) => dir && isPathWithinWorkspace(root, canonical(dir)))) return true;
     }
+    return false;
   }
 
   getSpinOffManager(): SpinOffManager {
@@ -4591,66 +4254,6 @@ export class InstanceManager extends EventEmitter {
     return sortChatsByLastActivity(attachReviewLinks(Array.from(chats.values())));
   }
 
-  listSpaceChats(spaceId: string): InstanceInfo[] {
-    const chats = new Map<string, InstanceInfo>();
-    const managedProviderSessionIds = new Set<string>();
-    const managedTranscriptPaths = new Set<string>();
-    const managedKeys = {
-      providerSessionIds: managedProviderSessionIds,
-      transcriptPaths: managedTranscriptPaths,
-    };
-    const slugs = this.projectSlugLookup();
-
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId !== spaceId) {
-        continue;
-      }
-      if (!instance.info.external) {
-        const binding = instance.providerBinding ?? instance.process?.getRuntimeBinding();
-        const providerSessionId =
-          binding?.providerSessionId ?? instance.sessionId ?? instance.info.sessionId;
-        const transcriptPath = binding?.transcriptPath ?? instance.jsonlPath;
-        if (providerSessionId) managedProviderSessionIds.add(providerSessionId);
-        if (transcriptPath) managedTranscriptPaths.add(transcriptPath);
-      }
-    }
-
-    for (const row of this.db.getManagedBySpaceId(spaceId)) {
-      if (row.provider_session_id) managedProviderSessionIds.add(row.provider_session_id);
-      if (row.transcript_path) managedTranscriptPaths.add(row.transcript_path);
-    }
-
-    for (const instance of this.instances.values()) {
-      if (instance.info.spaceId !== spaceId) {
-        continue;
-      }
-      if (isManagedShadowInstance(this.toManagedShadowIdentity(instance), managedKeys)) {
-        continue;
-      }
-      chats.set(instance.info.id, toChatSummaryInfo(this.deriveInstanceView(instance)));
-    }
-
-    for (const row of this.db.getManagedBySpaceId(spaceId)) {
-      if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, summaryFromManagedRow(row, slugs, this.accounts));
-      }
-    }
-
-    for (const row of this.db.getBySpaceId(spaceId)) {
-      if (
-        managedProviderSessionIds.has(row.session_id) ||
-        managedTranscriptPaths.has(row.jsonl_path)
-      ) {
-        continue;
-      }
-      if (!chats.has(row.instance_id)) {
-        chats.set(row.instance_id, this.externalSummaryFromRow(row, slugs));
-      }
-    }
-
-    return sortChatsByLastActivity(attachReviewLinks(Array.from(chats.values())));
-  }
-
   async getWorkspaceEntries(id: string, query: string): Promise<WorkspaceEntry[] | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
@@ -4691,7 +4294,9 @@ export class InstanceManager extends EventEmitter {
   async getInstanceDiff(id: string, filePath?: string): Promise<string | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
-    const cwd = this.resolveRunnableCwd(instance);
+    const cwd = this.runnableCwd(instance);
+    // A read-only chat's checkout is gone: there is nothing to diff.
+    if (!existsSync(cwd)) return null;
     const origBranch = instance.originalDirectory
       ? ((await getCurrentBranch(instance.originalDirectory).catch(() => null)) ?? undefined)
       : undefined;
@@ -4712,7 +4317,7 @@ export class InstanceManager extends EventEmitter {
     dequeuedIds?: string[],
   ): Promise<InstanceInfo | undefined> {
     this.hydrateInstance(id, instance);
-    this.assertSpaceWritable(instance);
+    this.assertChatWritable(instance);
 
     let resumed: InstanceInfo | undefined;
     if (instance.info.external) {
@@ -4737,7 +4342,7 @@ export class InstanceManager extends EventEmitter {
     if (!instance.taskContextInjected && !internal && !isTaskWake && instance.info.projectId) {
       instance.taskContextInjected = true;
       const taskProject = this._projectManager.getProject(instance.info.projectId);
-      if (taskProject && hasTasks(this.resolveRunnableCwd(instance))) {
+      if (taskProject && hasTasks(this.runnableCwd(instance))) {
         shouldInjectTaskContext = true;
       }
     }
@@ -4850,7 +4455,7 @@ export class InstanceManager extends EventEmitter {
     decision: "accept" | "decline",
     response?: import("#core/types.js").ProviderRequestResponse,
   ): Promise<void> {
-    this.assertSpaceWritable(instance);
+    this.assertChatWritable(instance);
     if (instance.info.external) throw new Error("Cannot approve tools on external instances");
     if (!instance.process) throw new Error("Instance is not running");
     const pendingRequest = instance.info.pendingPermission;
@@ -5057,7 +4662,7 @@ export class InstanceManager extends EventEmitter {
     return this.enqueueInstanceMutation(id, async (instance) => {
       if (!instance.info.external) throw new Error("Instance is not external");
       this.hydrateInstance(id, instance);
-      this.assertSpaceWritable(instance);
+      this.assertChatWritable(instance);
       const resumed = await this.resumeInstanceLocked(id, instance);
       return resumed;
     });
@@ -5220,11 +4825,11 @@ export class InstanceManager extends EventEmitter {
    * to an interactive managed instance.
    */
   private async resumeInstanceLocked(id: string, instance: Instance): Promise<InstanceInfo> {
-    this.assertSpaceWritable(instance);
+    this.assertChatWritable(instance);
     const sessionId = instance.externalState?.sessionId ?? instance.sessionId;
     const jsonlPath = instance.externalState?.jsonlPath ?? instance.jsonlPath;
     if (!sessionId) throw new Error("Instance has no session ID to resume");
-    const cwd = this.resolveRunnableCwd(instance);
+    const cwd = this.runnableCwd(instance);
 
     // SIGINT the external CLI process so it exits cleanly before we take over
     if (instance.externalState?.pid) {
@@ -5349,7 +4954,7 @@ export class InstanceManager extends EventEmitter {
    * so the user can continue a previously ended conversation.
    */
   private reviveInstanceLocked(id: string, instance: Instance): InstanceInfo {
-    this.assertSpaceWritable(instance);
+    this.assertChatWritable(instance);
     if (instance.info.status !== "stopped") throw new Error("Instance is not stopped");
     if (!instance.sessionId) throw new Error("Instance has no session to revive");
 
@@ -6115,8 +5720,6 @@ export class InstanceManager extends EventEmitter {
   private async refreshGitBranchStateAsync(id: string, _instance: Instance): Promise<void> {
     const prep = await this.enqueueInstanceMutation(id, (live) => {
       if (live.refreshingGitBranch) return null;
-      // Read-only: never resolveRunnableCwd here — it falls back (and rewrites
-      // the chat's directory) when a worktree is gone.
       const cwd = live.actualCwd || live.info.workingDirectory;
       if (!existsSync(cwd)) return null;
       live.refreshingGitBranch = true;
@@ -6223,7 +5826,7 @@ export class InstanceManager extends EventEmitter {
 
   private bootManagedInstance(id: string, instance: Instance): void {
     if (instance.info.external || instance.process) return;
-    this.assertSpaceWritable(instance);
+    this.assertChatWritable(instance);
 
     const binding = instance.providerBinding;
     const resumeSessionId =
@@ -6683,7 +6286,6 @@ export class InstanceManager extends EventEmitter {
       githubUrl,
       tasks,
       skills,
-      spaces: directory ? this.spaceManager.listSpaces(directory) : [],
     };
   }
 
@@ -6951,10 +6553,6 @@ export class InstanceManager extends EventEmitter {
     this.emit("tasks:changed", projectId);
   }
 
-  private taskWatchKey(projectId: string, spaceId?: string): string {
-    return `${projectId}\0${spaceId ?? ""}`;
-  }
-
   private taskRelayIdentity(directory: string): string {
     try {
       const stat = statSync(join(directory, ".relay"));
@@ -6964,42 +6562,13 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  private currentTaskWatchScopes(): Array<{
-    key: string;
-    projectId: string;
-    directory: string;
-    spaceId?: string;
-  }> {
-    const scopes: Array<{
-      key: string;
-      projectId: string;
-      directory: string;
-      spaceId?: string;
-    }> = [];
-    for (const project of this._projectManager.listProjects()) {
-      scopes.push({
-        key: this.taskWatchKey(project.id),
-        projectId: project.id,
-        directory: project.directory,
-      });
-      for (const space of this.spaceManager.listAllSpaces(project.directory)) {
-        if (
-          space.isDefault ||
-          space.status !== "active" ||
-          !space.worktreePath ||
-          !existsSync(space.worktreePath)
-        ) {
-          continue;
-        }
-        scopes.push({
-          key: this.taskWatchKey(project.id, space.id),
-          projectId: project.id,
-          directory: space.worktreePath,
-          spaceId: space.id,
-        });
-      }
-    }
-    return scopes;
+  /** One task watcher per project, on its main checkout. */
+  private currentTaskWatchScopes(): TaskWatchScope[] {
+    return this._projectManager.listProjects().map((project) => ({
+      key: project.id,
+      projectId: project.id,
+      directory: project.directory,
+    }));
   }
 
   private isTaskWatchEvent(filename: string | Buffer | null, watchingRelay: boolean): boolean {
@@ -7017,17 +6586,12 @@ export class InstanceManager extends EventEmitter {
     return path === ".relay" || path.startsWith(".relay/");
   }
 
-  private scheduleTaskInvalidation(scope: {
-    key: string;
-    projectId: string;
-    directory: string;
-    spaceId?: string;
-  }): void {
+  private scheduleTaskInvalidation(scope: TaskWatchScope): void {
     const existing = this.taskWatchDebounces.get(scope.key);
     if (existing) clearTimeout(existing);
     const timeout = setTimeout(() => {
       this.taskWatchDebounces.delete(scope.key);
-      this.emit("tasks:changed", scope.projectId, scope.spaceId);
+      this.emit("tasks:changed", scope.projectId);
     }, TASK_WATCH_DEBOUNCE_MS);
     this.taskWatchDebounces.set(scope.key, timeout);
   }
@@ -7040,12 +6604,7 @@ export class InstanceManager extends EventEmitter {
     this.taskWatchDebounces.delete(key);
   }
 
-  private addTaskWatcher(scope: {
-    key: string;
-    projectId: string;
-    directory: string;
-    spaceId?: string;
-  }): void {
+  private addTaskWatcher(scope: TaskWatchScope): void {
     const relayIdentity = this.taskRelayIdentity(scope.directory);
     const watchingRelay = relayIdentity !== "missing";
     const target = watchingRelay ? join(scope.directory, ".relay") : scope.directory;
@@ -7560,19 +7119,6 @@ export class InstanceManager extends EventEmitter {
       // Terminal chats under a non-default login root carry its account;
       // derived from the transcript path, never stored in `sessions`.
       ...this.accountBindingForTranscript(provider, jsonlPath),
-      spaceId:
-        originalDirectory && (worktreePath || gitBranch)
-          ? explicitOrInferredSpaceIdForPersistenceRow(
-              {
-                space_id: null,
-                worktree_path: worktreePath ?? null,
-                git_branch: gitBranch ?? null,
-                original_directory: originalDirectory,
-                working_directory: workingDirectory,
-              },
-              this.spaceManager.listOwnershipCandidates(originalDirectory),
-            )
-          : undefined,
       projectId: project?.id,
       projectSlug: project?.slug,
     };
@@ -9129,40 +8675,13 @@ export class InstanceManager extends EventEmitter {
       original_directory: instance.originalDirectory ?? instance.info.originalDirectory,
       working_directory: instance.info.workingDirectory,
     });
-    const inferredSpaceId = this.inferPersistedSpaceIdForProjectDirectory(
-      persistedProjectDirectory,
-      {
-        space_id: instance.info.spaceId ?? null,
-        worktree_path: instance.worktreePath ?? null,
-        git_branch: instance.gitBranch ?? null,
-        original_directory: instance.originalDirectory ?? instance.info.originalDirectory ?? null,
-        working_directory: instance.info.workingDirectory,
-      },
-    );
-
-    const currentSpaceId = instance.info.spaceId ?? inferredSpaceId ?? undefined;
-    if (!instance.info.spaceId && inferredSpaceId) {
-      instance.info.spaceId = inferredSpaceId;
-      this.logSpaceOwnershipRepair("persist", instance.info.id, {
-        previousSpaceId: null,
-        nextSpaceId: inferredSpaceId,
-        projectDirectory: persistedProjectDirectory,
-      });
-    }
-
-    const space = currentSpaceId ? this.spaceManager.getSpace(currentSpaceId) : undefined;
-    const project = this.getRegisteredProjectForDirectory(
-      space?.projectDirectory
-        ? normalizeProjectDirectory(space.projectDirectory)
-        : persistedProjectDirectory,
-    );
+    const project = this.getRegisteredProjectForDirectory(persistedProjectDirectory);
     const reconciliation = buildPersistenceOwnershipReconciliation({
       workingDirectory: instance.info.workingDirectory,
       originalDirectory: instance.originalDirectory,
       infoOriginalDirectory: instance.info.originalDirectory,
       infoProjectId: instance.info.projectId,
       projectId: project?.id,
-      space,
     });
 
     if (reconciliation.nextInfoProjectId) {
@@ -9172,23 +8691,6 @@ export class InstanceManager extends EventEmitter {
       instance.info.projectId = reconciliation.nextInfoProjectId;
       const reconciledProject = this._projectManager.getProject(reconciliation.nextInfoProjectId);
       instance.info.projectSlug = reconciledProject?.slug;
-    }
-
-    if (!space || space.isDefault) {
-      return;
-    }
-
-    if (reconciliation.nextOriginalDirectory) {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Reconciled originalDirectory for ${instance.info.id} before persistence: ${instance.originalDirectory ?? "null"} -> ${reconciliation.nextOriginalDirectory}`,
-      );
-      instance.originalDirectory = reconciliation.nextOriginalDirectory;
-    }
-    if (reconciliation.nextInfoOriginalDirectory) {
-      this.baseConfig.logger.warn(
-        `[InstanceManager] Reconciled info.originalDirectory for ${instance.info.id} before persistence: ${instance.info.originalDirectory ?? "null"} -> ${reconciliation.nextInfoOriginalDirectory}`,
-      );
-      instance.info.originalDirectory = reconciliation.nextInfoOriginalDirectory;
     }
   }
 
@@ -9557,16 +9059,6 @@ export class InstanceManager extends EventEmitter {
                 normalizeProjectDirectory(scanOriginalDir ?? cwd),
               )?.id ?? null,
             model,
-            space_id: this.inferPersistedSpaceIdForProjectDirectory(
-              normalizeProjectDirectory(scanOriginalDir ?? cwd),
-              {
-                space_id: null,
-                worktree_path: scanWorktreePath,
-                git_branch: scanGitBranch,
-                original_directory: scanOriginalDir,
-                working_directory: cwd,
-              },
-            ),
           });
           discovered++;
         }
@@ -9771,13 +9263,6 @@ export class InstanceManager extends EventEmitter {
               git_info_is_worktree: null,
               project_id: this._projectManager.getProjectByDirectory(projectDirectory)?.id ?? null,
               model: meta.model,
-              space_id: this.inferPersistedSpaceIdForProjectDirectory(projectDirectory, {
-                space_id: null,
-                worktree_path: null,
-                git_branch: null,
-                original_directory: null,
-                working_directory: cwd,
-              }),
             });
           }
         } catch {
@@ -9905,44 +9390,13 @@ export class InstanceManager extends EventEmitter {
       return false;
     }
 
-    let restoreWorkingDirectory = entry.working_directory;
-    let extWorktreePath = entry.worktree_path ?? undefined;
     const extOriginalDir = entry.original_directory ?? undefined;
     const extGitBranch = entry.git_branch ?? undefined;
-    const hasExplicitSpaceOwnership = hasExplicitNonDefaultSpace(this.spaceManager, entry.space_id);
-    // Compatibility shim: allow legacy rows to recover ownership from the
-    // current spaces table during restore instead of leaking into main.
-    const inferredSpaceId = this.inferPersistedSpaceIdForProjectDirectory(
-      getPersistenceRowProjectDirectory(entry),
-      entry,
-    );
-
-    const restoredPaths = resolveExternalRestorePaths({
-      row: entry,
-      hasExplicitSpaceOwnership,
-      usableStoredWorktreePath: isUsableStoredWorktreePath(entry.worktree_path),
-    });
-    restoreWorkingDirectory = restoredPaths.workingDirectory;
-    extWorktreePath = restoredPaths.worktreePath;
-
-    if (entry.worktree_path && !restoredPaths.worktreePath) {
-      if (hasExplicitSpaceOwnership && entry.space_id) {
-        // Closed spaces deliberately remove their worktrees; only broken active
-        // spaces need attention. Keep the same read-only restore in either case.
-        if (
-          this.spaceManager.getSpace(entry.space_id)?.status === "broken" &&
-          !this.warnedUnusableSpaces.has(entry.space_id)
-        ) {
-          this.warnedUnusableSpaces.add(entry.space_id);
-          this.baseConfig.logger.warn(
-            `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable for space ${entry.space_id}; keeping sessions read-only`,
-          );
-        }
-      } else if (restoredPaths.repairedStaleWorktree) {
-        this.baseConfig.logger.warn(
-          `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable, using original directory`,
-        );
-      }
+    const restoredPaths = resolveExternalRestorePaths(entry);
+    const restoreWorkingDirectory = restoredPaths.workingDirectory;
+    const extWorktreePath = restoredPaths.worktreePath;
+    if (entry.worktree_path && !isUsableStoredWorktreePath(entry.worktree_path)) {
+      this.warnMissingWorktree(entry.worktree_path);
     }
 
     // Detect provider from JSONL path if mismatched (legacy migration fix)
@@ -9959,7 +9413,6 @@ export class InstanceManager extends EventEmitter {
       worktreePath: extWorktreePath,
       originalDirectory: extOriginalDir,
       gitBranch: extGitBranch,
-      inferredSpaceId: inferredSpaceId ?? undefined,
       defaultRuntimeMode: this.baseConfig.defaultRuntimeMode,
     });
     if (restoredState.info.projectId) {
@@ -9986,17 +9439,6 @@ export class InstanceManager extends EventEmitter {
     };
 
     this.instances.set(entry.instance_id, instance);
-    if (entry.space_id !== inferredSpaceId) {
-      this.db.updateSessionSpaceId(entry.session_id, inferredSpaceId);
-      this.logSpaceOwnershipRepair("restore", `external:${entry.session_id}`, {
-        previousSpaceId: entry.space_id,
-        nextSpaceId: inferredSpaceId,
-        projectDirectory: getPersistenceRowProjectDirectory(entry),
-      });
-    }
-    if (restoredPaths.repairedStaleWorktree) {
-      this.dbSave(instance);
-    }
     this.emit("instance:created", entry.instance_id, { ...restoredState.info });
     return true;
   }
@@ -10008,54 +9450,18 @@ export class InstanceManager extends EventEmitter {
   private restoreManagedFromRow(entry: ManagedInstanceRow): boolean {
     if (this.instances.has(entry.instance_id)) return false;
 
-    let restoreActualCwd = entry.working_directory;
-    let restoreWorktreePath: string | undefined;
-    let restoreGitBranch: string | undefined;
-    let restoreOriginalDirectory: string | undefined;
-
-    const hasExplicitSpaceOwnership = hasExplicitNonDefaultSpace(this.spaceManager, entry.space_id);
-    // Compatibility shim: allow legacy rows to recover ownership from the
-    // current spaces table during restore instead of leaking into main.
-    const inferredSpaceId = this.inferPersistedSpaceIdForProjectDirectory(
-      getPersistenceRowProjectDirectory(entry),
-      entry,
-    );
-    const restoredPaths = resolveManagedRestorePaths({
-      row: entry,
-      hasExplicitSpaceOwnership,
-      usableStoredWorktreePath: isUsableStoredWorktreePath(entry.worktree_path),
-    });
-    restoreActualCwd = restoredPaths.workingDirectory;
-    restoreWorktreePath = restoredPaths.worktreePath;
-    restoreGitBranch = restoredPaths.gitBranch;
-    restoreOriginalDirectory = restoredPaths.originalDirectory;
-
-    if (entry.worktree_path && !restoredPaths.worktreePath) {
-      if (hasExplicitSpaceOwnership && entry.space_id) {
-        // Closed spaces deliberately remove their worktrees; only broken active
-        // spaces need attention. Keep the same read-only restore in either case.
-        if (
-          this.spaceManager.getSpace(entry.space_id)?.status === "broken" &&
-          !this.warnedUnusableSpaces.has(entry.space_id)
-        ) {
-          this.warnedUnusableSpaces.add(entry.space_id);
-          this.baseConfig.logger.warn(
-            `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable for space ${entry.space_id}; keeping sessions read-only`,
-          );
-        }
-      } else if (restoredPaths.repairedStaleWorktree) {
-        this.baseConfig.logger.warn(
-          `[InstanceManager] Worktree ${entry.worktree_path} is no longer usable, using original directory`,
-        );
-      }
+    const restoredPaths = resolveManagedRestorePaths(entry);
+    const restoreActualCwd = restoredPaths.workingDirectory;
+    const restoreWorktreePath = restoredPaths.worktreePath;
+    const restoreGitBranch = restoredPaths.gitBranch;
+    const restoreOriginalDirectory = restoredPaths.originalDirectory;
+    if (entry.worktree_path && !isUsableStoredWorktreePath(entry.worktree_path)) {
+      this.warnMissingWorktree(entry.worktree_path);
     }
 
     const restoredState = parseManagedRestoreState(entry);
-    let { resumeCursor, runtimePayload } = restoredState;
+    const { resumeCursor, runtimePayload } = restoredState;
     const explicitReview = restoredState.review;
-    if (restoredPaths.repairedStaleWorktree) {
-      runtimePayload = { ...runtimePayload, cwd: restoreActualCwd };
-    }
 
     const resumeSessionId = entry.provider_session_id ?? extractResumeSessionId(resumeCursor);
     const provider = entry.provider_name as ProviderKind;
@@ -10080,7 +9486,6 @@ export class InstanceManager extends EventEmitter {
       worktreePath: restoreWorktreePath,
       originalDirectory: restoreOriginalDirectory,
       gitBranch: restoreGitBranch,
-      inferredSpaceId: inferredSpaceId ?? undefined,
       resumeCursor,
       runtimePayload,
       resumeSessionId,
@@ -10126,19 +9531,7 @@ export class InstanceManager extends EventEmitter {
     };
 
     this.instances.set(entry.instance_id, instance);
-    if (entry.space_id !== inferredSpaceId) {
-      this.db.updateManagedSpaceId(entry.instance_id, inferredSpaceId);
-      this.logSpaceOwnershipRepair("restore", `managed:${entry.instance_id}`, {
-        previousSpaceId: entry.space_id,
-        nextSpaceId: inferredSpaceId,
-        projectDirectory: getPersistenceRowProjectDirectory(entry),
-      });
-    }
-    if (
-      transcriptPath !== (entry.transcript_path ?? undefined) ||
-      restoredPaths.repairedStaleWorktree ||
-      backfilledAccountId
-    ) {
+    if (transcriptPath !== (entry.transcript_path ?? undefined) || backfilledAccountId) {
       this.dbSave(instance);
     }
     this.removeLiveExternalShadow(entry.instance_id, resumeSessionId ?? undefined, transcriptPath);
@@ -10274,9 +9667,6 @@ export class InstanceManager extends EventEmitter {
   private scanAndRestoreNew(): number {
     this.scanAllSessions();
     this._projectManager.recoverProjectsFromSessionDirectories();
-    this.spaceManager.recoverSpacesFromSessionMetadata();
-    this.backfillMissingSpaceIds();
-    this.refreshInstanceSpaceIdsFromDb();
 
     const discovered = this.restorePersistedRowsFromDb();
 

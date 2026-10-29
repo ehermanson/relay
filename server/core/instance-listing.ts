@@ -140,7 +140,6 @@ export function summaryFromSessionRow(
     parentSessionId: entry.parent_session_id ?? undefined,
     preferredModel: entry.preferred_model ?? undefined,
     runtimeMode: (entry.runtime_mode as ProviderRuntimeMode | null) ?? undefined,
-    spaceId: entry.space_id ?? undefined,
     projectId: entry.project_id ?? undefined,
     projectSlug: slugFor(entry.project_id, projectSlugs),
   };
@@ -182,7 +181,6 @@ export function summaryFromManagedRow(
     configDir: entry.config_dir ?? undefined,
     accountId: accountIdForManagedRow(entry, accounts),
     runtimeMode: (entry.runtime_mode as ProviderRuntimeMode | null) ?? undefined,
-    spaceId: entry.space_id ?? undefined,
     projectId: entry.project_id ?? undefined,
     projectSlug: slugFor(entry.project_id, projectSlugs),
     review: getReviewSessionFromRuntimePayload(runtimePayload),

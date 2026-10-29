@@ -47,8 +47,6 @@ export interface ProjectRow {
   remote_url: string | null;
   target_branch: string | null;
   custom_instructions: string | null;
-  default_space_branch: string | null;
-  space_branch_source: string | null;
   default_provider: string | null;
   default_model: string | null;
   /** JSON string[] of `Account.id`s; null/empty = default account only. */
@@ -58,37 +56,12 @@ export interface ProjectRow {
   suggestions_json: string | null;
 }
 
-export interface SpaceRow {
-  id: string;
-  project_directory: string;
-  name: string;
-  git_branch: string | null;
-  worktree_path: string | null;
-  is_default: number;
-  status: string;
-  created_at: number;
-  last_activity_at: number;
-  pinned?: number;
-  merge_commit: string | null;
-  merge_method: string | null;
-  merged_at: number | null;
-  target_branch: string | null;
-  remote_status: string | null;
-  pr_url: string | null;
-  /** Local branch the space merges into (diff base, PR base, Complete target). */
-  base_branch?: string | null;
-  /** Last known PR status snapshot (JSON `SpacePrStatus`), refreshed on demand. */
-  pr_status_json?: string | null;
-}
-
 export interface GlobalSettingsRow {
   id: number;
   theme: string;
   default_open_target: string | null;
   default_provider: string | null;
   default_model: string | null;
-  default_space_branch: string | null;
-  space_branch_source: string;
   provider_defaults_json: string | null;
   custom_instructions: string | null;
   project_order_json: string | null;
@@ -135,7 +108,6 @@ export interface SessionRow {
   last_message_at: number | null;
   git_info_branch: string | null;
   git_info_is_worktree: number | null;
-  space_id: string | null;
   project_id: string | null;
   model: string | null;
 }
@@ -171,7 +143,6 @@ export interface ManagedInstanceRow {
   last_message_at: number | null;
   git_info_branch: string | null;
   git_info_is_worktree: number | null;
-  space_id: string | null;
   project_id: string | null;
   model: string | null;
   model_options_json: string | null;
@@ -274,7 +245,6 @@ function normalizeSessionRow(row: SessionRow): SessionRow {
   normalized.last_message_at ??= null;
   normalized.git_info_branch ??= null;
   normalized.git_info_is_worktree ??= null;
-  normalized.space_id ??= null;
   normalized.project_id ??= null;
   normalized.model ??= null;
   return normalized;
@@ -298,29 +268,12 @@ function normalizeManagedInstanceRow(row: ManagedInstanceRow): ManagedInstanceRo
   normalized.last_message_at ??= null;
   normalized.git_info_branch ??= null;
   normalized.git_info_is_worktree ??= null;
-  normalized.space_id ??= null;
   normalized.project_id ??= null;
   normalized.model ??= null;
   normalized.model_options_json ??= null;
   normalized.original_git_branch ??= null;
   normalized.config_dir ??= null;
   normalized.account_id ??= null;
-  return normalized;
-}
-
-function normalizeSpaceRow(row: SpaceRow): SpaceRow {
-  const normalized = { ...row };
-  normalized.git_branch ??= null;
-  normalized.worktree_path ??= null;
-  normalized.status ??= "active";
-  normalized.pinned ??= 0;
-  normalized.merge_commit ??= null;
-  normalized.merge_method ??= null;
-  normalized.merged_at ??= null;
-  normalized.target_branch ??= null;
-  normalized.remote_status ??= null;
-  normalized.pr_url ??= null;
-  normalized.base_branch ??= null;
   return normalized;
 }
 
@@ -341,15 +294,20 @@ function normalizeProjectRow(row: ProjectRow): ProjectRow {
   normalized.remote_url ??= null;
   normalized.target_branch ??= null;
   normalized.custom_instructions ??= null;
-  normalized.default_space_branch ??= null;
-  normalized.space_branch_source ??= null;
   normalized.default_provider ??= null;
   normalized.default_model ??= null;
   normalized.last_activity_at ??= null;
   normalized.suggestions_json ??= null;
-  // Deprecated column (kept for old rows, never written): rows read back with
-  // `SELECT *` carry it, and an unbound named parameter would throw.
-  delete (normalized as { default_profile_id?: unknown }).default_profile_id;
+  // Deprecated columns (kept on old databases, never written): rows read back
+  // with `SELECT *` carry them, and an unbound named parameter would throw.
+  const legacy = normalized as {
+    default_profile_id?: unknown;
+    default_space_branch?: unknown;
+    space_branch_source?: unknown;
+  };
+  delete legacy.default_profile_id;
+  delete legacy.default_space_branch;
+  delete legacy.space_branch_source;
   return normalized;
 }
 
@@ -357,7 +315,6 @@ interface SearchResultRow {
   instance_id: string;
   source: string;
   project_id: string;
-  space_id: string;
   last_activity_at: string;
   last_message_at: string;
   created_at: string;
@@ -392,7 +349,6 @@ const SEARCH_INDEX_COLUMNS = [
   { name: "instance_id", unindexed: true },
   { name: "source", unindexed: true },
   { name: "project_id", unindexed: true },
-  { name: "space_id", unindexed: true },
   { name: "last_activity_at", unindexed: true },
   { name: "last_message_at", unindexed: true },
   { name: "created_at", unindexed: true },
@@ -572,7 +528,6 @@ export interface SearchResult {
   instanceId: string;
   source: "session" | "managed";
   projectId: string | null;
-  spaceId: string | null;
   lastActivityAt: number;
   lastMessageAt: number | null;
   createdAt: number;
@@ -645,8 +600,6 @@ export class SessionDB {
   private stmtGetAllManagedActive!: StatementSync;
   private stmtGetByProjectId!: StatementSync;
   private stmtGetManagedByProjectId!: StatementSync;
-  private stmtGetBySpaceId!: StatementSync;
-  private stmtGetManagedBySpaceId!: StatementSync;
   private stmtArchiveManaged!: StatementSync;
   private stmtArchive!: StatementSync;
   private stmtArchiveByInstanceId!: StatementSync;
@@ -685,30 +638,10 @@ export class SessionDB {
   private stmtUpdateManagedSessionProjectId!: StatementSync;
   private stmtClearSessionProjectId!: StatementSync;
   private stmtClearManagedSessionProjectId!: StatementSync;
-  private stmtUpdateSpaceProjectDirectoryById!: StatementSync;
   private stmtGetDistinctSessionDirs!: StatementSync;
   private stmtGetProjectModelStats!: StatementSync;
-  private stmtUpsertSpace!: StatementSync;
-  private stmtGetSpace!: StatementSync;
-  private stmtGetSpaceByWorktreePath!: StatementSync;
-  private stmtGetSpacesByProject!: StatementSync;
-  private stmtGetDefaultSpace!: StatementSync;
-  private stmtUpdateSpaceStatus!: StatementSync;
-  private stmtUpdateSpaceActivity!: StatementSync;
-  private stmtUpdateSpaceName!: StatementSync;
-  private stmtUpdateSpacePinned!: StatementSync;
-  private stmtDeleteSpace!: StatementSync;
-  private stmtGetSpaceChatCount!: StatementSync;
-  private stmtUpdateSessionSpaceId!: StatementSync;
   private stmtGetGlobalSettings!: StatementSync;
   private stmtUpdateGlobalSettings!: StatementSync;
-  private stmtUpdateManagedSpaceId!: StatementSync;
-  private stmtUpdateSpaceMergeMetadata!: StatementSync;
-  private stmtUpdateSpaceRemoteStatus!: StatementSync;
-  private stmtGetAllSpaces!: StatementSync;
-  private stmtUpdateSpaceBaseBranch!: StatementSync;
-  private stmtUpdateSpacePrStatus!: StatementSync;
-  private stmtGetSpacesByProjectAll!: StatementSync;
   private stmtSearchProject!: StatementSync;
   private stmtSearchGlobal!: StatementSync;
   private stmtRecentChatsProject!: StatementSync;
@@ -758,6 +691,50 @@ export class SessionDB {
     this.migrate();
     this.ensureIndexes();
     this.prepareStatements();
+    this.markClosedSpaceChatsDone(logger);
+  }
+
+  /**
+   * One-time data migration for the removed Spaces feature. Chats of a
+   * completed/archived Space were "done" only through their Space's status;
+   * stamp `done_at` on them so they don't reappear as active. Databases from
+   * before the removal keep the `spaces` table and `space_id` columns dormant;
+   * this is the only reader. Runs once: afterwards the closed statuses are
+   * renamed (`migrated-completed` / `migrated-archived`), so a chat the user
+   * later un-dones is never stamped again. A no-op on fresh databases (no
+   * `spaces` table); never fails startup.
+   */
+  private markClosedSpaceChatsDone(logger: Logger): void {
+    try {
+      const hasColumn = (table: string, column: string) =>
+        (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).some(
+          (c) => c.name === column,
+        );
+      if (!hasColumn("spaces", "status")) return;
+      const ids = new Set<string>();
+      for (const table of ["sessions", "managed_sessions"]) {
+        if (!hasColumn(table, "space_id")) continue;
+        const rows = this.db
+          .prepare(
+            `SELECT instance_id FROM ${table} WHERE done_at IS NULL AND space_id IN ` +
+              `(SELECT id FROM spaces WHERE status IN ('completed', 'archived'))`,
+          )
+          .all() as Array<{ instance_id: string }>;
+        for (const row of rows) ids.add(row.instance_id);
+      }
+      if (ids.size > 0) {
+        const updated = this.setDoneBulk([...ids], Date.now());
+        logger.info(`[SessionDB] Marked ${updated.length} chat(s) of closed Spaces done`);
+      }
+      // The run-once marker: closed statuses no longer match the query above.
+      this.db
+        .prepare(
+          "UPDATE spaces SET status = 'migrated-' || status WHERE status IN ('completed', 'archived')",
+        )
+        .run();
+    } catch (err) {
+      logger.warn(`[SessionDB] Closed-Space done migration skipped: ${err}`);
+    }
   }
 
   /** Rename the DB file and remove its orphaned WAL/SHM sidecar files. */
@@ -815,8 +792,6 @@ export class SessionDB {
 
   private ensureIndexes(): void {
     this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_sessions_space_id ON sessions(space_id);
-      CREATE INDEX IF NOT EXISTS idx_managed_sessions_space_id ON managed_sessions(space_id);
       CREATE TABLE IF NOT EXISTS outbox_receipts (
         id TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL,
@@ -1042,8 +1017,9 @@ export class SessionDB {
     const info = this.db
       .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='search_index'")
       .get() as { sql: string } | undefined;
-    const missingSearchColumn =
-      info && SEARCH_INDEX_COLUMNS.some((column) => !info.sql.includes(column.name));
+    // Any other column list (a missing column, or a removed one such as
+    // space_id) would misalign the positional bm25 weights and snippet indexes.
+    const missingSearchColumn = info && !info.sql.includes(buildSearchIndexSchemaSql());
     if (
       info?.sql?.includes("content=''") ||
       info?.sql?.includes('content=""') ||
@@ -1109,7 +1085,6 @@ ${buildSearchIndexSchemaSql()},
       this.ensureRuntimeModeColumns();
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
-      this.ensureSpacePinColumn();
       this.ensureAccountProfileColumns();
       this.db.exec(`INSERT INTO schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION})`);
       return;
@@ -1125,7 +1100,6 @@ ${buildSearchIndexSchemaSql()},
       this.ensureRuntimeModeColumns();
       this.ensureProjectSlugColumn();
       this.ensureChatFlagColumns();
-      this.ensureSpacePinColumn();
       this.ensureAccountProfileColumns();
       return;
     }
@@ -1137,7 +1111,6 @@ ${buildSearchIndexSchemaSql()},
     this.ensureSuggestionsColumns();
     this.ensureRuntimeModeColumns();
     this.ensureChatFlagColumns();
-    this.ensureSpacePinColumn();
     this.ensureAccountProfileColumns();
     this.db.exec(`UPDATE schema_version SET version = ${CURRENT_SCHEMA_VERSION}`);
   }
@@ -1178,7 +1151,6 @@ ${buildSearchIndexSchemaSql()},
         last_message_at INTEGER,
         git_info_branch TEXT,
         git_info_is_worktree INTEGER,
-        space_id TEXT,
         project_id TEXT,
         model TEXT
       );
@@ -1220,7 +1192,6 @@ ${buildSearchIndexSchemaSql()},
         last_message_at INTEGER,
         git_info_branch TEXT,
         git_info_is_worktree INTEGER,
-        space_id TEXT,
         project_id TEXT,
         model TEXT,
         model_options_json TEXT,
@@ -1254,8 +1225,6 @@ ${buildSearchIndexSchemaSql()},
         remote_url TEXT,
         target_branch TEXT,
         custom_instructions TEXT,
-        default_space_branch TEXT,
-        space_branch_source TEXT,
         default_provider TEXT,
         default_model TEXT,
         default_profile_id TEXT,
@@ -1270,39 +1239,12 @@ ${buildSearchIndexSchemaSql()},
         removed_at INTEGER NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS spaces (
-        id TEXT PRIMARY KEY,
-        project_directory TEXT NOT NULL,
-        name TEXT NOT NULL,
-        git_branch TEXT,
-        worktree_path TEXT,
-        is_default INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        last_activity_at INTEGER NOT NULL,
-        pinned INTEGER NOT NULL DEFAULT 0,
-        merge_commit TEXT,
-        merge_method TEXT,
-        merged_at INTEGER,
-        target_branch TEXT,
-        remote_status TEXT,
-        pr_url TEXT,
-        base_branch TEXT,
-        pr_status_json TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_spaces_project_directory ON spaces(project_directory);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_spaces_default_per_project
-        ON spaces(project_directory) WHERE is_default = 1;
-
       CREATE TABLE IF NOT EXISTS global_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         theme TEXT DEFAULT 'dark',
         default_open_target TEXT,
         default_provider TEXT,
         default_model TEXT,
-        default_space_branch TEXT,
-        space_branch_source TEXT DEFAULT 'local',
         provider_defaults_json TEXT,
         custom_instructions TEXT,
         project_order_json TEXT,
@@ -1446,25 +1388,6 @@ ${buildSearchIndexSchemaSql()},
     ensureFor("managed_sessions");
   }
 
-  /**
-   * Add the independently persisted per-space columns (pin flag, recorded base
-   * branch, last known PR status). Additive and idempotent, so existing
-   * databases keep their data without a schema-version rebuild.
-   */
-  private ensureSpacePinColumn(): void {
-    const columns = this.db.prepare("PRAGMA table_info(spaces)").all() as Array<{ name?: string }>;
-    const names = new Set(columns.map((column) => column.name));
-    if (!names.has("pinned")) {
-      this.db.exec("ALTER TABLE spaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-    }
-    if (!names.has("base_branch")) {
-      this.db.exec("ALTER TABLE spaces ADD COLUMN base_branch TEXT");
-    }
-    if (!names.has("pr_status_json")) {
-      this.db.exec("ALTER TABLE spaces ADD COLUMN pr_status_json TEXT");
-    }
-  }
-
   private ensureSuggestionsColumns(): void {
     const ensureFor = (table: "global_settings" | "projects") => {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
@@ -1498,7 +1421,7 @@ ${buildSearchIndexSchemaSql()},
         summary, first_prompt, git_branch, message_count, allowed_tools,
         worktree_path, original_directory, parent_session_id, preferred_model, reasoning_budget, runtime_mode,
         last_message_text, last_message_from, last_message_at,
-        git_info_branch, git_info_is_worktree, space_id, project_id, model
+        git_info_branch, git_info_is_worktree, project_id, model
       ) VALUES (
         @session_id, @instance_id, @provider_name, @name, @working_directory, @jsonl_path,
         @created_at, @last_activity_at, @type, @archived, @custom_title, @pinned, @done_at,
@@ -1506,7 +1429,7 @@ ${buildSearchIndexSchemaSql()},
         @summary, @first_prompt, @git_branch, @message_count, @allowed_tools,
         @worktree_path, @original_directory, @parent_session_id, @preferred_model, @reasoning_budget, @runtime_mode,
         @last_message_text, @last_message_from, @last_message_at,
-        @git_info_branch, @git_info_is_worktree, @space_id, @project_id, @model
+        @git_info_branch, @git_info_is_worktree, @project_id, @model
       )
       ON CONFLICT(session_id) DO UPDATE SET
         instance_id = excluded.instance_id,
@@ -1541,7 +1464,6 @@ ${buildSearchIndexSchemaSql()},
         last_message_at = excluded.last_message_at,
         git_info_branch = excluded.git_info_branch,
         git_info_is_worktree = excluded.git_info_is_worktree,
-        space_id = excluded.space_id,
         project_id = excluded.project_id,
         model = excluded.model
     `),
@@ -1557,7 +1479,7 @@ ${buildSearchIndexSchemaSql()},
         preferred_model, reasoning_budget, runtime_mode,
         resume_cursor_json, runtime_payload_json, transcript_path,
         last_message_text, last_message_from, last_message_at,
-        git_info_branch, git_info_is_worktree, space_id, project_id, model,
+        git_info_branch, git_info_is_worktree, project_id, model,
         model_options_json, original_git_branch, config_dir, account_id
       ) VALUES (
         @instance_id, @provider_name, @provider_session_id, @name, @working_directory,
@@ -1567,7 +1489,7 @@ ${buildSearchIndexSchemaSql()},
         @preferred_model, @reasoning_budget, @runtime_mode,
         @resume_cursor_json, @runtime_payload_json, @transcript_path,
         @last_message_text, @last_message_from, @last_message_at,
-        @git_info_branch, @git_info_is_worktree, @space_id, @project_id, @model,
+        @git_info_branch, @git_info_is_worktree, @project_id, @model,
         @model_options_json, @original_git_branch, @config_dir, @account_id
       )
       ON CONFLICT(instance_id) DO UPDATE SET
@@ -1600,7 +1522,6 @@ ${buildSearchIndexSchemaSql()},
         last_message_at = excluded.last_message_at,
         git_info_branch = excluded.git_info_branch,
         git_info_is_worktree = excluded.git_info_is_worktree,
-        space_id = excluded.space_id,
         project_id = excluded.project_id,
         model = excluded.model,
         model_options_json = excluded.model_options_json,
@@ -1653,18 +1574,6 @@ ${buildSearchIndexSchemaSql()},
     this.stmtGetManagedByProjectId = this.configureStatement(
       this.db.prepare(
         "SELECT * FROM managed_sessions WHERE project_id = ? AND archived = 0 ORDER BY last_activity_at DESC",
-      ),
-    );
-
-    this.stmtGetBySpaceId = this.configureStatement(
-      this.db.prepare(
-        "SELECT * FROM sessions WHERE space_id = ? AND archived = 0 ORDER BY last_activity_at DESC",
-      ),
-    );
-
-    this.stmtGetManagedBySpaceId = this.configureStatement(
-      this.db.prepare(
-        "SELECT * FROM managed_sessions WHERE space_id = ? AND archived = 0 ORDER BY last_activity_at DESC",
       ),
     );
 
@@ -1809,8 +1718,8 @@ ${buildSearchIndexSchemaSql()},
 
     // Project CRUD
     this.stmtUpsertProject = this.db.prepare(`
-      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_space_branch, space_branch_source, default_provider, default_model, account_ids_json, created_at, last_activity_at, suggestions_json)
-      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_space_branch, @space_branch_source, @default_provider, @default_model, @account_ids_json, @created_at, @last_activity_at, @suggestions_json)
+      INSERT INTO projects (id, name, slug, directory, repo_root, remote_url, target_branch, custom_instructions, default_provider, default_model, account_ids_json, created_at, last_activity_at, suggestions_json)
+      VALUES (@id, @name, @slug, @directory, @repo_root, @remote_url, @target_branch, @custom_instructions, @default_provider, @default_model, @account_ids_json, @created_at, @last_activity_at, @suggestions_json)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         slug = excluded.slug,
@@ -1819,8 +1728,6 @@ ${buildSearchIndexSchemaSql()},
         remote_url = excluded.remote_url,
         target_branch = excluded.target_branch,
         custom_instructions = excluded.custom_instructions,
-        default_space_branch = excluded.default_space_branch,
-        space_branch_source = excluded.space_branch_source,
         default_provider = excluded.default_provider,
         default_model = excluded.default_model,
         account_ids_json = excluded.account_ids_json,
@@ -1856,9 +1763,6 @@ ${buildSearchIndexSchemaSql()},
     this.stmtClearManagedSessionProjectId = this.db.prepare(
       "UPDATE managed_sessions SET project_id = NULL WHERE project_id = ?",
     );
-    this.stmtUpdateSpaceProjectDirectoryById = this.db.prepare(
-      "UPDATE spaces SET project_directory = ? WHERE id = ?",
-    );
     this.stmtGetDistinctSessionDirs = this.db.prepare(`
       SELECT DISTINCT working_directory FROM (
         SELECT working_directory FROM sessions WHERE archived = 0
@@ -1892,74 +1796,6 @@ ${buildSearchIndexSchemaSql()},
       ORDER BY (input_tokens + output_tokens) DESC
     `);
 
-    // Space statements
-    this.stmtUpsertSpace = this.db.prepare(`
-      INSERT INTO spaces (id, project_directory, name, git_branch, worktree_path, is_default, status, created_at, last_activity_at, pinned,
-        merge_commit, merge_method, merged_at, target_branch, remote_status, pr_url, base_branch)
-      VALUES (@id, @project_directory, @name, @git_branch, @worktree_path, @is_default, @status, @created_at, @last_activity_at, @pinned,
-        @merge_commit, @merge_method, @merged_at, @target_branch, @remote_status, @pr_url, @base_branch)
-      ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        git_branch = excluded.git_branch,
-        worktree_path = excluded.worktree_path,
-        status = excluded.status,
-        last_activity_at = excluded.last_activity_at,
-        merge_commit = COALESCE(excluded.merge_commit, merge_commit),
-        merge_method = COALESCE(excluded.merge_method, merge_method),
-        merged_at = COALESCE(excluded.merged_at, merged_at),
-        target_branch = COALESCE(excluded.target_branch, target_branch),
-        remote_status = COALESCE(excluded.remote_status, remote_status),
-        pr_url = COALESCE(excluded.pr_url, pr_url),
-        base_branch = COALESCE(excluded.base_branch, base_branch)
-    `);
-    this.stmtGetSpace = this.db.prepare("SELECT * FROM spaces WHERE id = ?");
-    this.stmtGetSpaceByWorktreePath = this.db.prepare(
-      "SELECT * FROM spaces WHERE worktree_path = ? ORDER BY created_at DESC LIMIT 1",
-    );
-    this.stmtGetSpacesByProject = this.db.prepare(
-      "SELECT * FROM spaces WHERE project_directory = ? AND status != 'archived' ORDER BY is_default DESC, last_activity_at DESC",
-    );
-    this.stmtGetDefaultSpace = this.db.prepare(
-      "SELECT * FROM spaces WHERE project_directory = ? AND is_default = 1 LIMIT 1",
-    );
-    this.stmtUpdateSpaceStatus = this.db.prepare("UPDATE spaces SET status = ? WHERE id = ?");
-    this.stmtUpdateSpaceActivity = this.db.prepare(
-      "UPDATE spaces SET last_activity_at = ? WHERE id = ?",
-    );
-    this.stmtUpdateSpaceName = this.db.prepare(
-      "UPDATE spaces SET name = ?, last_activity_at = ? WHERE id = ?",
-    );
-    this.stmtUpdateSpacePinned = this.db.prepare("UPDATE spaces SET pinned = ? WHERE id = ?");
-    this.stmtDeleteSpace = this.db.prepare("DELETE FROM spaces WHERE id = ?");
-    this.stmtGetSpaceChatCount = this.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM sessions WHERE space_id = ? AND archived = 0) +
-        (SELECT COUNT(*) FROM managed_sessions WHERE space_id = ? AND archived = 0)
-      AS count
-    `);
-    this.stmtUpdateSessionSpaceId = this.db.prepare(
-      "UPDATE sessions SET space_id = ? WHERE session_id = ?",
-    );
-    this.stmtUpdateManagedSpaceId = this.db.prepare(
-      "UPDATE managed_sessions SET space_id = ? WHERE instance_id = ?",
-    );
-    this.stmtUpdateSpaceMergeMetadata = this.db.prepare(
-      "UPDATE spaces SET status = 'completed', merge_commit = ?, merge_method = ?, merged_at = ?, target_branch = ? WHERE id = ?",
-    );
-    this.stmtUpdateSpaceRemoteStatus = this.db.prepare(
-      "UPDATE spaces SET remote_status = ?, pr_url = COALESCE(?, pr_url) WHERE id = ?",
-    );
-    this.stmtGetSpacesByProjectAll = this.db.prepare(
-      "SELECT * FROM spaces WHERE project_directory = ? AND is_default = 0 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, last_activity_at DESC",
-    );
-    this.stmtGetAllSpaces = this.db.prepare("SELECT * FROM spaces");
-    this.stmtUpdateSpaceBaseBranch = this.db.prepare(
-      "UPDATE spaces SET base_branch = ? WHERE id = ?",
-    );
-    this.stmtUpdateSpacePrStatus = this.db.prepare(
-      "UPDATE spaces SET pr_status_json = ?, remote_status = COALESCE(?, remote_status), pr_url = COALESCE(?, pr_url) WHERE id = ?",
-    );
-
     // Spin-offs (legacy storage remains in the `handoffs` table)
     this.stmtInsertSpinOff = this.db.prepare(`
       INSERT INTO handoffs (id, source_chat_id, source_chat_name, target_chat_id, target_chat_name,
@@ -1988,8 +1824,6 @@ ${buildSearchIndexSchemaSql()},
         default_open_target = @default_open_target,
         default_provider = @default_provider,
         default_model = @default_model,
-        default_space_branch = @default_space_branch,
-        space_branch_source = @space_branch_source,
         provider_defaults_json = @provider_defaults_json,
         custom_instructions = @custom_instructions,
         project_order_json = @project_order_json,
@@ -2041,13 +1875,13 @@ ${buildSearchIndexSchemaSql()},
 
     this.stmtInsertSearchDoc = this.db.prepare(`
       INSERT INTO search_index (
-        instance_id, source, project_id, space_id,
+        instance_id, source, project_id,
         last_activity_at, last_message_at, created_at, archived, pinned,
         provider, login_root,
         title, summary, first_prompt, last_message_text, git_branch,
         transcript_content
       ) VALUES (
-        @instance_id, @source, @project_id, @space_id,
+        @instance_id, @source, @project_id,
         @last_activity_at, @last_message_at, @created_at, @archived, @pinned,
         @provider, @login_root,
         @title, @summary, @first_prompt, @last_message_text, @git_branch,
@@ -2151,14 +1985,6 @@ ${buildSearchIndexSchemaSql()},
 
   getManagedByProjectId(projectId: string): ManagedInstanceRow[] {
     return asRows(this.stmtGetManagedByProjectId.all(projectId) as Record<string, unknown>[]);
-  }
-
-  getBySpaceId(spaceId: string): SessionRow[] {
-    return asRows(this.stmtGetBySpaceId.all(spaceId) as Record<string, unknown>[]);
-  }
-
-  getManagedBySpaceId(spaceId: string): ManagedInstanceRow[] {
-    return asRows(this.stmtGetManagedBySpaceId.all(spaceId) as Record<string, unknown>[]);
   }
 
   archiveManaged(instanceId: string): void {
@@ -2452,28 +2278,6 @@ ${buildSearchIndexSchemaSql()},
     this.stmtClearManagedSessionProjectId.run(projectId);
   }
 
-  reassignSpacesToProjectDirectory(nextDirectory: string, previousDirectory: string): void {
-    const existingDefault = this.getDefaultSpace(nextDirectory);
-    const previousSpaces = this.getSpacesByProject(previousDirectory);
-
-    this.withTransaction(() => {
-      for (const space of previousSpaces) {
-        if (space.is_default === 1 && existingDefault && space.id !== existingDefault.id) {
-          this.db
-            .prepare("UPDATE sessions SET space_id = ? WHERE space_id = ?")
-            .run(existingDefault.id, space.id);
-          this.db
-            .prepare("UPDATE managed_sessions SET space_id = ? WHERE space_id = ?")
-            .run(existingDefault.id, space.id);
-          this.stmtDeleteSpace.run(space.id);
-          continue;
-        }
-
-        this.stmtUpdateSpaceProjectDirectoryById.run(nextDirectory, space.id);
-      }
-    });
-  }
-
   /** Get token usage breakdown by model for a project directory */
   getProjectModelStats(workingDirectory: string): Array<{
     model: string;
@@ -2518,115 +2322,6 @@ ${buildSearchIndexSchemaSql()},
   }
 
   // =========================================================================
-  // Space methods
-  // =========================================================================
-
-  upsertSpace(row: SpaceRow): void {
-    this.stmtUpsertSpace.run(asBindParams(normalizeSpaceRow(row)));
-  }
-
-  getSpace(id: string): SpaceRow | undefined {
-    return asRow(this.stmtGetSpace.get(id) as Record<string, unknown>);
-  }
-
-  getSpaceByWorktreePath(worktreePath: string): SpaceRow | undefined {
-    return asRow(this.stmtGetSpaceByWorktreePath.get(worktreePath) as Record<string, unknown>);
-  }
-
-  getSpacesByProject(projectDirectory: string): SpaceRow[] {
-    return asRows(this.stmtGetSpacesByProject.all(projectDirectory) as Record<string, unknown>[]);
-  }
-
-  getDefaultSpace(projectDirectory: string): SpaceRow | undefined {
-    return asRow(this.stmtGetDefaultSpace.get(projectDirectory) as Record<string, unknown>);
-  }
-
-  updateSpaceStatus(id: string, status: string): void {
-    this.stmtUpdateSpaceStatus.run(status, id);
-  }
-
-  updateSpaceActivity(id: string, timestamp: number): void {
-    this.stmtUpdateSpaceActivity.run(timestamp, id);
-  }
-
-  updateSpaceName(id: string, name: string, timestamp: number): void {
-    this.stmtUpdateSpaceName.run(name, timestamp, id);
-  }
-
-  /** Set a space pin without coupling it to routine space persistence. */
-  setSpacePinned(id: string, pinned: boolean): boolean {
-    const result = this.stmtUpdateSpacePinned.run(pinned ? 1 : 0, id);
-    return Number(result.changes) > 0;
-  }
-
-  deleteSpace(id: string): void {
-    this.stmtDeleteSpace.run(id);
-  }
-
-  getSpaceChatCount(spaceId: string): number {
-    const row = asRow<{ count: number }>(
-      this.stmtGetSpaceChatCount.get(spaceId, spaceId) as Record<string, unknown>,
-    );
-    return row?.count ?? 0;
-  }
-
-  updateSessionSpaceId(sessionId: string, spaceId: string | null): void {
-    this.stmtUpdateSessionSpaceId.run(spaceId, sessionId);
-  }
-
-  updateManagedSpaceId(instanceId: string, spaceId: string | null): void {
-    this.stmtUpdateManagedSpaceId.run(spaceId, instanceId);
-  }
-
-  updateSpaceMergeMetadata(
-    id: string,
-    mergeCommit: string | undefined,
-    mergeMethod: string,
-    mergedAt: number,
-    targetBranch: string,
-  ): void {
-    this.stmtUpdateSpaceMergeMetadata.run(
-      mergeCommit ?? null,
-      mergeMethod,
-      mergedAt,
-      targetBranch,
-      id,
-    );
-  }
-
-  updateSpaceRemoteStatus(id: string, remoteStatus: string, prUrl?: string | null): void {
-    this.stmtUpdateSpaceRemoteStatus.run(remoteStatus, prUrl ?? null, id);
-  }
-
-  /** Every space row (all projects, all statuses) — for maintenance sweeps. */
-  getAllSpaces(): SpaceRow[] {
-    return asRows(this.stmtGetAllSpaces.all() as Record<string, unknown>[]);
-  }
-
-  setSpaceBaseBranch(id: string, baseBranch: string): void {
-    this.stmtUpdateSpaceBaseBranch.run(baseBranch, id);
-  }
-
-  /**
-   * Persist the last known PR status snapshot. `remoteStatus`/`prUrl` are
-   * only written when provided (null keeps the current value).
-   */
-  setSpacePrStatus(
-    id: string,
-    prStatusJson: string | null,
-    remoteStatus?: string | null,
-    prUrl?: string | null,
-  ): void {
-    this.stmtUpdateSpacePrStatus.run(prStatusJson, remoteStatus ?? null, prUrl ?? null, id);
-  }
-
-  getSpacesByProjectAll(projectDirectory: string): SpaceRow[] {
-    return asRows(
-      this.stmtGetSpacesByProjectAll.all(projectDirectory) as Record<string, unknown>[],
-    );
-  }
-
-  // =========================================================================
   // Global Settings
   // =========================================================================
 
@@ -2654,12 +2349,6 @@ ${buildSearchIndexSchemaSql()},
         default_provider:
           "default_provider" in patch ? patch.default_provider : current.default_provider,
         default_model: "default_model" in patch ? patch.default_model : current.default_model,
-        default_space_branch:
-          "default_space_branch" in patch
-            ? patch.default_space_branch
-            : current.default_space_branch,
-        space_branch_source:
-          "space_branch_source" in patch ? patch.space_branch_source : current.space_branch_source,
         provider_defaults_json:
           "provider_defaults_json" in patch
             ? patch.provider_defaults_json
@@ -2750,7 +2439,6 @@ ${buildSearchIndexSchemaSql()},
         instance_id: row.instance_id,
         source,
         project_id: row.project_id ?? "",
-        space_id: row.space_id ?? "",
         last_activity_at: String(row.last_activity_at),
         last_message_at: row.last_message_at == null ? "" : String(row.last_message_at),
         created_at: String(row.created_at),
@@ -2948,7 +2636,6 @@ ${buildSearchIndexSchemaSql()},
       instanceId: r.instance_id,
       source: r.source as "session" | "managed",
       projectId: r.project_id || null,
-      spaceId: r.space_id || null,
       lastActivityAt: Number(r.last_activity_at),
       lastMessageAt:
         r.last_message_at != null && r.last_message_at !== "" ? Number(r.last_message_at) : null,
@@ -3118,7 +2805,6 @@ ${buildSearchIndexSchemaSql()},
   clear(): void {
     this.db.exec("DELETE FROM sessions");
     this.db.exec("DELETE FROM managed_sessions");
-    this.db.exec("DELETE FROM spaces");
     this.db.exec("DELETE FROM session_events");
     this.db.exec("DELETE FROM delegated_tasks");
   }

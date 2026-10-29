@@ -222,17 +222,6 @@ export class Relay {
         .then(() => {
           if (this.stopping) return;
           this.instanceManager.startDiscovery();
-          // Maintenance: clear space worktree dirs whose repository is gone.
-          // After the scan so recovered space rows count as references.
-          this.instanceManager
-            .getSpaceManager()
-            .sweepOrphanedWorktrees()
-            .catch((err) => {
-              this.config.logger.warn(
-                "[Relay] Orphaned worktree sweep failed:",
-                err instanceof Error ? err.message : String(err),
-              );
-            });
         })
         .catch((error) => {
           this.config.logger.warn("[Relay] Background session scan failed:", error);

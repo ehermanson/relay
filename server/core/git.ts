@@ -1,5 +1,5 @@
 /**
- * Git helpers for projects, spaces, and worktree isolation.
+ * Git helpers for projects, chats, and worktree detection.
  *
  * Two kinds of helpers live here:
  *
@@ -413,12 +413,6 @@ async function hasHeadCommit(dir: string): Promise<boolean> {
   return exitCode === 0;
 }
 
-/** Commit hash of HEAD. Throws `GitCommandError` on failure. */
-export async function getHeadCommit(dir: string): Promise<string> {
-  const { stdout } = await runGit(["rev-parse", "HEAD"], readOnly(dir, "git rev-parse"));
-  return stdout.trim();
-}
-
 /**
  * Get the default branch for a repository (main/master). Uses the primary
  * remote's HEAD, then a main/master heuristic. Best-effort: returns null
@@ -727,25 +721,6 @@ export async function hasWorktreeChanges(
 // ─── Worktrees ────────────────────────────────────────────────────────────
 
 /**
- * `git worktree add -b <branch> <path> <baseRef>` under the repository lock.
- * Throws `GitCommandError` on failure.
- */
-export async function addWorktree(
-  repoRoot: string,
-  worktreePath: string,
-  branchName: string,
-  baseRef: string,
-): Promise<void> {
-  await withRepoLock(repoRoot, () =>
-    runGit(["worktree", "add", "-b", branchName, worktreePath, baseRef], {
-      cwd: repoRoot,
-      timeoutMs: GIT_TIMEOUTS.long,
-      operation: "git worktree add",
-    }),
-  );
-}
-
-/**
  * Create a git worktree for an isolated instance: branch `relay/<shortId>`
  * at HEAD, checked out in `<worktree base>/<shortId>/`. Null on failure.
  */
@@ -756,7 +731,13 @@ export async function createWorktree(
   const worktreePath = join(getWorktreeBase(), shortId);
   const branchName = `relay/${shortId}`;
   try {
-    await addWorktree(repoRoot, worktreePath, branchName, "HEAD");
+    await withRepoLock(repoRoot, () =>
+      runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], {
+        cwd: repoRoot,
+        timeoutMs: GIT_TIMEOUTS.long,
+        operation: "git worktree add",
+      }),
+    );
     return { worktreePath, branchName };
   } catch {
     return null;
@@ -1092,361 +1073,6 @@ export async function mergeWorktreeBranch(
   }
 }
 
-/**
- * Squash-merge a branch into the current branch of repoRoot as one commit.
- * On failure: `git reset --merge` restores only what the merge touched
- * (`merge --squash` has no MERGE_HEAD, so `--abort` can't). Untracked files
- * are never deleted.
- */
-export async function squashMergeBranch(
-  repoRoot: string,
-  branchName: string,
-  commitMessage: string,
-): Promise<GitMutationResult> {
-  try {
-    return await withRepoLock(repoRoot, async (): Promise<GitMutationResult> => {
-      const squash = await runGit(["merge", "--squash", branchName], {
-        cwd: repoRoot,
-        timeoutMs: GIT_TIMEOUTS.long,
-        operation: "git merge --squash",
-        allowFailure: true,
-      });
-      if (squash.exitCode !== 0) {
-        const conflicts = await listConflictedPaths(repoRoot);
-        await undoMergeState(repoRoot);
-        const error = mergeOutputError(squash.stdout, squash.stderr);
-        return error === "CONFLICT"
-          ? { success: false, error, conflicts }
-          : { success: false, error };
-      }
-      try {
-        await commitWithFallbackIdentity(
-          repoRoot,
-          ["--no-verify", "-m", commitMessage],
-          "git commit",
-        );
-        return { success: true };
-      } catch (err) {
-        await undoMergeState(repoRoot);
-        return mutationFailure(err, "Squash commit failed");
-      }
-    });
-  } catch (err) {
-    return mutationFailure(err, "Unknown merge error");
-  }
-}
-
-// ─── Branch → target merge (no checkout required) ─────────────────────────
-
-export type MergeTargetErrorCode =
-  | "target_missing"
-  | "target_checked_out"
-  | "target_dirty"
-  | "checkout_blocked"
-  | "ref_moved"
-  | "unsupported";
-
-/** A merge that was refused before (or without) changing anything. */
-export class MergeTargetError extends Error {
-  readonly code: MergeTargetErrorCode;
-  constructor(code: MergeTargetErrorCode, message: string) {
-    super(message);
-    this.name = "MergeTargetError";
-    this.code = code;
-  }
-}
-
-export type BranchMergeResult =
-  | {
-      status: "merged";
-      mergeCommit: string;
-      fastForward: boolean;
-      /** Checkout whose working tree was fast-forwarded, or null when only the ref moved. */
-      updatedCheckout: string | null;
-    }
-  | { status: "up_to_date"; mergeCommit: string; updatedCheckout: null }
-  | { status: "conflict"; conflicts: string[] };
-
-async function resolveCommit(cwd: string, ref: string): Promise<string | null> {
-  const { stdout, exitCode } = await runGit(
-    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-    {
-      ...readOnly(cwd, "git rev-parse"),
-      allowFailure: true,
-    },
-  );
-  return exitCode === 0 ? stdout.trim() || null : null;
-}
-
-/** Whether `refs/heads/<branch>` exists. */
-export async function localBranchExists(dir: string, branch: string): Promise<boolean> {
-  if (!branch || branch.startsWith("-")) return false;
-  return (await resolveCommit(dir, `refs/heads/${branch}`)) !== null;
-}
-
-/**
- * Map a base ref recorded at space creation (`main`, `origin/main`, `HEAD`,
- * a SHA) to the local branch the space should merge into. Null when the ref
- * names no branch (the caller falls back to the default branch).
- */
-export async function resolveLocalTargetBranch(
-  repoRoot: string,
-  ref: string | null | undefined,
-): Promise<string | null> {
-  const value = ref?.trim();
-  if (!value) return null;
-  if (value === "HEAD") return getCurrentBranch(repoRoot).catch(() => null);
-  const bare = value.replace(/^refs\/heads\//, "");
-  if (await localBranchExists(repoRoot, bare)) return bare;
-  const { stdout } = await runGit(["remote"], {
-    ...readOnly(repoRoot, "git remote"),
-    allowFailure: true,
-  });
-  const stripped = value.replace(/^refs\/remotes\//, "");
-  for (const remote of stdout
-    .split("\n")
-    .map((r) => r.trim())
-    .filter(Boolean)) {
-    if (stripped.startsWith(`${remote}/`) && stripped.length > remote.length + 1) {
-      return stripped.slice(remote.length + 1);
-    }
-  }
-  return null;
-}
-
-async function commitTreeWithFallbackIdentity(cwd: string, args: string[]): Promise<string> {
-  const opts = { cwd, timeoutMs: GIT_TIMEOUTS.normal, operation: "git commit-tree" };
-  try {
-    return (await runGit(["commit-tree", ...args], opts)).stdout.trim();
-  } catch (error) {
-    if (!isMissingGitIdentityError(error)) throw error;
-    const { stdout } = await runGit(
-      [
-        "-c",
-        `user.name=${RELAY_GIT_FALLBACK_NAME}`,
-        "-c",
-        `user.email=${RELAY_GIT_FALLBACK_EMAIL}`,
-        "commit-tree",
-        ...args,
-      ],
-      opts,
-    );
-    return stdout.trim();
-  }
-}
-
-function isMergeTreeUnsupported(stderr: string): boolean {
-  return /unknown option|usage: git merge-tree/i.test(stderr);
-}
-
-/**
- * Merge `sourceBranch` into local branch `targetBranch` without depending on
- * what the main checkout has checked out:
- *
- * - The merge is computed in memory (`git merge-tree --write-tree`); a
- *   conflict returns `{ status: "conflict", conflicts }` and changes nothing.
- * - If the target is checked out in the primary checkout, that checkout must
- *   have no tracked changes (untracked files are fine) and is fast-forwarded
- *   to the new commit with `git merge --ff-only`, which refuses (changing
- *   nothing) if an untracked file would be overwritten.
- * - If the target isn't checked out anywhere, only the ref moves
- *   (`git update-ref` with the old value as a compare-and-swap).
- * - A target checked out in another linked worktree is refused.
- *
- * Runs under the repository lock. Throws `MergeTargetError` for refusals and
- * `GitCommandError` for git failures.
- */
-export async function mergeBranchIntoTarget(
-  repoRoot: string,
-  opts: {
-    sourceBranch: string;
-    targetBranch: string;
-    method: "squash" | "merge-commit";
-    message?: string;
-  },
-): Promise<BranchMergeResult> {
-  const { sourceBranch, targetBranch, method } = opts;
-  return withRepoLock(repoRoot, async (): Promise<BranchMergeResult> => {
-    const oldTip = await resolveCommit(repoRoot, `refs/heads/${targetBranch}`);
-    if (!oldTip) {
-      throw new MergeTargetError(
-        "target_missing",
-        `Target branch "${targetBranch}" does not exist locally. Create or fetch it, then try again.`,
-      );
-    }
-    const sourceTip = await resolveCommit(repoRoot, `refs/heads/${sourceBranch}`);
-    if (!sourceTip) {
-      throw new MergeTargetError(
-        "target_missing",
-        `Space branch "${sourceBranch}" does not exist.`,
-      );
-    }
-
-    const holder = (await listWorktrees(repoRoot)).find((w) => w.branch === targetBranch);
-    if (holder && !holder.isPrimary) {
-      throw new MergeTargetError(
-        "target_checked_out",
-        `"${targetBranch}" is checked out in another worktree (${holder.path}). Switch that worktree to a different branch, then try again.`,
-      );
-    }
-    const checkoutDir = holder?.path ?? null;
-    if (checkoutDir) {
-      const status = await getStatusSummary(checkoutDir);
-      if (status.staged + status.unstaged + status.conflicted > 0) {
-        throw new MergeTargetError(
-          "target_dirty",
-          `Your main workspace has uncommitted changes to tracked files on ${targetBranch}. Commit or stash them before completing this space. (Untracked files don't block completion.)`,
-        );
-      }
-    }
-
-    if (await isAncestor(repoRoot, sourceTip, oldTip)) {
-      return { status: "up_to_date", mergeCommit: oldTip, updatedCheckout: null };
-    }
-
-    let newTip: string;
-    let fastForward = false;
-    if (method === "merge-commit" && (await isAncestor(repoRoot, oldTip, sourceTip))) {
-      newTip = sourceTip;
-      fastForward = true;
-    } else {
-      const mergeTree = await runGit(
-        ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", oldTip, sourceTip],
-        {
-          cwd: repoRoot,
-          timeoutMs: GIT_TIMEOUTS.long,
-          operation: "git merge-tree",
-          allowFailure: true,
-          readOnly: true,
-        },
-      );
-      if (mergeTree.exitCode === 1) {
-        const [, ...paths] = mergeTree.stdout.split("\0");
-        return { status: "conflict", conflicts: [...new Set(paths.filter(Boolean))] };
-      }
-      if (mergeTree.exitCode !== 0) {
-        if (isMergeTreeUnsupported(mergeTree.stderr)) {
-          return legacyCheckoutMerge(repoRoot, checkoutDir, opts);
-        }
-        throw new GitCommandError({
-          kind: "failed",
-          operation: "git merge-tree",
-          cwd: repoRoot,
-          message: `Merge failed: ${mergeTree.stderr.trim() || "git merge-tree failed"}`,
-          exitCode: mergeTree.exitCode,
-          stderr: mergeTree.stderr,
-        });
-      }
-      const tree = mergeTree.stdout.split("\0")[0]?.trim();
-      const message =
-        opts.message?.trim() ||
-        (method === "squash"
-          ? `Squash merge ${sourceBranch}`
-          : `Merge branch '${sourceBranch}' into ${targetBranch}`);
-      const parents = method === "squash" ? ["-p", oldTip] : ["-p", oldTip, "-p", sourceTip];
-      newTip = await commitTreeWithFallbackIdentity(repoRoot, [tree, ...parents, "-m", message]);
-    }
-
-    if (checkoutDir) {
-      const ff = await runGit(["merge", "--ff-only", newTip], {
-        cwd: checkoutDir,
-        timeoutMs: GIT_TIMEOUTS.long,
-        operation: "git merge --ff-only",
-        allowFailure: true,
-      });
-      if (ff.exitCode !== 0) {
-        throw new MergeTargetError(
-          "checkout_blocked",
-          `Could not update ${targetBranch} in your main workspace: ${summarizeMergeBlock(ff.stderr || ff.stdout)} Nothing was changed.`,
-        );
-      }
-      return { status: "merged", mergeCommit: newTip, fastForward, updatedCheckout: checkoutDir };
-    }
-
-    const update = await runGit(
-      [
-        "update-ref",
-        "-m",
-        `relay: merge ${sourceBranch} into ${targetBranch}`,
-        `refs/heads/${targetBranch}`,
-        newTip,
-        oldTip,
-      ],
-      {
-        cwd: repoRoot,
-        timeoutMs: GIT_TIMEOUTS.normal,
-        operation: "git update-ref",
-        allowFailure: true,
-      },
-    );
-    if (update.exitCode !== 0) {
-      throw new MergeTargetError(
-        "ref_moved",
-        `${targetBranch} changed while merging. Try completing the space again.`,
-      );
-    }
-    return { status: "merged", mergeCommit: newTip, fastForward, updatedCheckout: null };
-  });
-}
-
-function summarizeMergeBlock(output: string): string {
-  const lines = output
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const overwritten = lines.findIndex((l) => /would be overwritten/i.test(l));
-  if (overwritten >= 0) {
-    const files = lines
-      .slice(overwritten + 1)
-      .filter((l) => !/^(please|aborting|merge with strategy|hint:)/i.test(l))
-      .slice(0, 10);
-    return `untracked or local files would be overwritten${files.length ? ` (${files.join(", ")})` : ""}. Move or remove them first.`;
-  }
-  return `${lines[0]?.replace(/^(fatal|error):\s*/i, "") || "merge refused"}.`;
-}
-
-/** Fallback for git < 2.38 (no `merge-tree --write-tree`): merge inside the checkout. */
-async function legacyCheckoutMerge(
-  repoRoot: string,
-  checkoutDir: string | null,
-  opts: {
-    sourceBranch: string;
-    targetBranch: string;
-    method: "squash" | "merge-commit";
-    message?: string;
-  },
-): Promise<BranchMergeResult> {
-  if (!checkoutDir) {
-    throw new MergeTargetError(
-      "unsupported",
-      `Merging into ${opts.targetBranch} without checking it out requires git 2.38 or newer. Check out ${opts.targetBranch} in your main workspace or update git.`,
-    );
-  }
-  const result =
-    opts.method === "squash"
-      ? await squashMergeBranch(
-          checkoutDir,
-          opts.sourceBranch,
-          opts.message || `Squash merge ${opts.sourceBranch}`,
-        )
-      : await mergeWorktreeBranch(checkoutDir, opts.sourceBranch);
-  if (result.success) {
-    return {
-      status: "merged",
-      mergeCommit: await getHeadCommit(checkoutDir),
-      fastForward: false,
-      updatedCheckout: checkoutDir,
-    };
-  }
-  if (result.error === "CONFLICT") return { status: "conflict", conflicts: result.conflicts ?? [] };
-  throw new GitCommandError({
-    kind: result.errorKind ?? "failed",
-    operation: "git merge",
-    cwd: repoRoot,
-    message: `Merge failed: ${result.error}`,
-  });
-}
-
 // ─── Remote operations ────────────────────────────────────────────────────
 
 export interface GitRemoteOpResult {
@@ -1648,44 +1274,6 @@ async function appendUntrackedPatches(
     if (patch) diff += patch;
   }
   return diff;
-}
-
-/**
- * Unified diff of a worktree's full state (committed + uncommitted +
- * untracked) vs its merge-base with `defaultBranch`. Null on failure, unless
- * `throwOnError` (then the `GitCommandError` propagates).
- */
-export async function getWorktreeDiff(
-  worktreePath: string,
-  defaultBranch: string,
-  opts?: { throwOnError?: boolean },
-): Promise<string | null> {
-  try {
-    const repoRoot = getRepoRoot(worktreePath);
-    if (!repoRoot) {
-      if (opts?.throwOnError) {
-        throw new GitCommandError({
-          kind: "not_a_repo",
-          operation: "git diff",
-          cwd: worktreePath,
-          message: "git diff failed: not a git repository",
-        });
-      }
-      return null;
-    }
-    const { stdout: mergeBase } = await runGit(
-      ["merge-base", defaultBranch, "HEAD"],
-      readOnly(worktreePath, "git merge-base"),
-    );
-    const { stdout } = await runGit(["diff", mergeBase.trim()], {
-      ...readOnly(worktreePath, "git diff", GIT_TIMEOUTS.normal),
-      maxOutputBytes: MAX_DIFF_BYTES,
-    });
-    return await appendUntrackedPatches(stdout, worktreePath, repoRoot);
-  } catch (err) {
-    if (opts?.throwOnError) throw err;
-    return null;
-  }
 }
 
 /**

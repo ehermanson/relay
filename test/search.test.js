@@ -47,7 +47,6 @@ function makeRow(overrides = {}) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: null,
     model: null,
     ...overrides,
@@ -86,7 +85,6 @@ function makeManagedRow(overrides = {}) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: null,
     model: null,
     ...overrides,
@@ -1141,6 +1139,37 @@ describe("SessionDB search", () => {
       db.rebuildSearchIndex();
       assert.deepEqual(loginRootOf("m-old"), { provider: "codex", login_root: CODEX_DIR });
       assert.equal(db.search("migration", { loginRoots: defaultFilter() }).length, 1);
+    });
+
+    it("rebuilds an index that still carries the removed space_id column", () => {
+      db.upsertManaged(makeManagedRow({ instance_id: "m-space", name: "dormant space column" }));
+      db.close();
+
+      // The shape written before Spaces were removed: every current column plus space_id.
+      const raw = new DatabaseSync(join(tempDir, "sessions.db"));
+      raw.exec(`
+        DROP TABLE search_index;
+        DROP TABLE search_index_docs;
+        CREATE VIRTUAL TABLE search_index USING fts5(
+          instance_id UNINDEXED, source UNINDEXED, project_id UNINDEXED, space_id UNINDEXED,
+          last_activity_at UNINDEXED, last_message_at UNINDEXED, created_at UNINDEXED,
+          archived UNINDEXED, pinned UNINDEXED, provider UNINDEXED, login_root UNINDEXED,
+          title, summary, first_prompt, last_message_text, git_branch, transcript_content,
+          tokenize='unicode61'
+        );
+      `);
+      raw.close();
+
+      db = new SessionDB(join(tempDir, "sessions.db"), noopLogger, {
+        defaultLoginRoots: { claude: DEFAULT_DIR, codex: CODEX_DIR },
+      });
+      const columns = db.db
+        .prepare("PRAGMA table_info(search_index)")
+        .all()
+        .map((c) => c.name);
+      assert.ok(!columns.includes("space_id"), `columns: ${columns.join(", ")}`);
+      db.rebuildSearchIndex();
+      assert.equal(db.search("dormant", { loginRoots: defaultFilter() }).length, 1);
     });
   });
 

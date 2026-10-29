@@ -321,7 +321,6 @@ function registerExternalChat(tempDir, cwd, parentPath) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: "proj-1",
     model: null,
   });

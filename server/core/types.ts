@@ -23,77 +23,6 @@ export interface TerminalInfo {
 }
 
 // =============================================================================
-// Space Types
-// =============================================================================
-
-export type SpaceStatus = "active" | "broken" | "completed" | "archived";
-export type MergeMethod = "squash" | "merge-commit" | "external";
-
-export interface SpaceInfo {
-  id: string;
-  projectDirectory: string;
-  name: string;
-  gitBranch: string | null;
-  worktreePath: string | null;
-  missingWorktreePath?: string | null;
-  isDefault: boolean;
-  status: SpaceStatus;
-  createdAt: number;
-  lastActivityAt: number;
-  chatCount: number;
-  /** True when the user pinned this space to the top of the inbox */
-  pinned?: boolean;
-  mergeCommit?: string | null;
-  mergeMethod?: MergeMethod | null;
-  mergedAt?: number | null;
-  targetBranch?: string | null;
-  remoteStatus?: string | null;
-  prUrl?: string | null;
-  /**
-   * Local branch this space merges into. Diff base, PR base, and Complete
-   * all use it. Recorded at creation; lazily backfilled for older spaces.
-   */
-  baseBranch?: string | null;
-  /** Last known PR status (persisted; refreshed via `GET /api/spaces/:id/pr`). */
-  prStatus?: SpacePrStatus | null;
-}
-
-export type SpacePrState = "open" | "draft" | "merged" | "closed";
-
-/** Deduplicated CI check counts for a PR (one entry per workflow + check name). */
-export interface SpacePrChecksSummary {
-  total: number;
-  passing: number;
-  failing: number;
-  pending: number;
-  /** Skipped/neutral/cancelled checks — neither passing nor failing. */
-  skipped: number;
-  state: "passing" | "failing" | "pending" | "none";
-}
-
-export interface SpacePrStatus {
-  number: number;
-  url: string;
-  title: string;
-  state: SpacePrState;
-  isDraft: boolean;
-  mergeable: "mergeable" | "conflicting" | "unknown";
-  reviewDecision: "approved" | "changes_requested" | "review_required" | null;
-  checks: SpacePrChecksSummary;
-  /** When this snapshot was read from the provider (ms). */
-  fetchedAt: number;
-}
-
-/** `GET /api/spaces/:id/pr` response. */
-export interface SpacePrStatusResponse {
-  pr: SpacePrStatus | null;
-  /** True when `pr` is a cached/persisted snapshot because the refresh failed or is backing off. */
-  stale?: boolean;
-  error?: string;
-  errorKind?: string;
-}
-
-// =============================================================================
 // Suggestion Types
 // =============================================================================
 
@@ -789,8 +718,6 @@ export interface InstanceInfo {
   projectId?: string;
   /** Stable, URL-safe slug of the project this instance belongs to. Mirrors `Project.slug`. */
   projectSlug?: string;
-  /** Space this instance belongs to (null = implicit main space) */
-  spaceId?: string;
   /** Number of user messages queued while the agent is processing */
   queuedMessageCount?: number;
   /** Internal bootstrap/runtime context Relay supplied to the provider. */
@@ -1487,7 +1414,7 @@ export interface TerminalListResponse {
   terminals: TerminalInfo[];
 }
 
-/** Live-terminal count for a single scope (chat or space). */
+/** Live-terminal count for a single scope (one chat). */
 export interface TerminalScopeSummary {
   scope: TerminalScope;
   /** Number of live (non-exited) terminals in this scope. */
@@ -1497,7 +1424,7 @@ export interface TerminalScopeSummary {
 /**
  * Global snapshot of which scopes currently have live terminals.
  * Broadcast to all clients on every terminal lifecycle change so the
- * sidebar can flag chats/spaces with running terminals without having
+ * sidebar can flag chats with running terminals without having
  * to open each scope first.
  */
 export interface TerminalScopesMessage {
@@ -1872,10 +1799,8 @@ export interface ProjectArtifacts {
   stats: ProjectStats;
   /** GitHub/GitLab repository URL for this project (from git remote) */
   githubUrl: string | null;
-  /** Current task records from the Project's Main space, when tracking is initialized. */
+  /** Current task records from the Project's main checkout, when tracking is initialized. */
   tasks: Task[] | null;
   /** Installed skills discovered from .claude/skills/, ~/.claude/skills/, etc. */
   skills: SkillInfo[];
-  /** Spaces in this project */
-  spaces: SpaceInfo[];
 }

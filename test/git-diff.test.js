@@ -5,12 +5,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import {
-  getCurrentBranch,
-  getFullDiff,
-  getFileDiff,
-  getWorktreeDiff,
-} from "../dist/server/core/git.js";
+import { getFullDiff, getFileDiff } from "../dist/server/core/git.js";
 
 let seedRepoDir;
 
@@ -165,34 +160,5 @@ describe("getFileDiff", () => {
     } finally {
       rmSync(unbornRepo, { recursive: true, force: true });
     }
-  });
-});
-
-describe("getWorktreeDiff", () => {
-  let repoDir;
-
-  beforeEach(async () => {
-    repoDir = makeRepoDir();
-  });
-
-  afterEach(async () => {
-    rmSync(repoDir, { recursive: true, force: true });
-  });
-
-  it("includes untracked files alongside branch changes", async () => {
-    const baseBranch = (await getCurrentBranch(repoDir)) ?? "main";
-    execSync("git checkout -b feature-branch", { cwd: repoDir, stdio: "pipe" });
-    writeFileSync(join(repoDir, "tracked.txt"), "tracked branch work");
-    execSync("git add tracked.txt && git commit -m 'tracked change'", {
-      cwd: repoDir,
-      stdio: "pipe",
-    });
-    writeFileSync(join(repoDir, "untracked.txt"), "new untracked work");
-
-    const diff = await getWorktreeDiff(repoDir, baseBranch);
-    assert.ok(diff);
-    assert.ok(diff.includes("tracked.txt"));
-    assert.ok(diff.includes("untracked.txt"));
-    assert.ok(diff.includes("+new untracked work"));
   });
 });

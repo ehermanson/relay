@@ -14,7 +14,11 @@ import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AuthManager } from "#server/auth.js";
 import type { InstanceManager } from "#core/instance-manager.js";
-import { MaxProcessesError, ProviderUnavailableInAccountError } from "#core/instance-manager.js";
+import {
+  ChatReadOnlyError,
+  MaxProcessesError,
+  ProviderUnavailableInAccountError,
+} from "#core/instance-manager.js";
 import type { TerminalManager } from "#core/terminal-manager.js";
 import type { InstanceInfo } from "#core/types.js";
 import { getRepoStatusService } from "#core/repo-status-service.js";
@@ -401,10 +405,7 @@ export function createWebSocketServer(
     });
   });
 
-  instanceManager.on("tasks:changed", (projectId: string, spaceId?: string) => {
-    // Tasks are always read from the main checkout; changes inside a Space
-    // worktree don't affect them.
-    if (spaceId) return;
+  instanceManager.on("tasks:changed", (projectId: string) => {
     broadcast({ type: "tasks_changed", projectId });
   });
 
@@ -733,6 +734,7 @@ export function createWebSocketServer(
                   type: "error",
                   message: err instanceof Error ? err.message : "Failed to send message",
                   instanceId: message.instanceId,
+                  ...(err instanceof ChatReadOnlyError ? { code: err.code } : {}),
                 });
               }
             }
@@ -750,6 +752,7 @@ export function createWebSocketServer(
                 type: "error",
                 message: err instanceof Error ? err.message : "Failed to take over session",
                 instanceId: message.instanceId,
+                ...(err instanceof ChatReadOnlyError ? { code: err.code } : {}),
               });
             }
             break;

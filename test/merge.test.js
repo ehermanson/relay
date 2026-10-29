@@ -19,7 +19,6 @@ import { WebSocket } from "ws";
 import {
   isWorktreeDirty,
   mergeWorktreeBranch,
-  squashMergeBranch,
   createWorktree,
   removeWorktree,
   getCurrentBranch,
@@ -148,25 +147,6 @@ describe("git merge utilities", () => {
       );
 
       const result = await mergeWorktreeBranch(repoDir, "feature-branch");
-      assert.deepEqual(result, { success: true });
-    });
-  });
-
-  describe("squashMergeBranch", () => {
-    it("bypasses pre-commit hooks on squash commits", async () => {
-      execSync("git checkout -b feature-branch", { cwd: repoDir, stdio: "pipe" });
-      writeFileSync(join(repoDir, "feature.txt"), "new feature\n");
-      execSync("git add . && git commit -m 'add feature'", { cwd: repoDir, stdio: "pipe" });
-      execSync("git checkout main", { cwd: repoDir, stdio: "pipe" });
-      execSync(
-        "printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit",
-        {
-          cwd: repoDir,
-          stdio: "pipe",
-        },
-      );
-
-      const result = await squashMergeBranch(repoDir, "feature-branch", "feature squash");
       assert.deepEqual(result, { success: true });
     });
   });

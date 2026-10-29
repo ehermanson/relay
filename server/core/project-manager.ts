@@ -219,7 +219,6 @@ export class ProjectManager extends EventEmitter {
       if (existing && existing.id !== project.id) {
         // Parent project exists — fold sessions into it
         this.db.assignSessionsToProject(existing.id, project.directory);
-        this.db.reassignSpacesToProjectDirectory(canonicalDirectory, project.directory);
         this.db.deleteProject(project.id);
         this.logger.info(
           `[ProjectManager] Folded worktree project ${project.directory} into ${canonicalDirectory}`,
@@ -243,7 +242,6 @@ export class ProjectManager extends EventEmitter {
       this.db.upsertProject(normalized);
       this.scheduleGitInfoRefresh(normalized.id);
       this.db.assignSessionsToProject(normalized.id, project.directory);
-      this.db.reassignSpacesToProjectDirectory(canonicalDirectory, project.directory);
       this.logger.info(
         `[ProjectManager] Normalized worktree project ${project.directory} to ${canonicalDirectory}`,
       );
@@ -297,8 +295,6 @@ export class ProjectManager extends EventEmitter {
           remote_url: null,
           target_branch: readGitHeadInfo(canonicalDirectory)?.branch ?? null,
           custom_instructions: null,
-          default_space_branch: null,
-          space_branch_source: null,
           default_provider: null,
           default_model: null,
           created_at: now,
@@ -418,8 +414,6 @@ export class ProjectManager extends EventEmitter {
       remote_url: remoteUrl,
       target_branch: targetBranch,
       custom_instructions: null,
-      default_space_branch: null,
-      space_branch_source: null,
       default_provider: null,
       default_model: null,
       account_ids_json: serializeAccountIds([accountId]),

@@ -168,7 +168,6 @@ describe("instance-persistence helpers", () => {
       last_message_at: null,
       git_info_branch: null,
       git_info_is_worktree: null,
-      space_id: null,
       project_id: null,
       model: null,
     };
@@ -201,7 +200,6 @@ describe("instance-persistence helpers", () => {
       last_message_at: null,
       git_info_branch: null,
       git_info_is_worktree: null,
-      space_id: null,
       project_id: null,
       model: null,
       model_options_json: null,

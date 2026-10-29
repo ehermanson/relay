@@ -47,7 +47,6 @@ export function toSessionRow(options: {
     git_info_branch: info.gitInfo?.branch ?? null,
     git_info_is_worktree:
       info.gitInfo?.isWorktree !== undefined ? (info.gitInfo.isWorktree ? 1 : 0) : null,
-    space_id: info.spaceId ?? null,
     project_id: info.projectId ?? null,
     model: stats?.model ?? null,
   };
@@ -107,7 +106,6 @@ export function toManagedInstanceRow(options: {
     git_info_branch: info.gitInfo?.branch ?? null,
     git_info_is_worktree:
       info.gitInfo?.isWorktree !== undefined ? (info.gitInfo.isWorktree ? 1 : 0) : null,
-    space_id: info.spaceId ?? null,
     project_id: info.projectId ?? null,
     model: stats?.model ?? null,
     model_options_json: info.modelOptions ? JSON.stringify(info.modelOptions) : null,

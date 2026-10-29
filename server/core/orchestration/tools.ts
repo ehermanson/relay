@@ -645,7 +645,6 @@ export function summarizeChat(chat: InstanceInfo, callerId: string) {
     needsInput,
     done: isDone(chat),
     external: chat.external === true,
-    ...(chat.spaceId ? { spaceId: chat.spaceId } : {}),
     ...(chat.gitBranch ? { branch: chat.gitBranch } : {}),
     // 0 = unknown (a just-created chat), not 1970.
     ...(recencyOf(chat) > 0 ? { lastActivityAt: new Date(recencyOf(chat)).toISOString() } : {}),

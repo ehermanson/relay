@@ -35,12 +35,12 @@ function group(overrides: Partial<InboxSourceGroup> = {}): InboxSourceGroup {
 }
 
 describe("buildInboxEntries", () => {
-  it("lists every eligible chat as its own row, including former space chats", () => {
+  it("lists every eligible chat as its own row", () => {
     const entries = buildInboxEntries([
       group({
         groupInstances: [
-          chat({ id: "one", spaceId: "feature", lastActivityAt: 100 }),
-          chat({ id: "two", spaceId: "feature", lastActivityAt: 300 }),
+          chat({ id: "one", lastActivityAt: 100 }),
+          chat({ id: "two", lastActivityAt: 300 }),
           chat({ id: "standalone", lastActivityAt: 200 }),
         ],
       }),

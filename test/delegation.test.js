@@ -7,7 +7,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
@@ -687,6 +687,28 @@ describe("delegated tasks", () => {
       (await call("chat_send", { chatId: external.id, message: "x" })).error.code,
       "chat_not_sendable",
     );
+  });
+
+  it("chat_send and delegate_task refuse a chat whose working directory is gone", async () => {
+    const { manager, sessions, parent, repo } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const checkout = join(repo, "removed-checkout");
+    mkdirSync(checkout);
+    const target = manager.createInstance({
+      provider: "claude",
+      workingDirectory: checkout,
+      runtimeMode: "approval-required",
+    });
+    rmSync(checkout, { recursive: true, force: true });
+
+    const refused = await call("chat_send", { chatId: target.id, message: "x" });
+    assert.equal(refused.error.code, "chat_not_sendable");
+    assert.match(refused.error.message, /read-only/);
+    assert.equal(sessions.get(target.id).sent.length, 0);
+
+    const fromTarget = mcpCaller(manager, target.id);
+    const delegated = await fromTarget("delegate_task", { task: "help" });
+    assert.equal(delegated.error.code, "parent_not_active");
   });
 
   it("chat_wait reports a failed turn and a deleted chat", async () => {

@@ -31,10 +31,10 @@ describe("mobile Home", () => {
     expect(model.projects.map((p) => p.name)).toEqual(["recent", "older", "empty"]);
     expect(model.recent.map((e) => e.id)).toEqual(["chat:new", "chat:pinned"]);
   });
-  it("omits done chats and reviews, and lists former space chats as plain chats", () => {
+  it("omits done chats and reviews", () => {
     const model = buildMobileHome([
       group("project", [
-        chat("one", 50, { spaceId: "active" }),
+        chat("one", 50),
         chat("done", 100, { doneAt: 100 }),
         chat("review", 500, {
           parentSessionId: "one",

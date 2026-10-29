@@ -5,7 +5,6 @@ import {
   resolveAnyWorktreeOrigin,
   resolveWorktreeOrigin,
 } from "#core/git.js";
-import type { SpaceInfo } from "#core/types.js";
 
 export function normalizeProjectDirectory(directory: string): string {
   if (isRelayWorktreePath(directory)) {
@@ -51,39 +50,16 @@ export function buildPersistenceOwnershipReconciliation(options: {
   infoOriginalDirectory?: string | null;
   infoProjectId?: string | null;
   projectId?: string | null;
-  space?: Pick<SpaceInfo, "isDefault" | "projectDirectory">;
 }): {
   projectDirectory: string;
   nextInfoProjectId?: string;
-  nextOriginalDirectory?: string;
-  nextInfoOriginalDirectory?: string;
 } {
-  const projectDirectory = options.space?.projectDirectory
-    ? normalizeProjectDirectory(options.space.projectDirectory)
-    : getPersistenceRowProjectDirectory({
-        original_directory: options.originalDirectory ?? options.infoOriginalDirectory,
-        working_directory: options.workingDirectory,
-      });
-
-  const next: {
-    projectDirectory: string;
-    nextInfoProjectId?: string;
-    nextOriginalDirectory?: string;
-    nextInfoOriginalDirectory?: string;
-  } = { projectDirectory };
-
+  const projectDirectory = getPersistenceRowProjectDirectory({
+    original_directory: options.originalDirectory ?? options.infoOriginalDirectory,
+    working_directory: options.workingDirectory,
+  });
   if (options.projectId && options.infoProjectId !== options.projectId) {
-    next.nextInfoProjectId = options.projectId;
+    return { projectDirectory, nextInfoProjectId: options.projectId };
   }
-
-  if (options.space && !options.space.isDefault) {
-    if (options.originalDirectory !== options.space.projectDirectory) {
-      next.nextOriginalDirectory = options.space.projectDirectory;
-    }
-    if (options.infoOriginalDirectory !== options.space.projectDirectory) {
-      next.nextInfoOriginalDirectory = options.space.projectDirectory;
-    }
-  }
-
-  return next;
+  return { projectDirectory };
 }

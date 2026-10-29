@@ -12,7 +12,6 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
-  readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -93,6 +92,12 @@ async function waitFor(check, timeoutMs = 3000) {
   assert.fail("Timed out waiting for condition");
 }
 
+function addWorktree(repoDir, name = "feature") {
+  const worktreePath = join(mkdtempSync(join(tmpdir(), "relay-im-wt-")), name);
+  runGit(repoDir, ["worktree", "add", "-q", "-b", name, worktreePath, "HEAD"]);
+  return { worktreePath, gitBranch: name };
+}
+
 let seedRepoDir;
 
 function ensureSeedRepo() {
@@ -171,7 +176,6 @@ function makeManagedRow(overrides = {}) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: null,
     model: null,
     ...overrides,
@@ -211,7 +215,6 @@ function makeExternalRow(overrides = {}) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: null,
     model: null,
     ...overrides,
@@ -378,246 +381,83 @@ describe("InstanceManager", () => {
       }
     });
 
-    it("refuses to create a chat in an isolated space whose worktree is missing", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Broken space",
-        });
-      assert.ok(space.worktreePath);
-
-      rmSync(space.worktreePath, { recursive: true, force: true });
-
-      assert.throws(
-        () => manager.createInstance({ spaceId: space.id }),
-        /missing its worktree and is currently read-only/,
-      );
-    });
-
-    it("marks an isolated space as broken when its worktree disappears", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Broken marker",
-        });
-      assert.ok(space.worktreePath);
-
-      rmSync(space.worktreePath, { recursive: true, force: true });
-
-      const refreshed = manager.getSpaceManager().getSpace(space.id);
-      assert.ok(refreshed);
-      assert.equal(refreshed.status, "broken");
-      assert.equal(refreshed.worktreePath, null);
-    });
-
-    it("reconciles missing in-memory ownership for current-space chats before persistence", async () => {
-      const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Reconcile owned",
-        });
-      const info = manager.createInstance({ spaceId: space.id });
-      const instance = manager.instances.get(info.id);
-
-      assert.ok(instance);
-      instance.info.spaceId = undefined;
-      instance.info.projectId = undefined;
-      instance.originalDirectory = undefined;
-      instance.info.originalDirectory = undefined;
-
-      manager.reconcileInstancePersistenceIdentity(instance);
-
-      assert.equal(instance.info.spaceId, space.id);
-      assert.equal(instance.info.projectId, project.id);
-      assert.equal(instance.originalDirectory, manager.baseConfig.workingDirectory);
-      assert.equal(instance.info.originalDirectory, manager.baseConfig.workingDirectory);
-    });
-
-    it("keeps space bootstrap guidance when creating a resumed space session", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Resume Space",
-        });
-      const fakeProc = new FakeProviderSession("codex");
-      manager.createProviderSession = (_config, options) => {
-        fakeProc.bootstrapContext = options?.bootstrapContext;
-        return fakeProc;
-      };
-
-      const info = manager.createInstance({
-        provider: "codex",
-        resumeSessionId: "resume-space-session",
-        spaceId: space.id,
-      });
-
-      assert.equal(info.spaceId, space.id);
-      assert.ok(fakeProc.bootstrapContext);
-      assert.equal(
-        fakeProc.bootstrapContext.blocks.some((b) => b.kind === "space_context"),
-        true,
-      );
-      assert.equal(
-        fakeProc.bootstrapContext.blocks.some((b) => b.kind === "custom_instructions"),
-        false,
-      );
-      assert.equal(
-        fakeProc.bootstrapContext.blocks.some((b) => b.kind === "task_guidance"),
-        false,
-      );
-    });
-
     it("persists bootstrap context even when the provider does not echo it back", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Bootstrap Contract",
-        });
+      manager.sessionDb.updateGlobalSettings({ custom_instructions: "Keep answers short." });
       const fakeProc = new FakeProviderSession("codex");
       manager.createProviderSession = () => fakeProc;
 
-      const info = manager.createInstance({
-        provider: "codex",
-        spaceId: space.id,
-      });
+      const info = manager.createInstance({ provider: "codex" });
       const instance = manager.instances.get(info.id);
 
       assert.ok(instance);
       assert.ok(instance.info.sessionContext?.bootstrap);
       assert.equal(
-        instance.info.sessionContext.bootstrap.blocks.some((b) => b.kind === "space_context"),
+        instance.info.sessionContext.bootstrap.blocks.some((b) => b.kind === "custom_instructions"),
         true,
       );
-    });
-
-    it("cleans up a just-created worktree when createSpace fails after git worktree add", async () => {
-      const previousBase = process.env.RELAY_WORKTREE_BASE;
-      const worktreeBase = mkdtempSync(join(tmpdir(), "relay-space-fail-"));
-      const markerFile = join(manager.baseConfig.workingDirectory, "pwned");
-      const spaceManager = manager.getSpaceManager();
-      const originalExcludeRelayDir = spaceManager.excludeRelayDir;
-
-      try {
-        process.env.RELAY_WORKTREE_BASE = worktreeBase;
-        spaceManager.excludeRelayDir = () => {
-          throw new Error("exclude failed");
-        };
-
-        await assert.rejects(
-          spaceManager.createSpace(manager.baseConfig.workingDirectory, {
-            name: "Broken Space",
-          }),
-          /exclude failed/,
-        );
-
-        assert.equal(existsSync(markerFile), false);
-        assert.deepEqual(readdirSync(worktreeBase), []);
-        assert.equal(
-          spaceManager
-            .listSpaces(manager.baseConfig.workingDirectory)
-            .filter((space) => !space.isDefault).length,
-          0,
-        );
-      } finally {
-        spaceManager.excludeRelayDir = originalExcludeRelayDir;
-        if (previousBase === undefined) {
-          delete process.env.RELAY_WORKTREE_BASE;
-        } else {
-          process.env.RELAY_WORKTREE_BASE = previousBase;
-        }
-      }
     });
   });
 
   describe("task file integration", () => {
-    it("builds first-turn and follow-up task guidance from the managed session's actual Space cwd", async () => {
+    it("builds task guidance from the managed session's actual worktree cwd", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       initTasks(project.directory);
-      const space = await manager.getSpaceManager().createSpace(project.directory, {
-        name: "Task cwd",
-      });
-      assert.ok(space.worktreePath);
+      const { worktreePath } = addWorktree(project.directory, "task-cwd");
 
       const fakeProc = new FakeProviderSession("codex");
       manager.createProviderSession = (_config, options) => {
         fakeProc.bootstrapContext = options?.bootstrapContext;
         return fakeProc;
       };
-      const info = manager.createInstance({ provider: "codex", spaceId: space.id });
-      await manager.sendMessage(info.id, "work only in this Space");
-      assert.deepEqual(fakeProc.sent, ["work only in this Space"]);
+      const info = manager.createInstance({ provider: "codex", workingDirectory: worktreePath });
+      assert.equal(info.projectId, project.id);
+      await manager.sendMessage(info.id, "work only in this worktree");
+      assert.deepEqual(fakeProc.sent, ["work only in this worktree"]);
       assert.equal(
-        fakeProc.bootstrapContext.blocks.some((block) => block.kind === "task_guidance"),
+        (fakeProc.bootstrapContext?.blocks ?? []).some((block) => block.kind === "task_guidance"),
         false,
       );
 
-      const withoutSpaceTasks = manager.buildBootstrapContext(project, {
-        spaceId: space.id,
-        workingDirectory: space.worktreePath,
+      initTasks(worktreePath);
+      const withWorktreeTasks = manager.buildBootstrapContext(project, {
+        workingDirectory: worktreePath,
       });
-      assert.equal(
-        withoutSpaceTasks.blocks.some((block) => block.kind === "task_guidance"),
-        false,
-      );
-
-      initTasks(space.worktreePath);
-      const withSpaceTasks = manager.buildBootstrapContext(project, {
-        spaceId: space.id,
-        workingDirectory: space.worktreePath,
-      });
-      assert.equal(
-        withSpaceTasks.blocks.some((block) => block.kind === "task_guidance"),
-        true,
-      );
-      const taskBlock = withSpaceTasks.blocks.find((block) => block.kind === "task_guidance");
+      const taskBlock = withWorktreeTasks.blocks.find((block) => block.kind === "task_guidance");
+      assert.ok(taskBlock);
       assert.match(taskBlock.text, /relay tasks list --ready --json/);
       assert.equal(taskBlock.source, ".relay/tasks/");
     });
 
-    it("invalidates Main and Space scopes after direct atomic task-file edits", async () => {
+    it("invalidates the project after direct atomic task-file edits", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       initTasks(project.directory);
-      const space = await manager.getSpaceManager().createSpace(project.directory, {
-        name: "Watched tasks",
-      });
-      assert.ok(space.worktreePath);
-      initTasks(space.worktreePath);
 
       const changes = [];
-      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.on("tasks:changed", (projectId) => changes.push(projectId));
       manager.startDiscovery();
 
       createTask(project.directory, { title: "Main direct edit" });
-      createTask(space.worktreePath, { title: "Space direct edit" });
 
-      await waitFor(
-        () =>
-          changes.some((change) => change.projectId === project.id && !change.spaceId) &&
-          changes.some((change) => change.projectId === project.id && change.spaceId === space.id),
-      );
+      await waitFor(() => changes.includes(project.id));
     });
 
     it("starts watching when a missing .relay directory is created", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       assert.equal(existsSync(join(project.directory, ".relay")), false);
       const changes = [];
-      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.on("tasks:changed", (projectId) => changes.push(projectId));
       manager.startDiscovery();
 
       initTasks(project.directory);
 
-      await waitFor(
-        () => changes.some((change) => change.projectId === project.id && !change.spaceId),
-        7000,
-      );
+      await waitFor(() => changes.includes(project.id), 7000);
     });
 
     it("rebinds after the .relay directory is replaced by a checkout", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
       initTasks(project.directory);
       const changes = [];
-      manager.on("tasks:changed", (projectId, spaceId) => changes.push({ projectId, spaceId }));
+      manager.on("tasks:changed", (projectId) => changes.push(projectId));
       manager.startDiscovery();
 
       const replacementRoot = join(project.directory, ".task-replacement");
@@ -626,15 +466,10 @@ describe("InstanceManager", () => {
       renameSync(join(project.directory, ".relay"), join(project.directory, ".relay-before"));
       renameSync(join(replacementRoot, ".relay"), join(project.directory, ".relay"));
 
-      await waitFor(
-        () => changes.some((change) => change.projectId === project.id && !change.spaceId),
-        7000,
-      );
+      await waitFor(() => changes.includes(project.id), 7000);
       changes.length = 0;
       createTask(project.directory, { title: "After checkout" });
-      await waitFor(() =>
-        changes.some((change) => change.projectId === project.id && !change.spaceId),
-      );
+      await waitFor(() => changes.includes(project.id));
     });
   });
 
@@ -660,9 +495,7 @@ describe("InstanceManager", () => {
 
     it("skips restoring external shadow rows when a managed session already owns the transcript", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(projectDir, { name: "Shadow skip" });
+      const { worktreePath, gitBranch } = addWorktree(projectDir, "shadow-skip");
       const transcriptPath = join(projectDir, "shadow-skip.jsonl");
       writeFileSync(transcriptPath, "{}\n");
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
@@ -673,11 +506,10 @@ describe("InstanceManager", () => {
             instance_id: "managed-shadow-owner",
             provider_session_id: "shadow-session",
             transcript_path: transcriptPath,
-            working_directory: space.worktreePath,
-            worktree_path: space.worktreePath,
+            working_directory: worktreePath,
+            worktree_path: worktreePath,
             original_directory: projectDir,
-            git_branch: space.gitBranch,
-            space_id: space.id,
+            git_branch: gitBranch,
           }),
         );
         db.upsert(
@@ -687,9 +519,8 @@ describe("InstanceManager", () => {
             jsonl_path: transcriptPath,
             working_directory: projectDir,
             original_directory: projectDir,
-            worktree_path: space.worktreePath,
-            git_branch: space.gitBranch,
-            space_id: space.id,
+            worktree_path: worktreePath,
+            git_branch: gitBranch,
           }),
         );
       } finally {
@@ -748,9 +579,7 @@ describe("InstanceManager", () => {
     it("removes a live external shadow once a managed session captures the same transcript", async () => {
       const projectDir = manager.baseConfig.workingDirectory;
       const project = manager.projectManager.addProject(projectDir);
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(projectDir, { name: "Shadow prune" });
+      const { worktreePath, gitBranch } = addWorktree(projectDir, "shadow-prune");
       const transcriptPath = join(projectDir, "shadow-prune.jsonl");
       writeFileSync(transcriptPath, "{}\n");
 
@@ -763,9 +592,8 @@ describe("InstanceManager", () => {
             jsonl_path: transcriptPath,
             working_directory: projectDir,
             original_directory: projectDir,
-            worktree_path: space.worktreePath,
-            git_branch: space.gitBranch,
-            space_id: space.id,
+            worktree_path: worktreePath,
+            git_branch: gitBranch,
             project_id: project.id,
           }),
         );
@@ -778,7 +606,7 @@ describe("InstanceManager", () => {
 
       assert.ok(manager.getInstance("shadow-live-external"));
 
-      const managed = manager.createInstance({ spaceId: space.id });
+      const managed = manager.createInstance({ workingDirectory: worktreePath });
       const managedInstance = manager.instances.get(managed.id);
       assert.ok(managedInstance);
 
@@ -792,12 +620,13 @@ describe("InstanceManager", () => {
 
       assert.equal(manager.instances.has("shadow-live-external"), false);
       assert.equal(
-        manager.listSpaceChats(space.id).some((chat) => chat.id === "shadow-live-external"),
+        manager.listProjectChats(project.id).some((chat) => chat.id === "shadow-live-external"),
         false,
       );
       assert.equal(
-        manager.listSpaceChats(space.id).filter((chat) => chat.sessionId === "shadow-live-session")
-          .length,
+        manager
+          .listProjectChats(project.id)
+          .filter((chat) => chat.sessionId === "shadow-live-session").length,
         1,
       );
 
@@ -1220,7 +1049,7 @@ describe("InstanceManager", () => {
       assert.equal(instance.watchState?.jsonlPath, movedPath);
     });
 
-    it("never falls back into the main repo when a space worktree is missing during git refresh", async () => {
+    it("never falls back into the main repo when a worktree is missing during git refresh", async () => {
       const warnings = [];
       const logger = {
         info() {},
@@ -1231,24 +1060,19 @@ describe("InstanceManager", () => {
         debug() {},
       };
       const noisyManager = trackManager(new InstanceManager(makeConfig({ logger })));
-      const space = await noisyManager
-        .getSpaceManager()
-        .createSpace(noisyManager.baseConfig.workingDirectory, {
-          name: "Missing worktree",
-        });
-      assert.ok(space.worktreePath);
+      const { worktreePath } = addWorktree(noisyManager.baseConfig.workingDirectory, "missing");
 
-      const info = noisyManager.createInstance({ spaceId: space.id });
+      const info = noisyManager.createInstance({ workingDirectory: worktreePath });
       const instance = noisyManager.instances.get(info.id);
       assert.ok(instance);
 
-      rmSync(space.worktreePath, { recursive: true, force: true });
+      rmSync(worktreePath, { recursive: true, force: true });
 
       const branchBefore = instance.info.gitInfo?.branch;
       await noisyManager.refreshGitBranchStateAsync(info.id, instance);
       await noisyManager.refreshGitBranchStateAsync(info.id, instance);
 
-      assert.equal(instance.info.workingDirectory, space.worktreePath);
+      assert.equal(instance.info.workingDirectory, worktreePath);
       assert.equal(instance.info.gitInfo?.branch, branchBefore);
       assert.deepEqual(warnings, []);
     });
@@ -1317,43 +1141,70 @@ describe("InstanceManager", () => {
       assert.ok(d.id);
     });
 
-    it("does not remove a shared space worktree when deleting one chat", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Shared space",
-        });
-      assert.ok(space.worktreePath);
-      assert.equal(existsSync(space.worktreePath), true);
+    it("never removes a worktree when deleting chats that work in it", async () => {
+      const projectDir = manager.baseConfig.workingDirectory;
+      const { worktreePath, gitBranch } = addWorktree(projectDir, "shared");
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        for (const id of ["shared-a", "shared-b"]) {
+          db.upsertManaged(
+            makeManagedRow({
+              instance_id: id,
+              provider_session_id: `${id}-session`,
+              working_directory: worktreePath,
+              worktree_path: worktreePath,
+              original_directory: projectDir,
+              git_branch: gitBranch,
+            }),
+          );
+        }
+      } finally {
+        db.close();
+      }
+      const restored = trackManager(new InstanceManager(manager.baseConfig));
+      restored.restoreInstances();
+      assert.equal(restored.instances.get("shared-a")?.worktreePath, worktreePath);
 
-      const info = manager.createInstance({ spaceId: space.id });
-      assert.equal(manager.removeInstance(info.id), true);
+      assert.equal(restored.removeInstance("shared-a"), true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(existsSync(worktreePath), true);
 
-      const refreshedSpace = manager.getSpaceManager().getSpace(space.id);
-      assert.ok(refreshedSpace?.worktreePath);
-      assert.equal(existsSync(refreshedSpace.worktreePath), true);
+      // Not even the last chat in it: Relay doesn't own the checkout.
+      assert.equal(restored.removeInstance("shared-b", { purge: true }), true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(existsSync(worktreePath), true);
+      assert.match(runGit(projectDir, ["branch", "--list", gitBranch]).toString(), /shared/);
     });
 
-    it("preserves a shared space worktree even if the instance is missing in-memory spaceId", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Recovered shared space",
-        });
-      assert.ok(space.worktreePath);
-      assert.equal(existsSync(space.worktreePath), true);
+    it("keeps a merged worktree another chat still uses", async () => {
+      const projectDir = manager.baseConfig.workingDirectory;
+      const { worktreePath, gitBranch } = addWorktree(projectDir, "merge-shared");
+      writeFileSync(join(worktreePath, "feature.txt"), "work\n");
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        for (const id of ["merge-a", "merge-b"]) {
+          db.upsertManaged(
+            makeManagedRow({
+              instance_id: id,
+              provider_session_id: `${id}-session`,
+              working_directory: worktreePath,
+              worktree_path: worktreePath,
+              original_directory: projectDir,
+              git_branch: gitBranch,
+            }),
+          );
+        }
+      } finally {
+        db.close();
+      }
+      const restored = trackManager(new InstanceManager(manager.baseConfig));
+      restored.restoreInstances();
 
-      const info = manager.createInstance({ spaceId: space.id });
-      const instance = manager.instances.get(info.id);
-      assert.ok(instance);
-
-      instance.info.spaceId = undefined;
-
-      assert.equal(manager.removeInstance(info.id), true);
-
-      const refreshedSpace = manager.getSpaceManager().getSpace(space.id);
-      assert.ok(refreshedSpace?.worktreePath);
-      assert.equal(existsSync(refreshedSpace.worktreePath), true);
+      await restored.mergeInstance("merge-a");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(existsSync(join(projectDir, "feature.txt")), true);
+      assert.equal(existsSync(worktreePath), true);
+      assert.ok(restored.getInstance("merge-b"));
     });
 
     it("archives attached reviews when removing a source chat without purge", async () => {
@@ -1415,20 +1266,13 @@ describe("InstanceManager", () => {
       assert.equal(manager.sessionDb.getManagedByInstanceId(review.id)?.archived, 1);
     });
 
-    it("purges a removed space chat from Relay and disk", async () => {
+    it("purges a removed chat from Relay and disk", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Purge space",
-        });
-      assert.ok(space.worktreePath);
-
-      const info = manager.createInstance({ spaceId: space.id, name: "Purge me" });
+      const info = manager.createInstance({ name: "Purge me" });
       const instance = manager.instances.get(info.id);
       assert.ok(instance);
 
-      const transcriptPath = join(manager.baseConfig.workingDirectory, "purge-space-chat.jsonl");
+      const transcriptPath = join(manager.baseConfig.workingDirectory, "purge-chat.jsonl");
       writeFileSync(
         transcriptPath,
         '{"type":"message","message":{"role":"user","content":"hi"}}\n',
@@ -1452,11 +1296,7 @@ describe("InstanceManager", () => {
             instance_id: info.id,
             provider_session_id: "purge-session",
             transcript_path: transcriptPath,
-            working_directory: space.worktreePath,
-            worktree_path: space.worktreePath,
-            original_directory: manager.baseConfig.workingDirectory,
-            git_branch: space.gitBranch,
-            space_id: space.id,
+            working_directory: manager.baseConfig.workingDirectory,
             project_id: project.id,
             name: "Purge me",
           }),
@@ -1467,10 +1307,6 @@ describe("InstanceManager", () => {
             instance_id: info.id,
             jsonl_path: transcriptPath,
             working_directory: manager.baseConfig.workingDirectory,
-            worktree_path: space.worktreePath,
-            original_directory: manager.baseConfig.workingDirectory,
-            git_branch: space.gitBranch,
-            space_id: space.id,
             project_id: project.id,
             name: "Purge me",
           }),
@@ -1480,13 +1316,13 @@ describe("InstanceManager", () => {
       }
 
       assert.equal(
-        manager.listSpaceChats(space.id).some((chat) => chat.id === info.id),
+        manager.listProjectChats(project.id).some((chat) => chat.id === info.id),
         true,
       );
       assert.equal(manager.removeInstance(info.id, { purge: true }), true);
       assert.equal(existsSync(transcriptPath), false);
       assert.equal(
-        manager.listSpaceChats(space.id).some((chat) => chat.id === info.id),
+        manager.listProjectChats(project.id).some((chat) => chat.id === info.id),
         false,
       );
 
@@ -1501,31 +1337,25 @@ describe("InstanceManager", () => {
   });
 
   describe("listProjectChats", () => {
-    it("dedupes managed transcript shadows after backfilling explicit space ids", async () => {
+    it("dedupes managed transcript shadows in project chats", async () => {
       const project = manager.projectManager.addProject(manager.baseConfig.workingDirectory);
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Space",
-        });
+      const { worktreePath, gitBranch } = addWorktree(project.directory, "dedupe");
       const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
 
       try {
         db.upsertManaged(
           makeManagedRow({
-            instance_id: "managed-space-chat",
+            instance_id: "managed-worktree-chat",
             provider_session_id: "shared-session",
             transcript_path: "/tmp/shared.jsonl",
-            working_directory: space.worktreePath,
-            worktree_path: space.worktreePath,
+            working_directory: worktreePath,
+            worktree_path: worktreePath,
             original_directory: manager.baseConfig.workingDirectory,
-            git_branch: space.gitBranch,
-            space_id: space.id,
+            git_branch: gitBranch,
             project_id: project.id,
-            name: "Managed space chat",
+            name: "Managed worktree chat",
           }),
         );
-
         db.upsert(
           makeExternalRow({
             session_id: "shared-session",
@@ -1533,54 +1363,38 @@ describe("InstanceManager", () => {
             jsonl_path: "/tmp/shared.jsonl",
             working_directory: manager.baseConfig.workingDirectory,
             original_directory: manager.baseConfig.workingDirectory,
-            worktree_path: space.worktreePath,
+            worktree_path: worktreePath,
             git_branch: "main",
-            space_id: null,
             project_id: project.id,
             name: "Shadow external",
           }),
         );
-
         db.upsert(
           makeExternalRow({
-            session_id: "external-space-only",
-            instance_id: "external-space-only",
-            jsonl_path: "/tmp/external-space-only.jsonl",
+            session_id: "external-worktree-only",
+            instance_id: "external-worktree-only",
+            jsonl_path: "/tmp/external-worktree-only.jsonl",
             working_directory: manager.baseConfig.workingDirectory,
             original_directory: manager.baseConfig.workingDirectory,
-            worktree_path: space.worktreePath,
+            worktree_path: worktreePath,
             git_branch: "main",
-            space_id: null,
             project_id: project.id,
-            name: "External inferred space chat",
+            name: "External worktree chat",
           }),
         );
       } finally {
         db.close();
       }
 
-      manager.backfillMissingSpaceIds();
-
       const chats = manager.listProjectChats(project.id);
       assert.equal(
         chats.some((chat) => chat.id === "shadow-external"),
         false,
       );
-
-      const inferred = chats.find((chat) => chat.id === "external-space-only");
-      assert.ok(inferred);
-      assert.equal(inferred.spaceId, space.id);
-
-      const managed = chats.find((chat) => chat.id === "managed-space-chat");
-      assert.ok(managed);
-      assert.equal(managed.spaceId, space.id);
-
-      const rows = new SessionDB(manager.baseConfig.dbPath, noopLogger);
-      try {
-        assert.equal(rows.getByInstanceId("external-space-only")?.space_id, space.id);
-      } finally {
-        rows.close();
-      }
+      const external = chats.find((chat) => chat.id === "external-worktree-only");
+      assert.ok(external);
+      assert.equal("spaceId" in external, false);
+      assert.ok(chats.find((chat) => chat.id === "managed-worktree-chat"));
     });
 
     it("setInstancePinned pins chats without a live instance and surfaces pinned in summaries", async () => {
@@ -1702,43 +1516,143 @@ describe("InstanceManager", () => {
     });
   });
 
-  describe("broken spaces", () => {
-    it("allows passive history reads for chats in broken isolated spaces", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Broken history guard",
-        });
-      assert.ok(space.worktreePath);
+  describe("read-only chats (working directory gone)", () => {
+    function restoreChatInRemovedWorktree(name) {
+      const projectDir = manager.baseConfig.workingDirectory;
+      const project = manager.projectManager.addProject(projectDir);
+      const { worktreePath, gitBranch } = addWorktree(projectDir, name);
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        db.upsertManaged(
+          makeManagedRow({
+            instance_id: `${name}-chat`,
+            provider_session_id: `${name}-session`,
+            working_directory: worktreePath,
+            worktree_path: worktreePath,
+            original_directory: projectDir,
+            git_branch: gitBranch,
+            project_id: project.id,
+          }),
+        );
+      } finally {
+        db.close();
+      }
+      rmSync(worktreePath, { recursive: true, force: true });
+      const restored = trackManager(new InstanceManager(manager.baseConfig));
+      restored.restoreInstances();
+      return { restored, id: `${name}-chat`, worktreePath, projectDir, project };
+    }
 
-      const info = manager.createInstance({ spaceId: space.id });
-      const instance = manager.instances.get(info.id);
-      assert.ok(instance);
+    it("restores a chat whose worktree is gone in its project, at its recorded path", async () => {
+      const { restored, id, worktreePath, project } = restoreChatInRemovedWorktree("gone-restore");
+      const info = restored.getInstance(id);
+      assert.ok(info);
+      assert.equal(info.workingDirectory, worktreePath);
+      assert.equal(info.projectId, project.id);
+      assert.equal(info.status, "stopped");
+    });
 
-      rmSync(space.worktreePath, { recursive: true, force: true });
-      instance.process = null;
-      instance.info.status = "stopped";
-
-      assert.doesNotThrow(() => manager.getHistory(info.id));
+    it("allows passive history reads", async () => {
+      const { restored, id } = restoreChatInRemovedWorktree("gone-history");
+      const instance = restored.instances.get(id);
+      assert.doesNotThrow(() => restored.getHistory(id));
       assert.equal(instance.process, null);
       assert.equal(instance.info.status, "stopped");
     });
 
-    it("blocks sending messages to chats in broken isolated spaces", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Broken send guard",
-        });
-      assert.ok(space.worktreePath);
-
-      const info = manager.createInstance({ spaceId: space.id });
-      rmSync(space.worktreePath, { recursive: true, force: true });
+    it("refuses to send, boot, or move the chat into the main checkout", async () => {
+      const { restored, id, worktreePath } = restoreChatInRemovedWorktree("gone-send");
+      let created = 0;
+      restored.createProviderSession = () => {
+        created++;
+        return new FakeProviderSession("claude");
+      };
 
       await assert.rejects(
-        () => manager.sendMessage(info.id, "hello"),
-        /missing its worktree and is currently read-only/,
+        () => restored.sendMessage(id, "hello"),
+        (err) => err.code === "chat_read_only" && /no longer exists/.test(err.message),
       );
+      assert.equal(created, 0);
+      const instance = restored.instances.get(id);
+      assert.equal(instance.info.workingDirectory, worktreePath);
+      assert.equal(instance.process, null);
+      assert.equal(await restored.getInstanceDiff(id), null);
+      assert.equal(instance.info.workingDirectory, worktreePath);
+    });
+
+    it("refuses to take over a terminal chat whose worktree is gone", async () => {
+      const projectDir = manager.baseConfig.workingDirectory;
+      const { worktreePath, gitBranch } = addWorktree(projectDir, "gone-external");
+      const transcriptPath = join(projectDir, "gone-external.jsonl");
+      writeFileSync(transcriptPath, "{}\n");
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        db.upsert(
+          makeExternalRow({
+            session_id: "gone-external-session",
+            instance_id: "gone-external-chat",
+            jsonl_path: transcriptPath,
+            working_directory: projectDir,
+            original_directory: projectDir,
+            worktree_path: worktreePath,
+            git_branch: gitBranch,
+          }),
+        );
+        rmSync(worktreePath, { recursive: true, force: true });
+        assert.equal(
+          manager.restoreExternalFromRow(db.getBySessionId("gone-external-session")),
+          true,
+        );
+      } finally {
+        db.close();
+      }
+
+      const instance = manager.instances.get("gone-external-chat");
+      assert.equal(instance.actualCwd, worktreePath);
+      assert.equal(instance.worktreePath, worktreePath);
+      await assert.rejects(() => manager.takeoverInstance("gone-external-chat"), /read-only/);
+    });
+
+    it("keeps the worktree metadata through a save, so a remounted worktree is intact", async () => {
+      const { restored, id, worktreePath, projectDir } =
+        restoreChatInRemovedWorktree("gone-roundtrip");
+      const expectMetadata = (mgr) => {
+        const instance = mgr.instances.get(id);
+        assert.equal(instance.worktreePath, worktreePath);
+        assert.equal(instance.gitBranch, "gone-roundtrip");
+        assert.equal(instance.originalDirectory, projectDir);
+        return instance;
+      };
+      restored.dbSave(expectMetadata(restored));
+
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        const row = db.getManagedByInstanceId(id);
+        assert.equal(row.worktree_path, worktreePath);
+        assert.equal(row.git_branch, "gone-roundtrip");
+        assert.equal(row.original_directory, projectDir);
+      } finally {
+        db.close();
+      }
+
+      const again = trackManager(new InstanceManager(manager.baseConfig));
+      again.restoreInstances();
+      assert.equal(again.isChatWritable(expectMetadata(again)), false);
+
+      mkdirSync(worktreePath, { recursive: true });
+      const remounted = trackManager(new InstanceManager(manager.baseConfig));
+      remounted.restoreInstances();
+      const instance = expectMetadata(remounted);
+      assert.equal(remounted.isChatWritable(instance), true);
+      assert.equal(instance.info.workingDirectory, worktreePath);
+    });
+
+    it("refuses a live chat whose working directory was removed", async () => {
+      const { worktreePath } = addWorktree(manager.baseConfig.workingDirectory, "gone-live");
+      const info = manager.createInstance({ workingDirectory: worktreePath });
+      rmSync(worktreePath, { recursive: true, force: true });
+
+      await assert.rejects(() => manager.sendMessage(info.id, "hello"), /read-only/);
     });
   });
 
@@ -2047,76 +1961,6 @@ describe("InstanceManager", () => {
       });
       assert.equal(instance.info.gitInfo?.branch, "feature-branch");
       assert.deepEqual(sentMessages, ["hello on the new branch"]);
-    });
-
-    it("injects space brief contents into bootstrap context and keeps normal turns unwrapped", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Shared Bootstrap Context",
-        });
-      assert.ok(space.worktreePath);
-      writeFileSync(
-        join(space.worktreePath, ".relay", "space-context.md"),
-        "## Status\nSibling chat is updating the API contract.\n",
-      );
-
-      const fakeProc = new FakeProviderSession("codex");
-      manager.createProviderSession = (_config, options) => {
-        fakeProc.bootstrapContext = options?.bootstrapContext;
-        return fakeProc;
-      };
-
-      const info = manager.createInstance({ provider: "codex", spaceId: space.id });
-      const instance = manager.instances.get(info.id);
-      assert.ok(instance);
-      assert.equal(
-        fakeProc.bootstrapContext.blocks.some((b) => b.kind === "space_context"),
-        true,
-      );
-      const spaceBlock = fakeProc.bootstrapContext.blocks.find((b) => b.kind === "space_context");
-      assert.match(spaceBlock.text, /shared Space/);
-      assert.match(spaceBlock.text, /re-read it as you work/);
-      // Regression guard (task b3e9f1a2): the brief's actual contents must be
-      // injected, not just a pointer to the file. Regressed in commit 12fc245.
-      assert.ok(spaceBlock.text.includes("Sibling chat is updating the API contract"));
-
-      await manager.sendMessage(info.id, "continue with the backend changes");
-
-      assert.equal(fakeProc.sent.length, 1);
-      assert.equal(fakeProc.sent[0], "continue with the backend changes");
-      assert.equal(
-        instance.info.sessionContext.bootstrap.blocks.some((b) => b.kind === "space_context"),
-        true,
-      );
-
-      const history = manager.getHistory(info.id).filter((entry) => entry.message.type === "user");
-      assert.equal(history.length, 1);
-      assert.equal(history[0].message.text, "continue with the backend changes");
-    });
-
-    it("does not inject seed-template-only space briefs (no real content)", async () => {
-      const space = await manager
-        .getSpaceManager()
-        .createSpace(manager.baseConfig.workingDirectory, {
-          name: "Pristine Brief",
-        });
-      assert.ok(space.worktreePath);
-      // Leave the seeded template untouched — only headers + HTML-comment
-      // placeholders, no authored content.
-      const fakeProc = new FakeProviderSession("codex");
-      manager.createProviderSession = (_config, options) => {
-        fakeProc.bootstrapContext = options?.bootstrapContext;
-        return fakeProc;
-      };
-
-      manager.createInstance({ provider: "codex", spaceId: space.id });
-
-      const spaceBlock = fakeProc.bootstrapContext.blocks.find((b) => b.kind === "space_context");
-      assert.ok(spaceBlock);
-      assert.match(spaceBlock.text, /shared Space/);
-      // Guidance only — no "Current ... contents" section for an empty template.
-      assert.ok(!spaceBlock.text.includes("Current `.relay/space-context.md` contents"));
     });
   });
 

@@ -32,6 +32,7 @@ export function buildCustomInstructionsPrompt(userMessage: string, instructions:
   );
 }
 
+/** Injected by the removed Spaces feature; still hidden in older transcripts. */
 const SPACE_CONTEXT_PREFIX = "<space-context>";
 
 export function isInternalInjectedUserText(text: string): boolean {

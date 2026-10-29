@@ -20,7 +20,6 @@ export function buildExternalRestoreState(options: {
   worktreePath?: string;
   originalDirectory?: string;
   gitBranch?: string;
-  inferredSpaceId?: string;
   defaultRuntimeMode: ProviderRuntimeMode;
 }): {
   info: InstanceInfo;
@@ -34,7 +33,6 @@ export function buildExternalRestoreState(options: {
     worktreePath,
     originalDirectory,
     gitBranch,
-    inferredSpaceId,
     defaultRuntimeMode,
   } = options;
   const info: InstanceInfo = {
@@ -58,7 +56,6 @@ export function buildExternalRestoreState(options: {
     parentSessionId: entry.parent_session_id ?? undefined,
     preferredModel: entry.preferred_model ?? undefined,
     runtimeMode: (entry.runtime_mode as ProviderRuntimeMode | null) ?? undefined,
-    spaceId: inferredSpaceId ?? undefined,
     projectId: entry.project_id ?? undefined,
   };
   return {
@@ -81,7 +78,6 @@ export function buildManagedRestoreState(options: {
   worktreePath?: string;
   originalDirectory?: string;
   gitBranch?: string;
-  inferredSpaceId?: string;
   resumeCursor: unknown;
   runtimePayload: Record<string, unknown> | undefined;
   resumeSessionId?: string;
@@ -102,7 +98,6 @@ export function buildManagedRestoreState(options: {
     worktreePath,
     originalDirectory,
     gitBranch,
-    inferredSpaceId,
     resumeCursor,
     runtimePayload,
     resumeSessionId,
@@ -137,7 +132,6 @@ export function buildManagedRestoreState(options: {
     configDir: entry.config_dir ?? undefined,
     accountId: entry.account_id ?? undefined,
     runtimeMode: entry.runtime_mode as ProviderRuntimeMode,
-    spaceId: inferredSpaceId ?? undefined,
     projectId: entry.project_id ?? undefined,
     sessionContext,
     review,

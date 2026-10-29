@@ -43,30 +43,46 @@ function makeRow(overrides = {}) {
     last_message_at: null,
     git_info_branch: null,
     git_info_is_worktree: null,
-    space_id: null,
     project_id: null,
     model: null,
     ...overrides,
   };
 }
 
-function makeSpaceRow(overrides = {}) {
+function makeManagedRow(overrides = {}) {
   return {
-    id: "space-1",
-    project_directory: "/tmp/test",
-    name: "My Space",
-    git_branch: "relay-space/abcd1234",
-    worktree_path: "/tmp/worktree",
-    is_default: 0,
-    status: "active",
+    instance_id: "m-1",
+    provider_name: "codex",
+    provider_session_id: null,
+    name: "Managed Session",
+    working_directory: "/tmp/test",
     created_at: 1000,
     last_activity_at: 2000,
-    merge_commit: null,
-    merge_method: null,
-    merged_at: null,
-    target_branch: null,
-    remote_status: null,
-    pr_url: null,
+    archived: 0,
+    custom_title: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    git_branch: null,
+    worktree_path: null,
+    original_directory: null,
+    parent_session_id: null,
+    preferred_model: null,
+    reasoning_budget: null,
+    runtime_mode: "approval-required",
+    resume_cursor_json: null,
+    runtime_payload_json: "{}",
+    model_options_json: null,
+    original_git_branch: null,
+    transcript_path: null,
+    last_message_text: null,
+    last_message_from: null,
+    last_message_at: null,
+    git_info_branch: null,
+    git_info_is_worktree: null,
+    project_id: null,
+    model: null,
     ...overrides,
   };
 }
@@ -111,40 +127,124 @@ describe("SessionDB", () => {
       assert.equal(db.transactionDepth, 0);
     });
 
-    it("idempotently adds pinned to an existing spaces table", () => {
+    it("creates no Space table or columns in a fresh database", () => {
+      const raw = new DatabaseSync(join(tempDir, "sessions.db"));
+      const columns = (table) =>
+        raw
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .map((c) => c.name);
+      assert.equal(
+        raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spaces'").get(),
+        undefined,
+      );
+      assert.ok(!columns("sessions").includes("space_id"));
+      assert.ok(!columns("managed_sessions").includes("space_id"));
+      assert.ok(!columns("projects").includes("default_space_branch"));
+      assert.ok(!columns("global_settings").includes("default_space_branch"));
+      raw.close();
+    });
+
+    it("marks chats of closed Spaces done once, leaving the dormant Space data in place", () => {
+      db.upsert(makeRow({ session_id: "s-closed", instance_id: "ext-closed", jsonl_path: "/a" }));
+      db.upsert(makeRow({ session_id: "s-active", instance_id: "ext-active", jsonl_path: "/b" }));
+      for (const id of ["m-merged", "m-archived", "m-active", "m-already-done", "m-main"]) {
+        db.upsertManaged(makeManagedRow({ instance_id: id }));
+      }
+      db.setDone("m-already-done", 42);
+      db.upsertProject({
+        id: "proj-1",
+        name: "repo",
+        slug: "repo",
+        directory: "/tmp/repo",
+        repo_root: "/tmp/repo",
+        remote_url: null,
+        target_branch: "main",
+        custom_instructions: null,
+        default_provider: null,
+        default_model: null,
+        created_at: 1,
+        last_activity_at: 1,
+        suggestions_json: null,
+      });
       db.close();
-      const legacyPath = join(tempDir, "legacy-spaces.db");
+
+      // Reshape into a database written before Spaces were removed.
+      const legacyPath = join(tempDir, "sessions.db");
       const legacy = new DatabaseSync(legacyPath);
       legacy.exec(`
-        CREATE TABLE schema_version (version INTEGER NOT NULL);
-        INSERT INTO schema_version (version) VALUES (26);
+        ALTER TABLE sessions ADD COLUMN space_id TEXT;
+        ALTER TABLE managed_sessions ADD COLUMN space_id TEXT;
+        ALTER TABLE projects ADD COLUMN default_space_branch TEXT;
+        ALTER TABLE projects ADD COLUMN space_branch_source TEXT;
         CREATE TABLE spaces (
           id TEXT PRIMARY KEY,
           project_directory TEXT NOT NULL,
           name TEXT NOT NULL,
-          git_branch TEXT,
           worktree_path TEXT,
           is_default INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'active',
           created_at INTEGER NOT NULL,
-          last_activity_at INTEGER NOT NULL,
-          merge_commit TEXT,
-          merge_method TEXT,
-          merged_at INTEGER,
-          target_branch TEXT,
-          remote_status TEXT,
-          pr_url TEXT
+          last_activity_at INTEGER NOT NULL
         );
+        INSERT INTO spaces (id, project_directory, name, status, created_at, last_activity_at) VALUES
+          ('sp-merged', '/tmp/repo', 'Merged', 'completed', 1, 1),
+          ('sp-archived', '/tmp/repo', 'Archived', 'archived', 1, 1),
+          ('sp-active', '/tmp/repo', 'Active', 'active', 1, 1);
+        UPDATE sessions SET space_id = 'sp-merged' WHERE instance_id = 'ext-closed';
+        UPDATE sessions SET space_id = 'sp-active' WHERE instance_id = 'ext-active';
+        UPDATE managed_sessions SET space_id = 'sp-merged' WHERE instance_id IN ('m-merged', 'm-already-done');
+        UPDATE managed_sessions SET space_id = 'sp-archived' WHERE instance_id = 'm-archived';
+        UPDATE managed_sessions SET space_id = 'sp-active' WHERE instance_id = 'm-active';
+        UPDATE projects SET default_space_branch = 'main', space_branch_source = 'local';
       `);
+      const versionBefore = legacy.prepare("SELECT version FROM schema_version").get().version;
       legacy.close();
 
+      const before = Date.now();
       db = new SessionDB(legacyPath, noopLogger);
-      db.upsertSpace(makeSpaceRow());
-      assert.equal(db.getSpace("space-1")?.pinned, 0);
+      const doneAt = (id) =>
+        db.getManagedByInstanceId(id)?.done_at ?? db.getByInstanceId(id)?.done_at ?? null;
+      for (const id of ["ext-closed", "m-merged", "m-archived"]) {
+        assert.ok(doneAt(id) >= before, `${id} should be marked done`);
+      }
+      for (const id of ["ext-active", "m-active", "m-main"]) {
+        assert.equal(doneAt(id), null, `${id} should stay active`);
+      }
+      assert.equal(doneAt("m-already-done"), 42);
+
+      // No rebuild: managed rows survive, and the version is untouched.
+      assert.equal(db.getAllManagedActive().length, 5);
+      // Rows read back with the dormant columns still write cleanly.
+      db.upsertProject(db.getProject("proj-1"));
+      db.upsertManaged({ ...db.getManagedByInstanceId("m-active"), name: "Renamed" });
+      assert.equal(db.getManagedByInstanceId("m-active").name, "Renamed");
+
+      // Runs once: a restart keeps the first stamp, and a chat the user
+      // un-dones stays un-done across later restarts.
+      const firstStamp = doneAt("m-merged");
+      db.close();
+      db = new SessionDB(legacyPath, noopLogger);
+      assert.equal(doneAt("m-merged"), firstStamp);
+      db.setDone("m-archived", null);
+      db.setDone("ext-closed", null);
+      db.close();
+      db = new SessionDB(legacyPath, noopLogger);
+      assert.equal(doneAt("m-archived"), null);
+      assert.equal(doneAt("ext-closed"), null);
+      assert.equal(doneAt("m-merged"), firstStamp);
       db.close();
 
+      const raw = new DatabaseSync(legacyPath);
+      assert.equal(raw.prepare("SELECT version FROM schema_version").get().version, versionBefore);
+      assert.equal(
+        raw.prepare("SELECT space_id FROM managed_sessions WHERE instance_id = 'm-active'").get()
+          .space_id,
+        "sp-active",
+      );
+      assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM spaces").get().n, 3);
+      raw.close();
       db = new SessionDB(legacyPath, noopLogger);
-      assert.equal(db.getSpace("space-1")?.pinned, 0);
     });
   });
 
@@ -419,71 +519,6 @@ describe("SessionDB", () => {
     });
   });
 
-  describe("updateSpaceName", () => {
-    it("updates the persisted space name and activity timestamp", () => {
-      db.upsertSpace(makeSpaceRow());
-      db.updateSpaceName("space-1", "Renamed Space", 99999);
-      const row = db.getSpace("space-1");
-      assert.equal(row?.name, "Renamed Space");
-      assert.equal(row?.last_activity_at, 99999);
-    });
-  });
-
-  describe("setSpacePinned", () => {
-    it("persists independently and survives a routine space upsert", () => {
-      db.upsertSpace(makeSpaceRow());
-      assert.equal(db.setSpacePinned("space-1", true), true);
-      assert.equal(db.getSpace("space-1")?.pinned, 1);
-
-      db.upsertSpace(makeSpaceRow({ name: "Updated Space", last_activity_at: 3000 }));
-      assert.equal(db.getSpace("space-1")?.pinned, 1);
-
-      assert.equal(db.setSpacePinned("space-1", false), true);
-      assert.equal(db.getSpace("space-1")?.pinned, 0);
-      assert.equal(db.setSpacePinned("missing", true), false);
-    });
-  });
-
-  describe("reassignSpacesToProjectDirectory", () => {
-    it("merges duplicate default spaces without violating the unique index", () => {
-      db.upsertSpace(
-        makeSpaceRow({
-          id: "default-target",
-          project_directory: "/tmp/canonical",
-          name: "main",
-          is_default: 1,
-          git_branch: null,
-          worktree_path: null,
-        }),
-      );
-      db.upsertSpace(
-        makeSpaceRow({
-          id: "default-previous",
-          project_directory: "/tmp/worktree-project",
-          name: "main",
-          is_default: 1,
-          git_branch: null,
-          worktree_path: null,
-        }),
-      );
-      db.upsert(
-        makeRow({
-          session_id: "sess-default-merge",
-          instance_id: "inst-default-merge",
-          jsonl_path: "/tmp/default-merge.jsonl",
-          space_id: "default-previous",
-        }),
-      );
-
-      db.reassignSpacesToProjectDirectory("/tmp/canonical", "/tmp/worktree-project");
-
-      const canonicalSpaces = db.getSpacesByProject("/tmp/canonical");
-      assert.equal(canonicalSpaces.filter((space) => space.is_default === 1).length, 1);
-      assert.equal(db.getSpace("default-previous"), undefined);
-      assert.equal(db.getBySessionId("sess-default-merge")?.space_id, "default-target");
-    });
-  });
-
   describe("deleteBySessionId", () => {
     it("deletes a row by session_id", () => {
       db.upsert(makeRow());
@@ -626,80 +661,7 @@ describe("SessionDB", () => {
     });
   });
 
-  describe("getBySpaceId", () => {
-    it("returns only rows matching the given space_id", () => {
-      db.upsert(
-        makeRow({ session_id: "s1", instance_id: "i1", jsonl_path: "/a.jsonl", space_id: "sp-1" }),
-      );
-      db.upsert(
-        makeRow({ session_id: "s2", instance_id: "i2", jsonl_path: "/b.jsonl", space_id: "sp-2" }),
-      );
-      db.upsert(
-        makeRow({ session_id: "s3", instance_id: "i3", jsonl_path: "/c.jsonl", space_id: "sp-1" }),
-      );
-      const rows = db.getBySpaceId("sp-1");
-      assert.equal(rows.length, 2);
-      const ids = rows.map((r) => r.instance_id).sort();
-      assert.deepEqual(ids, ["i1", "i3"]);
-    });
-
-    it("excludes archived rows", () => {
-      db.upsert(
-        makeRow({ session_id: "s1", instance_id: "i1", jsonl_path: "/a.jsonl", space_id: "sp-1" }),
-      );
-      db.upsert(
-        makeRow({
-          session_id: "s2",
-          instance_id: "i2",
-          jsonl_path: "/b.jsonl",
-          space_id: "sp-1",
-          archived: 1,
-        }),
-      );
-      assert.equal(db.getBySpaceId("sp-1").length, 1);
-    });
-  });
-
   describe("getManagedByProjectId", () => {
-    function makeManagedRow(overrides = {}) {
-      return {
-        instance_id: "m-1",
-        provider_name: "codex",
-        provider_session_id: null,
-        name: "Managed Session",
-        working_directory: "/tmp/test",
-        created_at: 1000,
-        last_activity_at: 2000,
-        archived: 0,
-        custom_title: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_tokens: 0,
-        cache_read_tokens: 0,
-        git_branch: null,
-        worktree_path: null,
-        original_directory: null,
-        parent_session_id: null,
-        preferred_model: null,
-        reasoning_budget: null,
-        runtime_mode: "approval-required",
-        resume_cursor_json: null,
-        runtime_payload_json: "{}",
-        model_options_json: null,
-        original_git_branch: null,
-        transcript_path: null,
-        last_message_text: null,
-        last_message_from: null,
-        last_message_at: null,
-        git_info_branch: null,
-        git_info_is_worktree: null,
-        space_id: null,
-        project_id: null,
-        model: null,
-        ...overrides,
-      };
-    }
-
     it("returns only managed rows matching the given project_id", () => {
       db.upsertManaged(makeManagedRow({ instance_id: "m-1", project_id: "proj-1" }));
       db.upsertManaged(makeManagedRow({ instance_id: "m-2", project_id: "proj-2" }));
@@ -727,16 +689,6 @@ describe("SessionDB", () => {
       const row = db.getManagedByProjectId("proj-1")[0];
       assert.equal(row.name, "New");
       assert.equal(row.pinned, 1);
-    });
-
-    it("returns only managed rows matching the given space_id", () => {
-      db.upsertManaged(makeManagedRow({ instance_id: "m-1", space_id: "sp-1" }));
-      db.upsertManaged(makeManagedRow({ instance_id: "m-2", space_id: "sp-2" }));
-      db.upsertManaged(makeManagedRow({ instance_id: "m-3", space_id: "sp-1" }));
-      const rows = db.getManagedBySpaceId("sp-1");
-      assert.equal(rows.length, 2);
-      const ids = rows.map((r) => r.instance_id).sort();
-      assert.deepEqual(ids, ["m-1", "m-3"]);
     });
   });
 

@@ -61,8 +61,6 @@ export type { ClaudeProcessEvents } from "#core/claude-process.js";
 export { InstanceManager } from "#core/instance-manager.js";
 export type { InstanceManagerEvents } from "#core/instance-manager.js";
 
-export { SpaceManager } from "#core/space-manager.js";
-
 export { TerminalManager } from "#core/terminal-manager.js";
 export type { TerminalManagerEvents } from "#core/terminal-manager.js";
 
@@ -103,15 +101,11 @@ export {
   getFullDiff,
   getFileDiff,
   getDefaultBranch,
-  getWorktreeDiff,
 } from "#core/git.js";
 
 export { discoverSkills } from "#core/skills.js";
 
 export type {
-  SpaceStatus,
-  SpaceInfo,
-  MergeMethod,
   SkillInfo,
   SessionStats,
   ProviderKind,

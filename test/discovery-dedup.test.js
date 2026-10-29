@@ -346,7 +346,6 @@ describe("Scan deduplication — managed sessions stay authoritative", () => {
       git_info_is_worktree: null,
       project_id: manager.projectManager.getProjectByDirectory(fakeCwd)?.id ?? null,
       model: null,
-      space_id: null,
     });
 
     manager["scanAllSessions"]();
