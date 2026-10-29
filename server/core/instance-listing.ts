@@ -1,4 +1,5 @@
 import {
+  getDelegationFromRuntimePayload,
   getReviewInstanceIdFromRuntimePayload,
   getReviewSessionFromRuntimePayload,
 } from "#core/session-context.js";
@@ -186,6 +187,7 @@ export function summaryFromManagedRow(
     projectSlug: slugFor(entry.project_id, projectSlugs),
     review: getReviewSessionFromRuntimePayload(runtimePayload),
     reviewInstanceId: getReviewInstanceIdFromRuntimePayload(runtimePayload),
+    delegation: getDelegationFromRuntimePayload(runtimePayload),
   };
 }
 

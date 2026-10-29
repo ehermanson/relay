@@ -48,6 +48,7 @@ import type { CoreConfig } from "#core/config.js";
 import {
   RELAY_MCP_SERVER_NAME,
   RELAY_MCP_TOKEN_ENV,
+  RELAY_MCP_TOOL_TIMEOUT_MS,
   RELAY_ORCHESTRATION_INSTRUCTIONS,
   withoutRelayMcpServer,
 } from "#core/orchestration/instructions.js";
@@ -288,6 +289,9 @@ export function buildCodexAppServerArgs(relayMcp?: RelayMcpEndpoint): string[] {
       `${key}.url=${JSON.stringify(relayMcp.url)}`,
       "-c",
       `${key}.bearer_token_env_var=${JSON.stringify(RELAY_MCP_TOKEN_ENV)}`,
+      // Codex's 60s default would cut off `delegate_task` in wait mode.
+      "-c",
+      `${key}.tool_timeout_sec=${RELAY_MCP_TOOL_TIMEOUT_MS / 1000}`,
     );
   }
   return args;

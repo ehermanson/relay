@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { chatGitStatusQueryOptions, chatSuggestionsQueryOptions } from "@/lib/chat-query-options";
 import { motion } from "motion/react";
 import { ChatAccountMismatchBanner } from "@/components/chat/account-mismatch-banner";
+import { DelegatedChildBanner } from "@/components/chat/delegated-child-banner";
 import { ChatDebug } from "@/components/chat/chat-debug";
 import { ExternalSessionBar } from "@/components/chat/external-session-bar";
 import { InputArea } from "@/components/chat/input-area";
@@ -703,6 +704,7 @@ export function InstanceViewContent() {
       {/* Account guard first: a deep link or a tab left open across an account
           switch must name the account its sends go through. */}
       <ChatAccountMismatchBanner instance={shared.instance} />
+      <DelegatedChildBanner instance={shared.instance} />
       {shared.isLoadingSession || (!shared.hasLoadedHistory && shared.items.length === 0) ? (
         loadingContent
       ) : !hasMessagesSent && !shared.isActive && !shared.showThinkingIndicator ? (

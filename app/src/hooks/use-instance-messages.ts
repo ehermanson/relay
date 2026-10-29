@@ -1002,11 +1002,25 @@ function coreReducer(state: State, action: Action): State {
         ]);
       }
 
-      // Agent-authored inbound messages are notes, never human bubbles.
-      if (action.author?.kind === "agent") {
+      // Agent-authored inbound messages are notes, never human bubbles. A
+      // delivered one (a Relay task wake) replaces the queued placeholder it
+      // was waiting as; queued placeholders themselves stay queue items below.
+      if (action.author?.kind === "agent" && !action.queued) {
+        const delivered = action.dequeuedIds ? new Set(action.dequeuedIds) : null;
+        const items = delivered
+          ? state.items.filter(
+              (item) =>
+                !(
+                  item.kind === "user" &&
+                  item.queued &&
+                  item.queuedId !== undefined &&
+                  delivered.has(item.queuedId)
+                ),
+            )
+          : state.items;
         return {
           ...state,
-          items: [...state.items, buildAgentNoteItem(action.text, action.author, now)],
+          items: [...items, buildAgentNoteItem(action.text, action.author, now)],
         };
       }
 

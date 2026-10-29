@@ -1,5 +1,6 @@
 import type {
   ProviderContextBlock,
+  ChatDelegation,
   ReviewSessionInfo,
   ProviderSessionBootstrap,
   ProviderSessionContext,
@@ -125,6 +126,16 @@ export function getReviewSessionFromRuntimePayload(
       ? review.filePaths.filter((path): path is string => typeof path === "string")
       : undefined,
   };
+}
+
+export function getDelegationFromRuntimePayload(
+  runtimePayload: Record<string, unknown> | undefined,
+): ChatDelegation | undefined {
+  const value = runtimePayload?.delegation;
+  if (!value || typeof value !== "object") return undefined;
+  const { parentInstanceId, taskId, role } = value as Partial<ChatDelegation>;
+  if (typeof parentInstanceId !== "string" || typeof taskId !== "string") return undefined;
+  return { parentInstanceId, taskId, ...(typeof role === "string" && role ? { role } : {}) };
 }
 
 export function getReviewInstanceIdFromRuntimePayload(

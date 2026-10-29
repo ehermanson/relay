@@ -37,6 +37,7 @@ import {
 } from "../dist/server/core/orchestration/tools.js";
 import {
   RELAY_MCP_TOKEN_ENV,
+  RELAY_TOOL_NAMES,
   RELAY_ORCHESTRATION_INSTRUCTIONS,
   withoutRelayMcpServer,
 } from "../dist/server/core/orchestration/instructions.js";
@@ -128,13 +129,14 @@ describe("MCP protocol", () => {
     assert.equal(unknown.result.protocolVersion, MCP_LATEST_PROTOCOL_VERSION);
   });
 
-  it("lists read-only tools with schemas", async () => {
+  it("lists the tools with schemas, marking which ones act", async () => {
     const res = await handleMcpPayload({ jsonrpc: "2.0", id: 1, method: "tools/list" }, server, {});
     const names = res.result.tools.map((t) => t.name);
-    assert.deepEqual(names, ["relay_capabilities", "chat_list", "chat_read"]);
+    assert.deepEqual(names, [...RELAY_TOOL_NAMES]);
+    const acting = new Set(["delegate_task", "task_cancel"]);
     for (const tool of res.result.tools) {
       assert.equal(tool.inputSchema.type, "object");
-      assert.equal(tool.annotations.readOnlyHint, true);
+      assert.equal(tool.annotations.readOnlyHint, !acting.has(tool.name), tool.name);
     }
   });
 
@@ -532,6 +534,7 @@ describe("provider injection", () => {
         type: "http",
         url: relayMcp.url,
         headers: { Authorization: "Bearer ${RELAY_MCP_TOKEN}" },
+        timeout: 900_000,
       },
     });
     // mcpServers becomes `--mcp-config` argv; the token itself rides in the env.
@@ -580,6 +583,8 @@ describe("provider injection", () => {
       'mcp_servers.relay.url="http://127.0.0.1:4321/mcp"',
       "-c",
       `mcp_servers.relay.bearer_token_env_var="${RELAY_MCP_TOKEN_ENV}"`,
+      "-c",
+      "mcp_servers.relay.tool_timeout_sec=900",
     ]);
     assert.ok(!args.join(" ").includes("tok-123"));
   });

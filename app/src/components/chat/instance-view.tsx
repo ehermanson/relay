@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { gateAgentsByCapability } from "@/lib/agents";
 import { useParams, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { chatSummaryQueryOptions } from "@/lib/chat-query-options";
@@ -575,15 +576,22 @@ export function InstanceView({
   // a shared checkout must not open it.
   const hasReviewContent = !!resolvedInstance?.reviewInstanceId || hasFilesContent;
   // Capability gate, applied once at the source: when the provider doesn't
-  // advertise `supportsAgentActivity`, the agent state handed to the chat is
-  // EMPTY, so cards, notes, anchored substitution, badges, the header toggle
-  // and the sidecar all agree without checking the flag themselves. Attributed
+  // advertise `supportsAgentActivity`, the agent state handed to the chat
+  // keeps only Relay-delegated children (they don't depend on the provider),
+  // so cards, notes, anchored substitution, badges, the header toggle and the
+  // sidecar all agree without checking the flag themselves. Attributed
   // messages stay routed out of the main stream regardless. Same query key as
   // the composer's picker, so this adds no extra fetch.
   const { capabilities: providerCapabilities } = useProviderModels(resolvedInstance?.provider);
   const supportsAgentActivity = !!providerCapabilities.supportsAgentActivity;
-  const agents = supportsAgentActivity ? rawAgents : EMPTY_AGENTS;
-  const agentItems = supportsAgentActivity ? rawAgentItems : EMPTY_AGENT_ITEMS;
+  const { agents, agentItems } = useMemo(
+    () =>
+      gateAgentsByCapability(rawAgents, rawAgentItems, supportsAgentActivity, {
+        agents: EMPTY_AGENTS,
+        agentItems: EMPTY_AGENT_ITEMS,
+      }),
+    [rawAgents, rawAgentItems, supportsAgentActivity],
+  );
   const hasAgentsContent = Object.keys(agents).length > 0;
   const branchChangeKey =
     resolvedInstance?.branchChanged && resolvedInstance.id

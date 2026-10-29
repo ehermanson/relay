@@ -154,6 +154,24 @@ describe("buildInboxEntries", () => {
     ]);
   });
 
+  it("omits delegated child chats from rows and space counts", () => {
+    const delegation = { parentInstanceId: "parent", taskId: "t1" };
+    const entries = buildInboxEntries([
+      group({
+        groupInstances: [
+          chat({ id: "parent" }),
+          chat({ id: "child", delegation }),
+          chat({ id: "main", spaceId: "work" }),
+          chat({ id: "space-child", spaceId: "work", delegation }),
+        ],
+        spaces: [space({ id: "work" })],
+      }),
+    ]);
+    expect(chatEntries(entries).map((entry) => entry.instance.id)).toEqual(["parent"]);
+    const [spaceEntry] = spaceEntries(entries);
+    expect(spaceEntry.instances.map((instance) => instance.id)).toEqual(["main"]);
+  });
+
   it("sorts by independent destination pin then aggregate recency", () => {
     const pinnedSpace = Object.assign(space({ id: "pinned", lastActivityAt: 1 }), { pinned: true });
     const entries = buildInboxEntries([

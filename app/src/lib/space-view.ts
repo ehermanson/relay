@@ -1,5 +1,6 @@
 import { getDisplaySessionStats } from "@/lib/utils";
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import { getResolvedSpaceId } from "@/lib/space-membership";
 import type { FileChange, InstanceInfo, SessionStats } from "@shared/types";
 
@@ -7,6 +8,8 @@ export function buildSpaceInstances(
   spaceId: string,
   chatSummaries: InstanceInfo[],
   liveInstances: InstanceInfo[],
+  /** A delegated child is a tab only while the URL names it explicitly. */
+  explicitChatId?: string,
 ): InstanceInfo[] {
   const spaceChatMap = new Map<string, InstanceInfo>();
   for (const chat of chatSummaries) {
@@ -20,7 +23,11 @@ export function buildSpaceInstances(
     }
   }
   return Array.from(spaceChatMap.values())
-    .filter((instance) => !isAttachedReviewInstance(instance))
+    .filter(
+      (instance) =>
+        !isAttachedReviewInstance(instance) &&
+        (!isDelegatedChildInstance(instance) || instance.id === explicitChatId),
+    )
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 }
 

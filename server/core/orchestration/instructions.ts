@@ -21,8 +21,21 @@ export const RELAY_MCP_CLAUDE_TOOL_PREFIX = `mcp__${RELAY_MCP_SERVER_NAME}__`;
  */
 export const RELAY_MCP_TOKEN_ENV = "RELAY_MCP_TOKEN";
 
+/**
+ * Per-call tool timeout both providers get for Relay's server, above the
+ * longest `delegate_task` wait (`DELEGATE_WAIT_MAX_MS`). Codex defaults to 60s.
+ */
+export const RELAY_MCP_TOOL_TIMEOUT_MS = 900_000;
+
 /** Tool names served by Relay's MCP server, in listing order. */
-export const RELAY_TOOL_NAMES = ["relay_capabilities", "chat_list", "chat_read"] as const;
+export const RELAY_TOOL_NAMES = [
+  "relay_capabilities",
+  "delegate_task",
+  "task_status",
+  "task_cancel",
+  "chat_list",
+  "chat_read",
+] as const;
 
 /** Link form agents use to refer to a chat; the UI resolves it to the live title. */
 export function relayChatLink(instanceId: string): string {
@@ -31,11 +44,14 @@ export function relayChatLink(instanceId: string): string {
 
 export const RELAY_ORCHESTRATION_INSTRUCTIONS = `## Relay orchestration
 
-You are running inside Relay, which hosts several agent chats side by side. The \`${RELAY_MCP_SERVER_NAME}\` MCP tools let you look at other chats in this project.
+You are running inside Relay, which hosts several agent chats side by side. The \`${RELAY_MCP_SERVER_NAME}\` MCP tools let you read other chats in this project and delegate tasks to child chats.
 
 - Ordinary coding tasks need no Relay tools.
+- Prefer your own built-in subagents for work on your own provider that finishes this turn. Use \`delegate_task\` to run a task on another provider or model, for background work that outlives this turn, or when the user asks for a Relay delegate.
+- Call \`relay_capabilities\` once before your first delegation. If the provider or model you need is unavailable, say so; never silently fall back to another one.
+- A child sees only its \`task\`, so write a complete, self-contained brief.
+- After an async \`delegate_task\`, end your turn: completion wakes you with the result. Never poll, sleep, or watch for it. Cancel delegates you no longer need with \`task_cancel\`. If delegation fails with \`capacity\`, report it rather than retrying.
 - \`chat_list\` lists the project's chats; \`chat_read\` reads one chat's conversation. Given a chat link or id, read it before you answer about it.
-- \`relay_capabilities\` reports your own chat and the providers and models Relay can run.
 - Refer to a chat by its \`link\` (\`relay://chat/<id>\`), verbatim — never by title or bare id.
 - If you are a delegated child, do the work yourself. Start no delegates unless your task says to.`;
 
@@ -55,4 +71,4 @@ export function withoutRelayMcpServer<T extends { name: string }>(
 
 /** Returned in the MCP `initialize` result; some clients surface it to the model. */
 export const RELAY_MCP_SERVER_INSTRUCTIONS =
-  "Relay cross-chat tools. Refer to chats by their relay://chat/<id> link. Ordinary coding needs none of these tools.";
+  "Relay cross-chat tools: read other chats and delegate tasks to child chats on any provider. After an async delegate_task, end your turn; completion wakes you. Refer to chats by their relay://chat/<id> link. Ordinary coding needs none of these tools.";

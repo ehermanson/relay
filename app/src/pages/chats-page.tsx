@@ -17,6 +17,7 @@ import { chatBelongsToAccount } from "@/lib/account-scope";
 import { fetchProjectChats, fetchAllSpaces } from "@/lib/api";
 import { getInstanceChatRoute, instanceMatchesProject } from "@/lib/project-route";
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import {
   compareChatListOrder,
   deriveInstanceStatusPresentation,
@@ -211,7 +212,9 @@ export function ProjectChatList() {
 
   // One flat list on every viewport — standalone + space chats together, each
   // space chat tagged with its branch. The Spaces tab handles space lifecycle.
-  const listInstances = projectInstances.filter((inst) => !isAttachedReviewInstance(inst));
+  const listInstances = projectInstances.filter(
+    (inst) => !isAttachedReviewInstance(inst) && !isDelegatedChildInstance(inst),
+  );
 
   // Build a lookup for parent session names
   const parentNames = new Map<string, string>();

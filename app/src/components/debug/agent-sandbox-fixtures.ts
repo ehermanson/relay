@@ -116,23 +116,47 @@ export const AGENT_SCENES: AgentScene[] = [
             {
               kind: "activity-group",
               activities: [
-                tool("Read", "Read use-instance-messages.ts", { file_path: "app/src/hooks/use-instance-messages.ts" }, "1268 lines"),
-                tool("Grep", "Find parent_tool_use_id", { pattern: "parent_tool_use_id" }, "0 matches in server/"),
-                tool("Read", "Read claude-sdk.ts", { file_path: "server/core/providers/claude-sdk.ts" }, "2400 lines"),
+                tool(
+                  "Read",
+                  "Read use-instance-messages.ts",
+                  { file_path: "app/src/hooks/use-instance-messages.ts" },
+                  "1268 lines",
+                ),
+                tool(
+                  "Grep",
+                  "Find parent_tool_use_id",
+                  { pattern: "parent_tool_use_id" },
+                  "0 matches in server/",
+                ),
+                tool(
+                  "Read",
+                  "Read claude-sdk.ts",
+                  { file_path: "server/core/providers/claude-sdk.ts" },
+                  "2400 lines",
+                ),
               ],
             },
             { kind: "assistant", text: LONG_RESULT, timestamp: ts - 12_000 },
           ],
         },
         items: [
-          { kind: "user", text: "Why do subagent outputs blend into the main chat?", timestamp: ts - 100_000 },
+          {
+            kind: "user",
+            text: "Why do subagent outputs blend into the main chat?",
+            timestamp: ts - 100_000,
+          },
           {
             kind: "activity-group",
             activities: [
-              delegation("tu-explore-1", "Investigate streaming attribution bug", { model: "sonnet" }, {
-                detail: LONG_RESULT,
-                status: "success",
-              }),
+              delegation(
+                "tu-explore-1",
+                "Investigate streaming attribution bug",
+                { model: "sonnet" },
+                {
+                  detail: LONG_RESULT,
+                  status: "success",
+                },
+              ),
             ],
           },
           {
@@ -179,7 +203,8 @@ export const AGENT_SCENES: AgentScene[] = [
           name: "impl-ui",
           description: "Agent cards + sidecar",
           status: "completed",
-          result: "Added `AgentCard`, `AgentsPanel`, and reducer routing. 14 tests pass. No contract changes needed.",
+          result:
+            "Added `AgentCard`, `AgentsPanel`, and reducer routing. 14 tests pass. No contract changes needed.",
           usage: { totalTokens: 132_400, toolUses: 41, durationMs: 412_000 },
           startedAt: ts - 500_000,
           endedAt: ts - 88_000,
@@ -204,17 +229,24 @@ export const AGENT_SCENES: AgentScene[] = [
             {
               kind: "activity-group",
               activities: [
-                tool("Read", "Read claude-sdk.ts", { file_path: "server/core/providers/claude-sdk.ts" }, "ok"),
-                tool("Edit", "Edit claude-sdk.ts", { file_path: "server/core/providers/claude-sdk.ts", old_string: "a", new_string: "b" }),
+                tool(
+                  "Read",
+                  "Read claude-sdk.ts",
+                  { file_path: "server/core/providers/claude-sdk.ts" },
+                  "ok",
+                ),
+                tool("Edit", "Edit claude-sdk.ts", {
+                  file_path: "server/core/providers/claude-sdk.ts",
+                  old_string: "a",
+                  new_string: "b",
+                }),
               ],
             },
           ],
           "tu-impl-codex": [
             {
               kind: "activity-group",
-              activities: [
-                tool("Bash", "Run pnpm build:server", { command: "pnpm build:server" }),
-              ],
+              activities: [tool("Bash", "Run pnpm build:server", { command: "pnpm build:server" })],
             },
           ],
         },
@@ -226,14 +258,26 @@ export const AGENT_SCENES: AgentScene[] = [
           relayAgentId: "tu-impl-codex",
         } as ProviderRequest,
         items: [
-          { kind: "user", text: "Split the work across implementers and run them in parallel.", timestamp: ts - 600_000 },
+          {
+            kind: "user",
+            text: "Split the work across implementers and run them in parallel.",
+            timestamp: ts - 600_000,
+          },
           {
             kind: "activity-group",
             activities: [
               delegation("tu-impl-ui", "Agent cards + sidecar", { run_in_background: true }),
-              delegation("tu-impl-claude", "Implement Claude attribution", { model: "sonnet", run_in_background: true }),
-              delegation("tu-impl-codex", "Implement Codex thread scoping", { run_in_background: true }),
-              delegation("tu-docs", "Update CLAUDE.md", { model: "haiku", run_in_background: true }),
+              delegation("tu-impl-claude", "Implement Claude attribution", {
+                model: "sonnet",
+                run_in_background: true,
+              }),
+              delegation("tu-impl-codex", "Implement Codex thread scoping", {
+                run_in_background: true,
+              }),
+              delegation("tu-docs", "Update CLAUDE.md", {
+                model: "haiku",
+                run_in_background: true,
+              }),
             ],
           },
           {
@@ -260,7 +304,8 @@ export const AGENT_SCENES: AgentScene[] = [
           model: "claude-opus-4-1",
           status: "running",
           lastActivity: "Read use-instance-messages.ts",
-          result: "First pass: 2 blocking issues (unmatched tool_result fallback, missing sequence gate on agent_update).",
+          result:
+            "First pass: 2 blocking issues (unmatched tool_result fallback, missing sequence gate on agent_update).",
           startedAt: ts - 300_000,
         },
       };
@@ -272,15 +317,30 @@ export const AGENT_SCENES: AgentScene[] = [
             { kind: "user", text: "Both fixed. Re-review the same files.", timestamp: ts - 20_000 },
             {
               kind: "activity-group",
-              activities: [tool("Read", "Read use-instance-messages.ts", { file_path: "app/src/hooks/use-instance-messages.ts" })],
+              activities: [
+                tool("Read", "Read use-instance-messages.ts", {
+                  file_path: "app/src/hooks/use-instance-messages.ts",
+                }),
+              ],
             },
           ],
         },
         items: [
-          { kind: "user", text: "Have the reviewer take another look now that the fixes landed.", timestamp: ts - 30_000 },
+          {
+            kind: "user",
+            text: "Have the reviewer take another look now that the fixes landed.",
+            timestamp: ts - 30_000,
+          },
           {
             kind: "activity-group",
-            activities: [delegation("tu-review-1", "Review the reducer changes", { model: "opus" }, { detail: agents["tu-review-1"].result!, status: "success" })],
+            activities: [
+              delegation(
+                "tu-review-1",
+                "Review the reducer changes",
+                { model: "opus" },
+                { detail: agents["tu-review-1"].result!, status: "success" },
+              ),
+            ],
           },
           {
             kind: "assistant",
@@ -334,26 +394,40 @@ export const AGENT_SCENES: AgentScene[] = [
             { kind: "assistant", text: "Splitting into schema + tests.", timestamp: ts - 50_000 },
             {
               kind: "activity-group",
-              activities: [delegation("tu-schema", "Write the SQLite migration", { model: "haiku" })],
+              activities: [
+                delegation("tu-schema", "Write the SQLite migration", { model: "haiku" }),
+              ],
             },
           ],
           "tu-schema": [
             {
               kind: "activity-group",
-              activities: [tool("Write", "Write 0042_agents.sql", { file_path: "server/migrations/0042_agents.sql", content: "CREATE TABLE agents (...)" })],
+              activities: [
+                tool("Write", "Write 0042_agents.sql", {
+                  file_path: "server/migrations/0042_agents.sql",
+                  content: "CREATE TABLE agents (...)",
+                }),
+              ],
             },
           ],
         },
         items: [
-          { kind: "user", text: "Run the agents-table migration end to end.", timestamp: ts - 60_000 },
-          { kind: "activity-group", activities: [delegation("tu-lead", "Coordinate the migration", { model: "sonnet" })] },
+          {
+            kind: "user",
+            text: "Run the agents-table migration end to end.",
+            timestamp: ts - 60_000,
+          },
+          {
+            kind: "activity-group",
+            activities: [delegation("tu-lead", "Coordinate the migration", { model: "sonnet" })],
+          },
         ],
       };
     },
   },
   {
     label: "(e) Agent-authored note",
-    description: "Inbound message with author.kind === \"agent\"",
+    description: 'Inbound message with author.kind === "agent"',
     build: () => {
       const ts = now();
       return {
@@ -367,8 +441,16 @@ export const AGENT_SCENES: AgentScene[] = [
         },
         agentItems: {},
         items: [
-          { kind: "user", text: "Coordinate with the release-manager session before merging.", timestamp: ts - 90_000 },
-          { kind: "assistant", text: "Pinged release-manager and asked for the freeze window.", timestamp: ts - 80_000 },
+          {
+            kind: "user",
+            text: "Coordinate with the release-manager session before merging.",
+            timestamp: ts - 90_000,
+          },
+          {
+            kind: "assistant",
+            text: "Pinged release-manager and asked for the freeze window.",
+            timestamp: ts - 80_000,
+          },
           {
             kind: "agent-note",
             name: "release-manager",
@@ -376,7 +458,11 @@ export const AGENT_SCENES: AgentScene[] = [
             text: "Freeze starts **Friday 17:00 UTC**. Anything merged after that goes to the next train.\n\n- Tag `v1.42.0-rc1` first\n- Run the smoke suite on staging",
             timestamp: ts - 40_000,
           },
-          { kind: "assistant", text: "Got it — merging before the Friday freeze.", timestamp: ts - 30_000 },
+          {
+            kind: "assistant",
+            text: "Got it — merging before the Friday freeze.",
+            timestamp: ts - 30_000,
+          },
         ],
       };
     },
@@ -401,7 +487,12 @@ export const AGENT_SCENES: AgentScene[] = [
         },
         agentItems: {
           "tu-bash-1": [
-            { kind: "activity-group", activities: [tool("Bash", "Run migrations", { command: "pnpm db:migrate --env staging" })] },
+            {
+              kind: "activity-group",
+              activities: [
+                tool("Bash", "Run migrations", { command: "pnpm db:migrate --env staging" }),
+              ],
+            },
           ],
         },
         pendingRequest: {
@@ -413,7 +504,10 @@ export const AGENT_SCENES: AgentScene[] = [
         } as ProviderRequest,
         items: [
           { kind: "user", text: "Migrate staging.", timestamp: ts - 20_000 },
-          { kind: "activity-group", activities: [delegation("tu-bash-1", "Apply migrations on staging")] },
+          {
+            kind: "activity-group",
+            activities: [delegation("tu-bash-1", "Apply migrations on staging")],
+          },
         ],
       };
     },
@@ -437,12 +531,92 @@ export const AGENT_SCENES: AgentScene[] = [
         },
         agentItems: {
           "thr-codex-child": [
-            { kind: "activity-group", activities: [tool("Read", "Read package.json", { file_path: "package.json" })] },
+            {
+              kind: "activity-group",
+              activities: [tool("Read", "Read package.json", { file_path: "package.json" })],
+            },
           ],
         },
         items: [
           { kind: "user", text: "Audit the dependency tree.", timestamp: ts - 20_000 },
           { kind: "agent-card", agentId: "thr-codex-child", timestamp: ts - 15_000 },
+        ],
+      };
+    },
+  },
+  {
+    label: "(h) Relay child chats (cross-provider)",
+    description:
+      "delegate_task children: their own chats, with provider logo, Delegated marker, Open chat and Stop",
+    build: () => {
+      const ts = now();
+      const relayCall = (toolUseId: string, task: string, provider: string): MergedActivity =>
+        ({
+          type: "activity",
+          activity: "tool_use",
+          tool: "mcp__relay__delegate_task",
+          toolUseId,
+          description: "delegate_task",
+          inputDescription: task,
+          input: { task, target: { provider } },
+        }) as MergedActivity;
+      const agents: Record<string, AgentInfo> = {
+        "relay-task:sbx-review": {
+          agentId: "relay-task:sbx-review",
+          origin: "relay",
+          childInstanceId: "sbx-child-review",
+          childProvider: "codex",
+          originToolUseId: "tu-relay-1",
+          relation: "child",
+          name: "Review the migration",
+          assignment:
+            "Review the outbox migration in server/core/db.ts for data loss on downgrade.",
+          model: "gpt-5.5",
+          status: "running",
+          startedAt: ts - 40_000,
+          lastActivity: "Read db.ts",
+        },
+        "relay-task:sbx-docs": {
+          agentId: "relay-task:sbx-docs",
+          origin: "relay",
+          childInstanceId: "sbx-child-docs",
+          childProvider: "claude",
+          originToolUseId: "tu-relay-2",
+          relation: "child",
+          name: "Update the outbox docs",
+          description: "Document the receipt states",
+          assignment:
+            "Update AGENTS.md's outbox section to describe reserved vs accepted receipts.",
+          model: "claude-sonnet-4-5",
+          status: "completed",
+          startedAt: ts - 60_000,
+          endedAt: ts - 15_000,
+          result:
+            "Updated the Offline Drafts section: reserved receipts are uncertain and never retried.",
+        },
+      };
+      return {
+        agents,
+        agentItems: {},
+        items: [
+          {
+            kind: "user",
+            text: "Have Codex review the migration and Claude update the docs.",
+            timestamp: ts - 65_000,
+          },
+          {
+            kind: "activity-group",
+            activities: [
+              relayCall("tu-relay-1", "Review the migration", "codex"),
+              relayCall("tu-relay-2", "Update the outbox docs", "claude"),
+            ],
+          },
+          {
+            kind: "agent-note",
+            name: "Update the outbox docs",
+            text: "Delegated task completed: Updated the Offline Drafts section.",
+            timestamp: ts - 15_000,
+          },
         ],
       };
     },

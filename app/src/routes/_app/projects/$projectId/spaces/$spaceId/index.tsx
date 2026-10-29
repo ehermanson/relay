@@ -140,7 +140,8 @@ export function SpaceView() {
       }
       if (message.type === "instance_created") {
         void queryClient.invalidateQueries({ queryKey: ["spaceChats", spaceId] });
-        if (message.instance.spaceId === spaceId) {
+        // An agent's delegated child landing in this space is not our new chat.
+        if (message.instance.spaceId === spaceId && !message.instance.delegation) {
           // Match by exact ID, or if the WS message arrived before the REST
           // response set the ref (race condition), match any creation for this
           // space while we're actively waiting for one.
@@ -205,7 +206,7 @@ export function SpaceView() {
   // remembered selection is auto-opened. The chat the URL names explicitly is
   // never hidden (the chat-level account banner identifies it).
   const spaceInstances = useMemo(() => {
-    const all = buildSpaceInstances(spaceId, chatSummaries, instances);
+    const all = buildSpaceInstances(spaceId, chatSummaries, instances, chatId);
     if (!account.isMulti) return all;
     return all.filter(
       (chat) =>

@@ -74,6 +74,7 @@ import {
   RELAY_MCP_CLAUDE_TOOL_PREFIX,
   RELAY_MCP_SERVER_NAME,
   RELAY_MCP_TOKEN_ENV,
+  RELAY_MCP_TOOL_TIMEOUT_MS,
   RELAY_ORCHESTRATION_CLAUDE_NOTE,
   RELAY_ORCHESTRATION_INSTRUCTIONS,
 } from "#core/orchestration/instructions.js";
@@ -239,7 +240,10 @@ interface SDKOptions {
   canUseTool?: CanUseTool;
   env?: Record<string, string | undefined>;
   allowedTools?: string[];
-  mcpServers?: Record<string, { type: "http"; url: string; headers?: Record<string, string> }>;
+  mcpServers?: Record<
+    string,
+    { type: "http"; url: string; headers?: Record<string, string>; timeout?: number }
+  >;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   settings?: Record<string, unknown>;
   systemPrompt?:
@@ -1255,6 +1259,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
           type: "http",
           url: options.relayMcp.url,
           headers: { Authorization: `Bearer \${${RELAY_MCP_TOKEN_ENV}}` },
+          // Per-server tool timeout (ms) so `delegate_task` in wait mode
+          // isn't cut off by the global MCP default. Matches Codex's.
+          timeout: RELAY_MCP_TOOL_TIMEOUT_MS,
         },
       };
     }

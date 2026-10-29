@@ -37,7 +37,9 @@ export function ActionToastProvider({ children }: { children: ReactNode }) {
     const currentIds = new Set(instances.map((instance) => instance.id));
 
     for (const instance of instances) {
-      if (prevInstanceIdsRef.current.has(instance.id) || instance.external) continue;
+      if (prevInstanceIdsRef.current.has(instance.id) || instance.external || instance.delegation) {
+        continue;
+      }
 
       const pendingCount = pendingCreatesRef.current.get(instance.workingDirectory) ?? 0;
       if (pendingCount <= 0) continue;

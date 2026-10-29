@@ -48,7 +48,7 @@ export function registerMcpRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const response = await handleMcpPayload(
       payload,
       server,
-      { host: instanceManager.getOrchestrationHost(), callerId },
+      { host: instanceManager.getOrchestrationHost(), callerId, signal: c.req.raw.signal },
       (error) => config.logger.error("[MCP] Tool error:", error),
     );
     if (response === null) return c.body(null, 202);

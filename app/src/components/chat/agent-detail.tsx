@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { AgentInfo } from "@shared/types";
 import { mergeAgentInfo } from "@shared/agent-info";
+import { RelayAgentActions } from "@/components/chat/relay-agent";
 import type { ChatItem } from "@/lib/chat-types";
 import {
   buildAgentAnchorIndex,
@@ -128,7 +129,11 @@ function Assignment({ text }: { text: string }) {
   const [open, setOpen] = useState(!isLong);
   return (
     <div className="flex flex-col gap-1.5">
-      <SectionToggle label="Assignment" open={open} onToggle={isLong ? () => setOpen((v) => !v) : undefined} />
+      <SectionToggle
+        label="Assignment"
+        open={open}
+        onToggle={isLong ? () => setOpen((v) => !v) : undefined}
+      />
       <pre
         className={`whitespace-pre-wrap break-words rounded-md border border-border/40 bg-surface/50 px-2.5 py-2 font-sans text-[0.75rem] leading-relaxed text-muted ${
           open ? "" : "line-clamp-2"
@@ -228,7 +233,10 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
   // Nested delegation: children declared by the provider via `parentAgentId`.
   // Those whose origin tool_use is inside this transcript render in place of
   // it; the rest are listed below the activity.
-  const children = useMemo(() => getChildAgents(allAgents, agent.agentId), [allAgents, agent.agentId]);
+  const children = useMemo(
+    () => getChildAgents(allAgents, agent.agentId),
+    [allAgents, agent.agentId],
+  );
   const childAgentsById = useMemo(() => {
     const map: Record<string, AgentInfo> = {};
     for (const child of children) map[child.agentId] = child;
@@ -238,7 +246,9 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
     () => buildAgentAnchorIndex(items, childAgentsById),
     [items, childAgentsById],
   );
-  const unanchoredChildren = children.filter((c) => !c.originToolUseId || !nestedAnchors.has(c.originToolUseId));
+  const unanchoredChildren = children.filter(
+    (c) => !c.originToolUseId || !nestedAnchors.has(c.originToolUseId),
+  );
   const nestedContext: AgentCardsContextValue = {
     agents: allAgents,
     agentItems: ctx?.agentItems ?? EMPTY_AGENT_ITEMS,
@@ -256,10 +266,13 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
   if (current.role && current.role !== current.name) metaParts.push(current.role);
   if (current.reasoningEffort) metaParts.push(`effort ${current.reasoningEffort}`);
   const usageParts: string[] = [];
-  if (usage?.totalTokens !== undefined) usageParts.push(`${formatTokens(usage.totalTokens)} tokens`);
-  if (usage?.toolUses !== undefined) usageParts.push(`${usage.toolUses} tool ${usage.toolUses === 1 ? "use" : "uses"}`);
+  if (usage?.totalTokens !== undefined)
+    usageParts.push(`${formatTokens(usage.totalTokens)} tokens`);
+  if (usage?.toolUses !== undefined)
+    usageParts.push(`${usage.toolUses} tool ${usage.toolUses === 1 ? "use" : "uses"}`);
   const duration = formatAgentDuration(
-    usage?.durationMs ?? (current.startedAt && current.endedAt ? current.endedAt - current.startedAt : undefined),
+    usage?.durationMs ??
+      (current.startedAt && current.endedAt ? current.endedAt - current.startedAt : undefined),
   );
   if (duration) usageParts.push(duration);
 
@@ -276,11 +289,11 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
     () => isAgentActive(agent.status) || !(agent.result ?? fallbackResult),
   );
   const showStatusDetail = !!current.statusDetail && current.status !== "failed";
-  const hasMeta =
-    !modelLabel || metaParts.length > 0 || usageParts.length > 0 || showStatusDetail;
+  const hasMeta = !modelLabel || metaParts.length > 0 || usageParts.length > 0 || showStatusDetail;
 
   return (
     <div className="flex flex-col gap-3 text-[0.8125rem]">
+      {agent.origin === "relay" && <RelayAgentActions agent={agent} />}
       {/* Metadata. The model is already shown in the always-visible card
           header / sidecar row above this detail, so it's repeated here only
           when it's unknown (a signal those surfaces omit). */}
@@ -344,7 +357,9 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
           <SectionToggle label={current.resultIsError ? "Result (error)" : "Result"} />
           <div
             className={`rounded-md border px-3 py-2.5 max-[768px]:text-[16px] ${
-              current.resultIsError ? "border-error/30 bg-error-dim/40" : "border-border/60 bg-panel/40"
+              current.resultIsError
+                ? "border-error/30 bg-error-dim/40"
+                : "border-border/60 bg-panel/40"
             }`}
           >
             <MarkdownContent text={result} />

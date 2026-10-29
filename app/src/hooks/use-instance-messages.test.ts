@@ -279,6 +279,30 @@ describe("useInstanceMessages message queue", () => {
     ).toEqual(["q1", "q3", "sent"]);
   });
 
+  it("a delivered task wake replaces its queued placeholder with one agent note", () => {
+    const { result } = renderHook(() => useInstanceMessages());
+    act(() => result.current.setInstanceId("inst-1"));
+
+    act(() => {
+      result.current.handleMessage("inst-1", {
+        type: "user",
+        instanceId: "inst-1",
+        text: "Delegated task finished",
+        queued: true,
+        queuedId: "wake-1",
+      } as UserMessage);
+      result.current.handleMessage("inst-1", {
+        type: "user",
+        instanceId: "inst-1",
+        text: "Delegated task finished",
+        dequeuedIds: ["wake-1"],
+        author: { kind: "agent", name: "Review" },
+      } as UserMessage);
+    });
+
+    expect(result.current.items.map((i) => i.kind)).toEqual(["agent-note"]);
+  });
+
   it("reorders queued placeholders on queued_reordered", () => {
     const { result } = renderHook(() => useInstanceMessages());
     act(() => result.current.setInstanceId("inst-1"));

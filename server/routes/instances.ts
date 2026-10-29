@@ -109,6 +109,19 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     }
   });
 
+  // Stop a Relay-delegated task from its card. The delegating chat is woken
+  // with the cancellation, since it ended its turn expecting a result.
+  app.post("/api/delegated-tasks/:taskId/cancel", (c) => {
+    const taskId = c.req.param("taskId");
+    const task = instanceManager.getDelegatedTask(taskId);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (task.status !== "running") return c.json({ error: "Task is not running" }, 409);
+    const cancelled = instanceManager.cancelDelegatedTask(taskId, "stopped by the user", {
+      notifyParent: true,
+    });
+    return c.json({ task: cancelled });
+  });
+
   // Bulk done, used by the inbox's "sweep stale chats" action. The client sends
   // explicit ids rather than a cutoff because it is the side that knows each
   // chat's true recency (last activity *or* last transcript message).

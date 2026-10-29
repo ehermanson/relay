@@ -2,6 +2,7 @@ import { videoContentType, MAX_VIDEO_UPLOAD } from "@shared/video-attachments";
 import type {
   AccountStatus,
   CreateInstancePayload,
+  DelegatedTaskInfo,
   HistoryEntry,
   InstanceInfo,
   NativeOpenTargetsResponse,
@@ -409,6 +410,19 @@ export async function fetchAgentModel(instanceId: string, agentId: string): Prom
   if (!res.ok) throw new Error("Failed to fetch agent model");
   const data = (await res.json()) as { model: string | null };
   return data.model;
+}
+
+/** Cancel a Relay-delegated task: stops its child chat (and the child's own delegates). */
+export async function cancelDelegatedTask(taskId: string): Promise<DelegatedTaskInfo> {
+  const res = await fetch(`/api/delegated-tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? "Failed to cancel the delegated task");
+  }
+  const data = (await res.json()) as { task: DelegatedTaskInfo };
+  return data.task;
 }
 
 export async function fetchInstanceSummary(instanceId: string): Promise<InstanceInfo | null> {

@@ -1,6 +1,6 @@
 # Cross-chat orchestration: chats that delegate to and message other chats
 
-Status (2026-10-28): **Phase 1 implemented** — `/mcp` endpoint, per-chat credentials, Claude + Codex injection, read-only tools (`relay_capabilities`, `chat_list`, `chat_read`). See AGENTS.md "Relay Orchestration". Phases 2–4 are proposals.
+Status (2026-10-29): **Phases 1–2 implemented** — `/mcp` endpoint, per-chat credentials, Claude + Codex injection, read-only tools (`relay_capabilities`, `chat_list`, `chat_read`), and delegation (`delegate_task`, `task_status`, `task_cancel`) with the `delegated_tasks` table, relay-origin agent cards, completion wakes, and stop/done/delete cascades. See AGENTS.md "Relay Orchestration". Phases 3–4 are proposals. Not yet built from phase 2's design: a child waiting on input marking its parent's inbox row (G), the Codex resume instructions gap (F).
 
 ## Goal
 

@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { createInstance } from "@/lib/api";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import { deriveInstanceStatusPresentation, formatTimeAgo } from "@/lib/utils";
 import type { InstanceInfo } from "@shared/types";
 
@@ -70,7 +71,7 @@ function SessionPicker({
   const [filter, setFilter] = useState("");
   const filtered = instances
     .filter((i) => i.id !== excludeId)
-    .filter((i) => !isAttachedReviewInstance(i))
+    .filter((i) => !isAttachedReviewInstance(i) && !isDelegatedChildInstance(i))
     .filter(
       (i) =>
         !filter ||

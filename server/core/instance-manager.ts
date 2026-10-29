@@ -61,7 +61,12 @@ import {
   readClaudeTranscriptTitle,
 } from "#core/providers/claude-session-title.js";
 import { SessionDB } from "#core/db.js";
-import type { SessionRow, ManagedInstanceRow, SessionEventRow } from "#core/db.js";
+import type {
+  DelegatedTaskRecord,
+  SessionRow,
+  ManagedInstanceRow,
+  SessionEventRow,
+} from "#core/db.js";
 import {
   BUILTIN_PROVIDER_MODELS,
   getProviderDisplayName,
@@ -168,6 +173,7 @@ import type {
   EditToolInput,
   AgentInfo,
   AgentUpdateMessage,
+  ChatDelegation,
 } from "#core/types.js";
 import {
   captureManagedSessionForProvider,
@@ -210,6 +216,7 @@ import {
   buildSessionBootstrapContext,
   CUSTOM_INSTRUCTIONS_BLOCK_KIND,
   extractSpaceContextForInjection,
+  getDelegationFromRuntimePayload,
   getSessionContextFromRuntimePayload,
   hasSessionBootstrapBlock,
   SPACE_CONTEXT_BLOCK_KIND,
@@ -273,6 +280,23 @@ import { normalizeConfigDir, type DefaultLogins } from "#core/accounts.js";
 import { AccountStore } from "#core/account-store.js";
 import { DEFAULT_ACCOUNT_ID, type Account, type ProviderDefaults } from "#core/types.js";
 import { OrchestrationCredentials } from "#core/orchestration/credentials.js";
+import {
+  agentInfoForTask,
+  buildDelegatedChildNote,
+  buildTaskWakeMessage,
+  DELEGATED_CHILD_BLOCK_KIND,
+  type DelegateTaskRequest,
+  lastAssistantText,
+  parseTaskWakeMessage,
+  relayTaskAgentKey,
+  resolveChildRuntimeMode,
+  titleFromTask,
+} from "#core/orchestration/delegation.js";
+import {
+  RELAY_MCP_CLAUDE_TOOL_PREFIX,
+  RELAY_MCP_SERVER_NAME,
+} from "#core/orchestration/instructions.js";
+import { McpToolError } from "#core/orchestration/mcp-protocol.js";
 import type { OrchestrationHost, OrchestrationProviderInfo } from "#core/orchestration/tools.js";
 
 // =============================================================================
@@ -429,6 +453,46 @@ interface Instance {
 const TURN_BASELINE_TIMEOUT_MS = 1500;
 /** `session_events` row recording the files one turn changed per git (never a visible event). */
 const FILES_DETECTED_EVENT = "files_detected";
+
+/** Completions this close together share one wake. */
+const TASK_WAKE_COALESCE_MS = 200;
+const TASK_WAKE_MAX_ATTEMPTS = 3;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isTaskWakeEntry(entry: HistoryEntry): boolean {
+  const message = entry.message;
+  return (
+    message.type === "user" &&
+    !message.author &&
+    !message.agentId &&
+    parseTaskWakeMessage(message.text ?? "") !== null
+  );
+}
+
+function asTaskWakeNote(entry: HistoryEntry): HistoryEntry {
+  const message = entry.message as UserMessage;
+  const wake = parseTaskWakeMessage(message.text)!;
+  return {
+    ...entry,
+    message: { ...message, text: wake.body, author: { kind: "agent", name: wake.name } },
+  };
+}
+
+/** Insert after the last entry at or before `entry`'s timestamp. */
+function insertByTimestamp(history: HistoryEntry[], entry: HistoryEntry): void {
+  let insertAt = history.length;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].timestamp <= entry.timestamp) {
+      insertAt = i + 1;
+      break;
+    }
+    insertAt = i;
+  }
+  history.splice(insertAt, 0, entry);
+}
 
 export interface InstanceManagerEvents {
   "instance:output": [instanceId: string, message: OutputMessage];
@@ -1542,6 +1606,20 @@ export class InstanceManager extends EventEmitter {
   private orchestrationUrl: string | null = null;
   /** One bearer token per chat for `/mcp`; see `OrchestrationCredentials`. */
   private readonly orchestrationCredentials = new OrchestrationCredentials();
+  /** `waitForDelegatedTask` callers, resolved when the task ends. */
+  private readonly delegatedTaskWaiters = new Map<
+    string,
+    Set<(task: DelegatedTaskRecord) => void>
+  >();
+  /** Pending coalesced wake per parent chat. */
+  private readonly taskWakeTimers = new Map<string, NodeJS.Timeout>();
+  /** Consecutive failed wake dispatches per parent (bounded retry). */
+  private readonly taskWakeFailures = new Map<string, number>();
+  /** Chats auto-continued after a restart: their running tasks will still end. */
+  private restartContinuedIds = new Set<string>();
+  private taskRecoveryTimer: NodeJS.Timeout | null = null;
+  /** A wake waiting in a parent's queue, and the tasks it reports. */
+  private readonly queuedTaskWakes = new Map<string, { queuedId: string; taskIds: string[] }>();
   /** Pre-resolved SDK query function — null if SDK not available (falls back to CLI) */
   private _sdkQueryFn: ((params: { prompt: unknown; options?: unknown }) => unknown) | null = null;
   /** Cached project icon paths: dir → absolute file path (null = scanned, not found) */
@@ -2352,6 +2430,12 @@ export class InstanceManager extends EventEmitter {
         return this.accounts.get(id) ? id : DEFAULT_ACCOUNT_ID;
       },
       listProviders: (accountId) => this.listOrchestrationProviders(accountId),
+      delegateTask: (parentId, request) => this.delegateTask(parentId, request),
+      getDelegatedTask: (taskId) => this.getDelegatedTask(taskId),
+      waitForDelegatedTask: (taskId, timeoutMs, signal) =>
+        this.waitForDelegatedTask(taskId, timeoutMs, signal),
+      cancelDelegatedTask: (taskId) =>
+        this.cancelDelegatedTask(taskId, "cancelled by the delegating chat"),
     };
   }
 
@@ -2397,6 +2481,599 @@ export class InstanceManager extends EventEmitter {
     );
   }
 
+  // ===========================================================================
+  // Relay-delegated tasks (`delegate_task`)
+  // ===========================================================================
+
+  /**
+   * Start a child chat for `task` on behalf of `parentId`. The child inherits
+   * the parent's account, Space, and checkout; runs at the parent's runtime
+   * mode or narrower; and receives only the task text. Idempotent per
+   * `clientRequestId`.
+   */
+  async delegateTask(parentId: string, request: DelegateTaskRequest): Promise<DelegatedTaskRecord> {
+    const parent = this.instances.get(parentId);
+    if (!parent || parent.info.external) {
+      throw new McpToolError("parent_not_active", "This chat can't delegate right now.");
+    }
+    if (request.clientRequestId) {
+      const existing = this.db.findDelegatedTaskByRequest(parentId, request.clientRequestId);
+      if (existing) return existing;
+    }
+    try {
+      this.assertSpaceWritable(parent);
+    } catch (err) {
+      throw new McpToolError("parent_not_active", errorMessage(err));
+    }
+
+    const provider = request.provider ?? parent.info.provider;
+    const descriptor = this.getAvailableProviders().find((p) => p.provider === provider);
+    if (!descriptor) {
+      throw new McpToolError("provider_unavailable", `Provider ${provider} is not available.`);
+    }
+    const accountId = parent.info.accountId;
+    const login = this.accounts.resolveLogin(accountId, provider);
+    if (!login.available) {
+      throw new McpToolError(
+        "provider_unavailable_in_account",
+        `This account has no ${descriptor.label} login.`,
+      );
+    }
+    const sameProvider = provider === parent.info.provider;
+    let model = request.model ?? (sameProvider ? parent.info.preferredModel : undefined);
+    if (request.model) {
+      const models = await this.getProviderModels(provider, login.configDir).catch(() => []);
+      if (models.length > 0 && !models.some((m) => m.id === request.model)) {
+        throw new McpToolError(
+          "model_unavailable",
+          `${descriptor.label} doesn't offer model ${request.model}. Call relay_capabilities for the list.`,
+        );
+      }
+      model = request.model;
+    }
+    const offeredModes = Object.keys(
+      descriptor.capabilities.runtimeModes ?? {},
+    ) as ProviderRuntimeMode[];
+    const mode = resolveChildRuntimeMode(
+      parent.info.runtimeMode ?? this.baseConfig.defaultRuntimeMode,
+      request.runtimeMode,
+      offeredModes,
+    );
+    if (!mode.ok) throw new McpToolError(mode.code, mode.message);
+
+    // The delegate_task call is already in the parent's stream; let the
+    // parent's queued events land so the card can anchor to it.
+    const originToolUseId = await this.enqueueInstanceMutation(parentId, (live) =>
+      this.findDelegationToolUse(live),
+    );
+
+    // Re-check after the awaits: a concurrent retry may have won. From here
+    // to the insert is synchronous, so the check holds.
+    if (request.clientRequestId) {
+      const existing = this.db.findDelegatedTaskByRequest(parentId, request.clientRequestId);
+      if (existing) return existing;
+    }
+    const taskId = randomUUID();
+    const title = request.title?.trim() || titleFromTask(request.task);
+    let child: InstanceInfo;
+    try {
+      child = this.createInstance({
+        provider,
+        model,
+        runtimeMode: mode.mode,
+        modelOptions: sameProvider ? parent.info.modelOptions : undefined,
+        spaceId: parent.info.spaceId,
+        workingDirectory: parent.info.workingDirectory,
+        accountId,
+        name: title,
+        delegation: {
+          parentInstanceId: parentId,
+          taskId,
+          ...(request.role ? { role: request.role } : {}),
+        },
+      });
+    } catch (err) {
+      if (err instanceof MaxProcessesError) {
+        throw new McpToolError(
+          "capacity",
+          "Relay is at its concurrent-chat limit. Report this to the user; don't retry.",
+        );
+      }
+      if (err instanceof ProviderUnavailableInAccountError) {
+        throw new McpToolError("provider_unavailable_in_account", err.message);
+      }
+      throw err;
+    }
+
+    const record: DelegatedTaskRecord = {
+      id: taskId,
+      parentInstanceId: parentId,
+      childInstanceId: child.id,
+      status: "running",
+      title,
+      task: request.task,
+      ...(request.role ? { role: request.role } : {}),
+      createdAt: Date.now(),
+      ...(request.clientRequestId ? { clientRequestId: request.clientRequestId } : {}),
+      ...(originToolUseId ? { originToolUseId } : {}),
+    };
+    this.db.insertDelegatedTask(record);
+    this.emitDelegatedTaskUpdate(record);
+    this.baseConfig.logger.info(
+      `[InstanceManager] Chat ${parentId} delegated task ${taskId} to ${provider} chat ${child.id}`,
+    );
+
+    try {
+      await this.sendMessage(child.id, request.task);
+    } catch (err) {
+      this.finishDelegatedTask(record.id, {
+        status: "failed",
+        statusDetail: `Couldn't start the child chat: ${errorMessage(err)}`,
+        drop: true,
+      });
+    }
+    return this.db.getDelegatedTask(record.id) ?? record;
+  }
+
+  getDelegatedTask(taskId: string): DelegatedTaskRecord | undefined {
+    return this.db.getDelegatedTask(taskId) ?? undefined;
+  }
+
+  /**
+   * Resolve once the task ends, or with its running state after `timeoutMs`
+   * or when `signal` aborts (the caller hung up). Never cancels. A result
+   * handed back here counts as delivered — the wake that would otherwise
+   * follow is skipped — but only while the caller is still listening.
+   */
+  waitForDelegatedTask(
+    taskId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<DelegatedTaskRecord> {
+    const current = this.db.getDelegatedTask(taskId);
+    if (!current) return Promise.reject(new Error(`Unknown task ${taskId}`));
+    if (current.status !== "running") return Promise.resolve(current);
+    return new Promise((resolve) => {
+      let waiters = this.delegatedTaskWaiters.get(taskId);
+      if (!waiters) this.delegatedTaskWaiters.set(taskId, (waiters = new Set()));
+      const done = (task: DelegatedTaskRecord) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        waiters!.delete(done);
+        if (waiters!.size === 0) this.delegatedTaskWaiters.delete(taskId);
+        if (task.status !== "running" && !signal?.aborted) {
+          this.db.markDelegatedTasksDelivered([task.id], Date.now());
+          return resolve(this.db.getDelegatedTask(task.id) ?? task);
+        }
+        resolve(task);
+      };
+      const onAbort = () => done(this.db.getDelegatedTask(taskId) ?? current);
+      const timer = setTimeout(onAbort, timeoutMs);
+      timer.unref?.();
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      waiters.add(done);
+    });
+  }
+
+  /**
+   * Stop a task's child (and its own delegates). The parent is told only when
+   * someone else cancelled (the user from its card); `task_cancel` and the
+   * stop/done/delete cascades already know.
+   */
+  cancelDelegatedTask(
+    taskId: string,
+    reason = "cancelled",
+    options: { notifyParent?: boolean } = {},
+  ): DelegatedTaskRecord {
+    const task = this.db.getDelegatedTask(taskId);
+    if (!task) throw new McpToolError("task_not_found", `No task ${taskId}.`);
+    if (task.status !== "running") return task;
+    const child = this.instances.get(task.childInstanceId);
+    this.finishDelegatedTask(taskId, {
+      status: "cancelled",
+      result: child ? lastAssistantText(child.history) : undefined,
+      statusDetail: reason,
+      drop: !options.notifyParent,
+    });
+    this.haltDelegatedChild(task.childInstanceId);
+    return this.db.getDelegatedTask(taskId) ?? task;
+  }
+
+  /** The task behind a parent's `relay-task:<id>` agent key, if it is one of its own. */
+  private findDelegatedTaskForAgent(
+    parentId: string,
+    agentId: string,
+  ): DelegatedTaskRecord | undefined {
+    const prefix = relayTaskAgentKey("");
+    if (!agentId.startsWith(prefix)) return undefined;
+    const task = this.db.getDelegatedTask(agentId.slice(prefix.length));
+    return task?.parentInstanceId === parentId ? task : undefined;
+  }
+
+  private delegatedChildNote(delegation: ChatDelegation): string {
+    const parent = this.instances.get(delegation.parentInstanceId);
+    return buildDelegatedChildNote({
+      id: delegation.parentInstanceId,
+      name: parent?.info.name ?? "the delegating chat",
+    });
+  }
+
+  /** The newest `delegate_task` tool call in the parent's stream not yet tied to a task. */
+  private findDelegationToolUse(parent: Instance): string | undefined {
+    const anchored = new Set(
+      this.db
+        .listDelegatedTasksForParent(parent.info.id)
+        .map((task) => task.originToolUseId)
+        .filter(Boolean),
+    );
+    for (let i = parent.history.length - 1; i >= 0; i--) {
+      const message = parent.history[i].message;
+      if (message.type !== "activity" || message.activity !== "tool_use" || message.agentId) {
+        continue;
+      }
+      const isDelegation =
+        message.tool === `${RELAY_MCP_CLAUDE_TOOL_PREFIX}delegate_task` ||
+        (message.mcp?.serverName === RELAY_MCP_SERVER_NAME &&
+          message.mcp.toolName === "delegate_task");
+      if (isDelegation && message.toolUseId && !anchored.has(message.toolUseId)) {
+        return message.toolUseId;
+      }
+    }
+    return undefined;
+  }
+
+  /** Broadcast a task's state as a relay-origin agent on its parent (card + sidecar). */
+  private emitDelegatedTaskUpdate(task: DelegatedTaskRecord): void {
+    const parent = this.instances.get(task.parentInstanceId);
+    if (!parent) return;
+    const message: AgentUpdateMessage = {
+      type: "agent_update",
+      agent: agentInfoForTask(task, this.instances.get(task.childInstanceId)?.info),
+      instanceId: parent.info.id,
+    };
+    this.mergeInstanceAgent(parent, message.agent);
+    // History only once hydrated; an unhydrated parent replays it from the table.
+    // No lastActivityAt bump: a child's progress must not revive a done parent.
+    if (parent.hydrated) this.pushHistory(parent, message);
+    this.emit("instance:agent_update", parent.info.id, message);
+  }
+
+  /**
+   * Move a running task to a terminal state, once. `drop` records the result
+   * without waking the parent (it asked, or it was put away).
+   */
+  private finishDelegatedTask(
+    taskId: string,
+    outcome: {
+      status: "completed" | "failed" | "cancelled";
+      result?: string;
+      resultIsError?: boolean;
+      statusDetail?: string;
+      drop?: boolean;
+    },
+  ): DelegatedTaskRecord | undefined {
+    const endedAt = Date.now();
+    const waiters = this.delegatedTaskWaiters.get(taskId);
+    // A live `wait` caller marks delivery itself; the wake is scheduled anyway
+    // and finds nothing owed if it did.
+    const deliveredAt = outcome.drop ? endedAt : undefined;
+    const changed = this.db.finishDelegatedTask(taskId, {
+      status: outcome.status,
+      result: outcome.result,
+      resultIsError: outcome.resultIsError,
+      statusDetail: outcome.statusDetail,
+      endedAt,
+      deliveredAt,
+    });
+    if (!changed) return undefined;
+    const task = this.db.getDelegatedTask(taskId);
+    if (!task) return undefined;
+    this.emitDelegatedTaskUpdate(task);
+    for (const resolve of waiters ?? []) resolve(task);
+    if (deliveredAt === undefined) this.scheduleTaskWake(task.parentInstanceId);
+    return task;
+  }
+
+  /** A child chat's turn ended: publish its reply as the task result. */
+  private onDelegatedChildTurnEnd(
+    child: Instance,
+    ending: { aborted?: boolean; exitError?: string },
+  ): void {
+    const taskId = child.info.delegation?.taskId;
+    if (!taskId) return;
+    // Still waiting on the user (approval, question, plan): not finished yet.
+    if (child.info.pendingPermission || child.info.pendingTool || child.info.pendingPlan) return;
+    // A provider can report idle before the task was ever dispatched.
+    if (!child.history.some((entry) => entry.message.type === "user")) return;
+    const result = lastAssistantText(child.history);
+    if (ending.exitError) {
+      this.finishDelegatedTask(taskId, {
+        status: "failed",
+        result,
+        resultIsError: true,
+        statusDetail: ending.exitError,
+      });
+    } else if (ending.aborted) {
+      this.finishDelegatedTask(taskId, {
+        status: "cancelled",
+        result,
+        statusDetail: "interrupted in the child chat",
+      });
+    } else if (result) {
+      this.finishDelegatedTask(taskId, { status: "completed", result });
+    } else {
+      this.finishDelegatedTask(taskId, {
+        status: "failed",
+        statusDetail: "the child chat ended its turn without a reply",
+      });
+    }
+  }
+
+  /**
+   * Cancel every running task this chat delegated, depth first, without
+   * waking it: it was stopped, put away, or deleted.
+   */
+  private cascadeDelegatedTasks(parentId: string, reason: string): void {
+    this.dropQueuedTaskWake(parentId);
+    for (const task of this.db.listDelegatedTasksForParent(parentId)) {
+      if (task.status === "running") this.cancelDelegatedTask(task.id, reason);
+      else if (task.deliveredAt === undefined) {
+        this.db.markDelegatedTasksDelivered([task.id], Date.now());
+      }
+    }
+  }
+
+  /** Stop a child chat through the normal path (which cascades to its own delegates). */
+  private haltDelegatedChild(childId: string): void {
+    const child = this.instances.get(childId);
+    if (!child) return;
+    if (this.stopInstance(childId)) return;
+    // Not resumable yet (no session id): interrupt the turn instead.
+    if (child.process?.isProcessing) {
+      child.cancelledByUser = true;
+      try {
+        child.process.interrupt();
+      } catch (err) {
+        this.baseConfig.logger.warn(`[InstanceManager] Failed to interrupt ${childId}: ${err}`);
+      }
+    }
+    this.cascadeDelegatedTasks(childId, "parent task cancelled");
+  }
+
+  private clearDelegationTimers(): void {
+    if (this.taskRecoveryTimer) clearTimeout(this.taskRecoveryTimer);
+    this.taskRecoveryTimer = null;
+    for (const timer of this.taskWakeTimers.values()) clearTimeout(timer);
+    this.taskWakeTimers.clear();
+  }
+
+  private scheduleTaskWake(parentId: string): void {
+    // Coalesce near-simultaneous completions into one wake.
+    if (this.taskWakeTimers.has(parentId)) return;
+    const timer = setTimeout(() => {
+      this.taskWakeTimers.delete(parentId);
+      void this.deliverTaskWakes(parentId);
+    }, TASK_WAKE_COALESCE_MS);
+    timer.unref?.();
+    this.taskWakeTimers.set(parentId, timer);
+  }
+
+  /**
+   * Tell the parent which of its tasks ended: one message covering every
+   * undelivered result, sent now when idle or queued behind its turn. A
+   * still-queued earlier wake is replaced, never duplicated. Rows count as
+   * delivered only once the message is dispatched, so a restart re-offers.
+   */
+  private async deliverTaskWakes(parentId: string): Promise<void> {
+    if (this.shuttingDown || !this.instances.has(parentId)) return;
+    await this.enqueueInstanceMutation(parentId, async (parent) => {
+      const pending = this.db
+        .listDelegatedTasksForParent(parentId)
+        .filter((task) => task.status !== "running" && task.deliveredAt === undefined);
+      if (pending.length === 0) return;
+      if (this.isChatDone(parent) || !this.isSpaceWritable(parent)) {
+        // Record, don't revive: opening the parent shows the finished cards.
+        this.db.markDelegatedTasksDelivered(
+          pending.map((task) => task.id),
+          Date.now(),
+        );
+        return;
+      }
+      // The parent is waiting on the user (plan review, approval, question):
+      // a message now would answer for them — dispatching into a pending plan
+      // approves it. The parent's next turn end re-offers the wake.
+      if (
+        !parent.process?.isProcessing &&
+        (parent.info.pendingPlan || parent.info.pendingPermission || parent.info.pendingTool)
+      ) {
+        return;
+      }
+      // An errored parent's transport may be dead; its next turn end re-offers.
+      if (parent.info.status === "error") return;
+      this.dropQueuedTaskWakeLocked(parentId, parent);
+      const text = buildTaskWakeMessage(pending);
+      const taskIds = pending.map((task) => task.id);
+      if (parent.process?.isProcessing) {
+        const queuedId = this.queueUserMessageLocked(parentId, parent, text);
+        this.queuedTaskWakes.set(parentId, { queuedId, taskIds });
+        return;
+      }
+      await this.dispatchUserMessageLocked(parentId, parent, text);
+      this.db.markDelegatedTasksDelivered(taskIds, Date.now());
+      this.taskWakeFailures.delete(parentId);
+    }).catch((err) => {
+      const failures = (this.taskWakeFailures.get(parentId) ?? 0) + 1;
+      this.baseConfig.logger.warn(
+        `[InstanceManager] Task wake for ${parentId} failed (attempt ${failures}): ${err}`,
+      );
+      if (failures < TASK_WAKE_MAX_ATTEMPTS) {
+        this.taskWakeFailures.set(parentId, failures);
+        setTimeout(() => this.scheduleTaskWake(parentId), failures * 5_000).unref?.();
+        return;
+      }
+      // Give up: the results stay on the cards and in task_status.
+      this.taskWakeFailures.delete(parentId);
+      try {
+        const owed = this.db
+          .listDelegatedTasksForParent(parentId)
+          .filter((task) => task.status !== "running" && task.deliveredAt === undefined);
+        this.db.markDelegatedTasksDelivered(
+          owed.map((task) => task.id),
+          Date.now(),
+        );
+      } catch {
+        // DB closed during shutdown
+      }
+    });
+  }
+
+  /** Re-offer results a parent is still owed (e.g. after its pending input cleared). */
+  private offerOwedTaskWakes(parentId: string): void {
+    try {
+      const owed = this.db
+        .listDelegatedTasksForParent(parentId)
+        .some((task) => task.status !== "running" && task.deliveredAt === undefined);
+      if (owed) this.scheduleTaskWake(parentId);
+    } catch {
+      // DB closed during shutdown
+    }
+  }
+
+  /**
+   * At turn end, a wake at the head of the queue is never drained directly:
+   * the turn may have just left the parent waiting on the user (a plan to
+   * review — Claude's is only detected in the idle branch), and dispatching
+   * would answer for them. It goes back through `deliverTaskWakes`, which
+   * checks.
+   */
+  private deferQueuedTaskWake(parentId: string, parent: Instance): void {
+    const queued = this.queuedTaskWakes.get(parentId);
+    // "Send now" on the wake is the user choosing it: let it go through.
+    if (parent.sendNowQueuedId && parent.sendNowQueuedId === queued?.queuedId) return;
+    if (queued && parent.pendingMessages?.[0]?.id === queued.queuedId) {
+      this.dropQueuedTaskWakeLocked(parentId, parent);
+      this.scheduleTaskWake(parentId);
+    }
+  }
+
+  /** A queued wake left the queue without reaching the provider. */
+  private forgetQueuedTaskWake(
+    parentId: string,
+    removedIds: readonly string[],
+    disposition: "reoffer" | "dismissed",
+  ): void {
+    const queued = this.queuedTaskWakes.get(parentId);
+    if (!queued || !removedIds.includes(queued.queuedId)) return;
+    this.queuedTaskWakes.delete(parentId);
+    if (disposition === "dismissed") {
+      this.db.markDelegatedTasksDelivered(queued.taskIds, Date.now());
+    } else {
+      this.scheduleTaskWake(parentId);
+    }
+  }
+
+  /** A queued wake left the queue for the provider: its tasks are delivered. */
+  private noteTaskWakeDispatched(
+    parentId: string,
+    dequeuedIds: readonly string[] | undefined,
+  ): void {
+    const queued = this.queuedTaskWakes.get(parentId);
+    if (!queued || !dequeuedIds?.includes(queued.queuedId)) return;
+    this.queuedTaskWakes.delete(parentId);
+    this.db.markDelegatedTasksDelivered(queued.taskIds, Date.now());
+  }
+
+  private dropQueuedTaskWake(parentId: string): void {
+    const parent = this.instances.get(parentId);
+    if (parent) this.dropQueuedTaskWakeLocked(parentId, parent);
+    const timer = this.taskWakeTimers.get(parentId);
+    if (timer) {
+      clearTimeout(timer);
+      this.taskWakeTimers.delete(parentId);
+    }
+  }
+
+  private dropQueuedTaskWakeLocked(parentId: string, parent: Instance): void {
+    const queued = this.queuedTaskWakes.get(parentId);
+    if (!queued) return;
+    this.queuedTaskWakes.delete(parentId);
+    const index = parent.pendingMessages?.findIndex((m) => m.id === queued.queuedId) ?? -1;
+    if (index === -1 || !parent.pendingMessages) return;
+    parent.pendingMessages.splice(index, 1);
+    if (parent.pendingMessages.length === 0) parent.pendingMessages = undefined;
+    parent.info.queuedMessageCount = parent.pendingMessages?.length || undefined;
+    this.emit("instance:queued_removed", parentId, {
+      type: "queued_removed",
+      instanceId: parentId,
+      queuedId: queued.queuedId,
+    });
+    this.emitInstanceStatus(parent);
+  }
+
+  /**
+   * After a restart: fail tasks whose child is gone, and re-offer results
+   * that ended but never reached their parent.
+   */
+  private recoverDelegatedTasks(): void {
+    for (const task of this.db.listRunningDelegatedTasks()) {
+      const child = this.instances.get(task.childInstanceId);
+      if (!child) {
+        this.finishDelegatedTask(task.id, {
+          status: "failed",
+          statusDetail: "the child chat no longer exists",
+        });
+      } else if (!child.process && !this.restartContinuedIds.has(task.childInstanceId)) {
+        // Not mid-turn at shutdown (e.g. waiting on input, which isn't
+        // persisted), so nothing will end its turn: tell the parent.
+        this.finishDelegatedTask(task.id, {
+          status: "failed",
+          statusDetail: "interrupted by a Relay restart; the child chat can be resumed",
+        });
+      }
+    }
+    this.restartContinuedIds.clear();
+    const parents = new Set(this.db.listUndeliveredDelegatedTasks().map((t) => t.parentInstanceId));
+    for (const parentId of parents) this.scheduleTaskWake(parentId);
+  }
+
+  /** Parent history entries for its tasks, rebuilt from the table (transcripts never hold them). */
+  private delegatedTaskHistoryEntries(parentId: string): HistoryEntry[] {
+    let tasks: DelegatedTaskRecord[];
+    try {
+      tasks = this.db.listDelegatedTasksForParent(parentId);
+    } catch {
+      return [];
+    }
+    return tasks.map((task) => ({
+      timestamp: task.createdAt,
+      message: {
+        type: "agent_update",
+        agent: agentInfoForTask(task, this.instances.get(task.childInstanceId)?.info),
+        instanceId: parentId,
+      } satisfies AgentUpdateMessage,
+    }));
+  }
+
+  private isChatDone(instance: Instance): boolean {
+    const doneAt = instance.info.doneAt;
+    if (doneAt === undefined) return false;
+    const recency = Math.max(
+      instance.info.lastMessage?.timestamp ?? 0,
+      instance.info.lastActivityAt ?? 0,
+    );
+    return recency <= doneAt;
+  }
+
+  private isSpaceWritable(instance: Instance): boolean {
+    try {
+      this.assertSpaceWritable(instance);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private buildBootstrapContext(
     project: Project | undefined,
     options?: {
@@ -2404,6 +3081,8 @@ export class InstanceManager extends EventEmitter {
       workingDirectory?: string;
       includeProjectInstructions?: boolean;
       includeTaskContext?: boolean;
+      /** Tells a delegated child chat that it is one (see `buildDelegatedChildNote`). */
+      delegatedChildNote?: string;
     },
   ): ProviderSessionBootstrap | undefined {
     const customInstructionBlocks = this.getProjectCustomInstructionBlocks(
@@ -2418,6 +3097,15 @@ export class InstanceManager extends EventEmitter {
       options?.workingDirectory,
     );
     if (spaceBlock) relayInstructionBlocks.push(spaceBlock);
+    if (options?.delegatedChildNote) {
+      relayInstructionBlocks.push({
+        key: "relay-delegated-child",
+        kind: DELEGATED_CHILD_BLOCK_KIND,
+        title: "Delegated task",
+        source: "Relay",
+        text: options.delegatedChildNote,
+      });
+    }
 
     return buildSessionBootstrapContext({
       customInstructionBlocks,
@@ -2614,6 +3302,8 @@ export class InstanceManager extends EventEmitter {
     review?: import("#core/types.js").ReviewSessionInfo;
     /** Account the chat is created in (`Account.id`); absent/unknown = the default account. */
     accountId?: string;
+    /** Set when another chat delegates this one (`delegate_task`). */
+    delegation?: ChatDelegation;
   }): InstanceInfo {
     if (!this.acceptingMessages) throw new Error("Relay is restarting; retry after it reconnects");
     const activeCount = [...this.instances.values()].filter(
@@ -2771,7 +3461,13 @@ export class InstanceManager extends EventEmitter {
           includeProjectInstructions: false,
           includeTaskContext: false,
         })
-      : this.buildBootstrapContext(project, { spaceId, workingDirectory });
+      : this.buildBootstrapContext(project, {
+          spaceId,
+          workingDirectory,
+          delegatedChildNote: options?.delegation
+            ? this.delegatedChildNote(options.delegation)
+            : undefined,
+        });
 
     const proc = this.createProviderSession(instanceConfig, {
       provider,
@@ -2798,6 +3494,12 @@ export class InstanceManager extends EventEmitter {
       providerBinding.runtimePayload = {
         ...(providerBinding.runtimePayload ?? {}),
         review: options.review,
+      };
+    }
+    if (options?.delegation) {
+      providerBinding.runtimePayload = {
+        ...providerBinding.runtimePayload,
+        delegation: options.delegation,
       };
     }
 
@@ -2839,6 +3541,7 @@ export class InstanceManager extends EventEmitter {
       spaceId,
       sessionContext: deliveredBootstrap ? { bootstrap: deliveredBootstrap } : undefined,
       review: options?.review,
+      delegation: options?.delegation,
     };
 
     const dirBasename = workingDirectory.split("/").pop() || "";
@@ -2997,6 +3700,24 @@ export class InstanceManager extends EventEmitter {
       }
     }
 
+    // Delegated children live and die with their parent (recursively). A
+    // child deleted on its own ends its task; the parent keeps the record.
+    this.cascadeDelegatedTasks(id, "the delegating chat was deleted");
+    for (const task of this.db.listDelegatedTasksForParent(id)) {
+      if (this.instances.has(task.childInstanceId)) {
+        this.removeInstance(task.childInstanceId, purge ? { purge: true } : undefined);
+      }
+    }
+    this.db.deleteDelegatedTasksForParent(id);
+    this.dropQueuedTaskWake(id);
+    const ownTask = instance.info.delegation?.taskId;
+    if (ownTask) {
+      this.finishDelegatedTask(ownTask, {
+        status: "cancelled",
+        statusDetail: "the child chat was deleted",
+      });
+    }
+
     if (reviewSourceId) {
       const source = this.instances.get(reviewSourceId);
       if (source?.info.reviewInstanceId === id) {
@@ -3075,6 +3796,13 @@ export class InstanceManager extends EventEmitter {
    */
   stopSpaceChats(spaceId: string): number {
     let stopped = 0;
+    // Cancel delegations first, without wakes: a stopped parent woken now would
+    // boot into a worktree that is about to be merged or removed.
+    for (const instance of this.instances.values()) {
+      if (instance.info.spaceId === spaceId) {
+        this.cascadeDelegatedTasks(instance.info.id, "the Space was closed");
+      }
+    }
     for (const instance of this.instances.values()) {
       if (instance.info.spaceId !== spaceId || !instance.process) continue;
       if (this.stopInstance(instance.info.id)) stopped++;
@@ -3102,6 +3830,18 @@ export class InstanceManager extends EventEmitter {
     const resumable =
       instance.sessionId ?? instance.info.sessionId ?? instance.providerBinding?.providerSessionId;
     if (!resumable) return false;
+
+    // Stopping a chat stops what it delegated, and a stopped child's task ends.
+    // (Only a stop that stops something: a no-op stop must not cancel children.)
+    this.cascadeDelegatedTasks(id, "the delegating chat was stopped");
+    const ownTask = instance.info.delegation?.taskId;
+    if (ownTask) {
+      this.finishDelegatedTask(ownTask, {
+        status: "cancelled",
+        result: lastAssistantText(instance.history),
+        statusDetail: "stopped in the child chat",
+      });
+    }
 
     try {
       instance.process.close();
@@ -3808,7 +4548,10 @@ export class InstanceManager extends EventEmitter {
     let shouldInjectTaskContext = false;
     let customInstructions: string | null = null;
 
-    if (!instance.taskContextInjected && !internal && instance.info.projectId) {
+    // A task wake is an agent note, never the user request the first-turn
+    // wrappers frame — and wrapping would hide its marker from replay.
+    const isTaskWake = parseTaskWakeMessage(text) !== null;
+    if (!instance.taskContextInjected && !internal && !isTaskWake && instance.info.projectId) {
       instance.taskContextInjected = true;
       const taskProject = this._projectManager.getProject(instance.info.projectId);
       if (taskProject && hasTasks(this.resolveRunnableCwd(instance))) {
@@ -3816,7 +4559,7 @@ export class InstanceManager extends EventEmitter {
       }
     }
 
-    if (!instance.customInstructionsInjected && !internal) {
+    if (!instance.customInstructionsInjected && !internal && !isTaskWake) {
       instance.customInstructionsInjected = true;
       const project = instance.info.projectId
         ? this._projectManager.getProject(instance.info.projectId)
@@ -3863,15 +4606,19 @@ export class InstanceManager extends EventEmitter {
       outboundMessage = buildCustomInstructionsPrompt(outboundMessage, customInstructions);
     }
 
+    // A task wake is an agent note from the delegated chat, never a human turn.
+    const wake = parseTaskWakeMessage(messageText);
     const userMessage: UserMessage = {
       type: "user",
-      text: messageText,
+      text: wake ? wake.body : messageText,
       images,
       attachments,
       instanceId: id,
       internal,
       ...(dequeuedIds?.length ? { dequeuedIds } : {}),
+      ...(wake ? { author: { kind: "agent", name: wake.name } } : {}),
     };
+    this.noteTaskWakeDispatched(id, dequeuedIds);
     // Turn-start worktree baseline, before the provider sees the message. A
     // dispatch into a turn that is still tracked (queued drain, interrupt-to-
     // send, a request reply) keeps the existing baseline.
@@ -4066,42 +4813,56 @@ export class InstanceManager extends EventEmitter {
       // If the agent is mid-turn, queue the message for delivery when the turn ends
       if (instance.process?.isProcessing && !instance.info.external) {
         if (!allowQueue) throw new Error("Chat is busy; try again when the current turn finishes");
-        if (!instance.pendingMessages) instance.pendingMessages = [];
-        const queuedId = randomUUID();
-        instance.pendingMessages.push({ id: queuedId, text, images, attachments, internal });
-
-        // Emit to the UI so the queued message appears in the chat immediately,
-        // but do NOT push to history — dispatchUserMessageLocked will create
-        // the real history entry when the queue is drained.
-        // Apply the same marker transform that dispatchUserMessageLocked uses,
-        // so the placeholder text is self-contained and renderable.
-        let displayText = text;
-        if (images && images.length > 0) {
-          const markers = images.map((p) => `[Image: source: ${p}]`).join("\n");
-          displayText = displayText ? `${displayText}\n${markers}` : markers;
-        }
-        if (attachments && attachments.length > 0) {
-          const markers = attachments.map((p) => `[File: source: ${p}]`).join("\n");
-          displayText = displayText ? `${displayText}\n${markers}` : markers;
-        }
-        const userMessage: import("#core/types.js").UserMessage = {
-          type: "user",
-          text: displayText,
-          images,
-          attachments,
-          instanceId: id,
-          internal,
-          queued: true,
-          queuedId,
-          queuedSourceText: text,
-        };
-        this.emit("instance:user", id, userMessage);
-        instance.info.queuedMessageCount = instance.pendingMessages.length;
-        this.emitInstanceStatus(instance);
+        this.queueUserMessageLocked(id, instance, text, images, internal, attachments);
         return undefined;
       }
       return this.dispatchUserMessageLocked(id, instance, text, images, internal, attachments);
     });
+  }
+
+  /** Queue a message behind the current turn; returns its queued id. */
+  private queueUserMessageLocked(
+    id: string,
+    instance: Instance,
+    text: string,
+    images?: string[],
+    internal?: boolean,
+    attachments?: string[],
+  ): string {
+    if (!instance.pendingMessages) instance.pendingMessages = [];
+    const queuedId = randomUUID();
+    instance.pendingMessages.push({ id: queuedId, text, images, attachments, internal });
+
+    // Emit to the UI so the queued message appears in the chat immediately,
+    // but do NOT push to history — dispatchUserMessageLocked will create
+    // the real history entry when the queue is drained.
+    // Apply the same marker transform that dispatchUserMessageLocked uses,
+    // so the placeholder text is self-contained and renderable.
+    const wake = parseTaskWakeMessage(text);
+    let displayText = wake ? wake.body : text;
+    if (images && images.length > 0) {
+      const markers = images.map((p) => `[Image: source: ${p}]`).join("\n");
+      displayText = displayText ? `${displayText}\n${markers}` : markers;
+    }
+    if (attachments && attachments.length > 0) {
+      const markers = attachments.map((p) => `[File: source: ${p}]`).join("\n");
+      displayText = displayText ? `${displayText}\n${markers}` : markers;
+    }
+    const userMessage: import("#core/types.js").UserMessage = {
+      type: "user",
+      text: displayText,
+      images,
+      attachments,
+      instanceId: id,
+      internal,
+      queued: true,
+      queuedId,
+      queuedSourceText: text,
+    };
+    this.emit("instance:user", id, userMessage);
+    instance.info.queuedMessageCount = instance.pendingMessages.length;
+    this.emitInstanceStatus(instance);
+    return queuedId;
   }
 
   /**
@@ -4124,6 +4885,7 @@ export class InstanceManager extends EventEmitter {
       if (!instance.process) throw new Error("Instance is not running");
       instance.cancelledByUser = true;
       instance.process.interrupt();
+      this.cascadeDelegatedTasks(id, "the delegating chat was interrupted");
     });
   }
 
@@ -4167,9 +4929,19 @@ export class InstanceManager extends EventEmitter {
       ? queue.findIndex((m) => m.id === instance.sendNowQueuedId)
       : -1;
     instance.sendNowQueuedId = undefined;
-    const taken = pickedIndex === -1 ? queue : queue.splice(pickedIndex, 1);
+    // A task wake is an agent note: never coalesce it with human messages.
+    // Take the messages before it, or the wake alone when it leads.
+    const wakeId = this.queuedTaskWakes.get(instance.info.id)?.queuedId;
+    const wakeIndex = wakeId ? queue.findIndex((m) => m.id === wakeId) : -1;
+    const splitAtWake = pickedIndex === -1 && wakeIndex !== -1 && queue.length > 1;
+    const taken = splitAtWake
+      ? queue.splice(0, wakeIndex === 0 ? 1 : wakeIndex)
+      : pickedIndex === -1
+        ? queue
+        : queue.splice(pickedIndex, 1);
     const coalesced = this.coalescePendingMessages(taken);
-    instance.pendingMessages = pickedIndex === -1 || queue.length === 0 ? undefined : queue;
+    instance.pendingMessages =
+      (pickedIndex === -1 && !splitAtWake) || queue.length === 0 ? undefined : queue;
     instance.info.queuedMessageCount = instance.pendingMessages?.length || undefined;
     return { ...coalesced, dequeuedIds: taken.map((m) => m.id) };
   }
@@ -4564,6 +5336,12 @@ export class InstanceManager extends EventEmitter {
    * or agent is unknown or no transcript is available.
    */
   async readAgentHistory(id: string, agentId: string): Promise<HistoryEntry[] | null> {
+    // A Relay-delegated child is a chat of its own: its history is the chat's.
+    const relayTask = this.findDelegatedTaskForAgent(id, agentId);
+    if (relayTask) {
+      if (!this.instances.has(relayTask.childInstanceId)) return null;
+      return this.getHistory(relayTask.childInstanceId);
+    }
     const context = this.getAgentReadContext(id, agentId);
     if (!context) return null;
     const instance = this.instances.get(id)!;
@@ -4740,6 +5518,8 @@ export class InstanceManager extends EventEmitter {
       const index = queue?.findIndex((m) => m.id === queuedId) ?? -1;
       if (!queue || index === -1) throw new Error("Message is no longer queued");
       queue.splice(index, 1);
+      // Removing a queued task wake dismisses it: the results stay on the cards.
+      this.forgetQueuedTaskWake(id, [queuedId], "dismissed");
       if (queue.length === 0) instance.pendingMessages = undefined;
       instance.info.queuedMessageCount = instance.pendingMessages?.length || undefined;
       this.emit("instance:queued_removed", id, {
@@ -4869,11 +5649,17 @@ export class InstanceManager extends EventEmitter {
     try {
       rows = this.db.getSessionEvents(instanceId);
     } catch {
-      return history;
+      rows = [];
     }
-    if (rows.length === 0) return history;
+    const taskEntries = this.delegatedTaskHistoryEntries(instanceId);
+    // Task wakes replay from the transcript as plain user text; restore their author.
+    const replayed = history.some((entry) => isTaskWakeEntry(entry))
+      ? history.map((entry) => (isTaskWakeEntry(entry) ? asTaskWakeNote(entry) : entry))
+      : history;
+    if (rows.length === 0 && taskEntries.length === 0) return replayed;
 
-    const merged = [...history];
+    const merged = [...replayed];
+    for (const entry of taskEntries) insertByTimestamp(merged, entry);
     for (const row of rows) {
       // Bookkeeping rows (git-detected files) fold into file state, not history.
       if (row.event === FILES_DETECTED_EVENT) continue;
@@ -5788,6 +6574,7 @@ export class InstanceManager extends EventEmitter {
     this.fileStatsDebouncer.cancelAll();
     await this.flushInstanceMutations();
     this.shuttingDown = true;
+    this.clearDelegationTimers();
 
     const instances = [...this.instances.values()];
     const processingIds: string[] = [];
@@ -5856,6 +6643,7 @@ export class InstanceManager extends EventEmitter {
 
   stopAll(): void {
     this.shuttingDown = true;
+    this.clearDelegationTimers();
     this.fileStatsDebouncer.cancelAll();
     // Flush a pending (debounced) provider-state write now rather than
     // losing the last half-second of account/rate-limit state — or letting
@@ -9122,6 +9910,7 @@ export class InstanceManager extends EventEmitter {
         builtRestore.info.projectId,
       )?.slug;
     }
+    builtRestore.info.delegation = getDelegationFromRuntimePayload(runtimePayload);
     // Rows written before accounts carried an id: the bound login names it.
     // The derived id is persisted below (the normal save path) so summaries
     // and search read it directly on the next run instead of re-deriving.
@@ -9243,6 +10032,18 @@ export class InstanceManager extends EventEmitter {
 
     // Auto-continue instances that were mid-turn when the server shut down
     this.autoContinueAfterRestart();
+
+    // Results that ended but never reached their parent are re-offered.
+    this.taskRecoveryTimer = setTimeout(() => {
+      this.taskRecoveryTimer = null;
+      if (this.shuttingDown) return;
+      try {
+        this.recoverDelegatedTasks();
+      } catch (err) {
+        this.baseConfig.logger.warn(`[InstanceManager] Delegated-task recovery failed: ${err}`);
+      }
+    }, 1500);
+    this.taskRecoveryTimer.unref?.();
 
     // Rebuild the FTS search index on startup for freshness.
     // Populate search_content with transcript text for all instances —
@@ -9376,6 +10177,8 @@ export class InstanceManager extends EventEmitter {
     }
 
     if (!processingIds.length) return;
+    // Delegated-task recovery treats these children as still finishing.
+    this.restartContinuedIds = new Set(processingIds);
 
     // Delay briefly to let the server finish starting up
     setTimeout(() => {
@@ -9477,6 +10280,7 @@ export class InstanceManager extends EventEmitter {
             }
           }
 
+          this.deferQueuedTaskWake(id, live);
           if (live.pendingRetry) {
             const retryText = live.pendingRetry;
             live.pendingRetry = undefined;
@@ -9515,6 +10319,8 @@ export class InstanceManager extends EventEmitter {
             this.refreshPendingPlan(live);
             this.setStatus(live, "idle");
             this.doRefreshTitle(live);
+            this.onDelegatedChildTurnEnd(live, { aborted: message.aborted });
+            this.offerOwedTaskWakes(id);
           }
         } else {
           this.setStatus(live, "processing");
@@ -9951,11 +10757,23 @@ export class InstanceManager extends EventEmitter {
         } else {
           this.setStatus(live, "stopped");
         }
+        this.onDelegatedChildTurnEnd(live, {
+          aborted: wasCancelledByUser,
+          exitError:
+            message.code !== 0 && !wasCancelledByUser
+              ? `the child chat exited with code ${message.code}`
+              : undefined,
+        });
         // A turn cut short by an exit still changed whatever it changed.
         void this.reconcileTurnWorktree(live);
         // Clear any orphaned queue on non-interrupt exits and broadcast the update
         live.sendNowQueuedId = undefined;
         if (live.pendingMessages?.length) {
+          this.forgetQueuedTaskWake(
+            id,
+            live.pendingMessages.map((m) => m.id),
+            "reoffer",
+          );
           live.pendingMessages = undefined;
           live.info.queuedMessageCount = undefined;
           this.emitInstanceStatus(live);
@@ -10300,6 +11118,9 @@ export class InstanceManager extends EventEmitter {
     const persisted = this.db.setDone(id, doneAt);
     const updatedLive = await this.enqueueInstanceMutation(id, async (instance) => {
       instance.info.doneAt = doneAt ?? undefined;
+      // Putting a chat away cancels what it delegated and drops owed wakes,
+      // so a late completion can't revive it out of Done.
+      if (done) this.cascadeDelegatedTasks(id, "the delegating chat was marked done");
       // stopInstance broadcasts the "stopped" status itself, carrying doneAt.
       if (done && this.stopIdleProcessForDone(instance)) return true;
       this.emitInstanceStatus(instance);
@@ -10337,7 +11158,10 @@ export class InstanceManager extends EventEmitter {
       const instance = this.instances.get(id);
       if (!instance) continue;
       instance.info.doneAt = doneAt ?? undefined;
-      if (done) this.stopIdleProcessForDone(instance);
+      if (done) {
+        this.cascadeDelegatedTasks(id, "the delegating chat was marked done");
+        this.stopIdleProcessForDone(instance);
+      }
       updated.add(id);
     }
     if (updated.size > 0) this.emit("instances:changed");

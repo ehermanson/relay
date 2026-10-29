@@ -13,6 +13,7 @@ import {
 import { AgentStatusBadge } from "@/components/chat/agent-status-badge";
 import { AgentAvatar } from "@/components/chat/agent-avatar";
 import { AgentDetail } from "@/components/chat/agent-detail";
+import { RelayAgentMarker } from "@/components/chat/relay-agent";
 import { AgentCardsProvider, useAgentCards } from "@/components/chat/agent-card-context";
 import { useAgentModelLabel } from "@/hooks/use-agent-model";
 
@@ -108,6 +109,7 @@ function AgentRow({
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
             <span className="truncate text-[0.8125rem] font-medium text-text">{title}</span>
+            {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
             {hasPendingRequest && (
               <ShieldAlert
                 size={11}

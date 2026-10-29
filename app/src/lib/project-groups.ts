@@ -1,5 +1,6 @@
 import type { InstanceInfo, Project } from "@shared/types";
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import { compareChatListOrder } from "@/lib/utils";
 
 function getInstanceProjectDirectory(
@@ -22,7 +23,8 @@ export function groupInstancesByProject(
   const groupMap = new Map<string, InstanceInfo[]>();
 
   for (const instance of instances) {
-    if (isAttachedReviewInstance(instance)) continue;
+    // Delegated children are reached through their parent, never as rows.
+    if (isAttachedReviewInstance(instance) || isDelegatedChildInstance(instance)) continue;
     const dir = getInstanceProjectDirectory(instance, projectById);
     if (registeredDirs.size > 0 && !registeredDirs.has(dir)) {
       continue;

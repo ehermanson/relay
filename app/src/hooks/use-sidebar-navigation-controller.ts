@@ -7,6 +7,7 @@ import { fetchProjectIcons } from "@/lib/api";
 import { getInstanceProjectRouteId, getProjectName } from "@/lib/project-route";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useProjectNavigationModel } from "@/hooks/use-project-navigation-model";
+import { findDelegationRoot, isDelegatedChildInstance } from "@/lib/delegation";
 import type { InstanceInfo, Project, SpaceInfo } from "@shared/types";
 
 export interface SidebarNavigationEntry {
@@ -50,7 +51,12 @@ export function useSidebarNavigationController() {
     const currentIds = new Set(instances.map((instance) => instance.id));
     if (pendingCreate.current && prevInstanceIds.current.size > 0) {
       for (const instance of instances) {
-        if (!prevInstanceIds.current.has(instance.id) && !instance.external) {
+        // An agent's delegated child appearing meanwhile is not the user's new chat.
+        if (
+          !prevInstanceIds.current.has(instance.id) &&
+          !instance.external &&
+          !isDelegatedChildInstance(instance)
+        ) {
           pendingCreate.current = false;
           navigate({
             to: "/projects/$projectId/chats/$chatId",
@@ -92,9 +98,19 @@ export function useSidebarNavigationController() {
     send({ type: "create_instance", workingDirectory: dir, accountId: accountIdParam });
   };
 
+  // A delegated child has no row of its own; while one is open, its nearest
+  // non-delegated ancestor's row is the selected one.
+  const currentChat = currentChatId
+    ? instances.find((instance) => instance.id === currentChatId)
+    : undefined;
+  const selectedChatId =
+    currentChat && isDelegatedChildInstance(currentChat)
+      ? findDelegationRoot(currentChat, new Map(instances.map((i) => [i.id, i]))).id
+      : currentChatId;
+
   return {
     ...navigation,
-    currentChatId,
+    currentChatId: selectedChatId,
     currentProjectId,
     currentSpaceId,
     projectEntries,

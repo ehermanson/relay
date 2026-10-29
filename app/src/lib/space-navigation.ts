@@ -2,6 +2,7 @@ import type { InstanceInfo } from "@shared/types";
 import type { InboxSpaceEntry } from "@/lib/inbox";
 import { getSpaceRoute } from "@/lib/project-route";
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import { getChatRecencyTimestamp } from "@/lib/utils";
 
 const STORAGE_PREFIX = "relay:space:last-chat:";
@@ -29,7 +30,10 @@ export function selectSpaceChat(
   rememberedId: string | null,
 ): string | undefined {
   const eligible = instances.filter(
-    (chat) => chat.spaceId === spaceId && !isAttachedReviewInstance(chat),
+    (chat) =>
+      chat.spaceId === spaceId &&
+      !isAttachedReviewInstance(chat) &&
+      !isDelegatedChildInstance(chat),
   );
   if (rememberedId && eligible.some((chat) => chat.id === rememberedId)) return rememberedId;
   return eligible.sort(

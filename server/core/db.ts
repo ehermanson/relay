@@ -14,7 +14,13 @@ import {
   normalizeConfigDir,
   type DefaultLogins,
 } from "#core/accounts.js";
-import { DEFAULT_ACCOUNT_ID, type Account, type ProviderKind } from "#core/types.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  type Account,
+  type DelegatedTaskInfo,
+  type DelegatedTaskStatus,
+  type ProviderKind,
+} from "#core/types.js";
 
 const CURRENT_SCHEMA_VERSION = 26;
 type SQLiteBindValue = string | number | bigint | null | NodeJS.ArrayBufferView;
@@ -181,6 +187,53 @@ export interface ManagedInstanceRow {
  * appear in the provider's transcript JSONL, so they are persisted here and
  * merged into history at hydrate time by timestamp.
  */
+/** A `delegated_tasks` row: the public task plus delivery bookkeeping. */
+export interface DelegatedTaskRecord extends DelegatedTaskInfo {
+  clientRequestId?: string;
+  /** Parent-stream tool_use the agent card anchors to. */
+  originToolUseId?: string;
+  /** When the result was delivered to the parent, or deliberately dropped. */
+  deliveredAt?: number;
+}
+
+interface DelegatedTaskRow {
+  id: string;
+  parent_instance_id: string;
+  child_instance_id: string;
+  client_request_id: string | null;
+  title: string;
+  task: string;
+  role: string | null;
+  status: DelegatedTaskStatus;
+  result: string | null;
+  result_is_error: number;
+  status_detail: string | null;
+  origin_tool_use_id: string | null;
+  created_at: number;
+  ended_at: number | null;
+  delivered_at: number | null;
+}
+
+function toDelegatedTask(row: DelegatedTaskRow): DelegatedTaskRecord {
+  return {
+    id: row.id,
+    parentInstanceId: row.parent_instance_id,
+    childInstanceId: row.child_instance_id,
+    status: row.status,
+    title: row.title,
+    task: row.task,
+    ...(row.role ? { role: row.role } : {}),
+    ...(row.result != null ? { result: row.result } : {}),
+    ...(row.result_is_error ? { resultIsError: true } : {}),
+    ...(row.status_detail ? { statusDetail: row.status_detail } : {}),
+    createdAt: row.created_at,
+    ...(row.ended_at != null ? { endedAt: row.ended_at } : {}),
+    ...(row.client_request_id ? { clientRequestId: row.client_request_id } : {}),
+    ...(row.origin_tool_use_id ? { originToolUseId: row.origin_tool_use_id } : {}),
+    ...(row.delivered_at != null ? { deliveredAt: row.delivered_at } : {}),
+  };
+}
+
 export interface SessionEventRow {
   id: number;
   instance_id: string;
@@ -791,6 +844,164 @@ export class SessionDB {
       CREATE INDEX IF NOT EXISTS idx_handoffs_source_chat_id ON handoffs(source_chat_id);
       CREATE INDEX IF NOT EXISTS idx_handoffs_target_chat_id ON handoffs(target_chat_id);
     `);
+
+    // Relay-delegated tasks: source of truth for task state and wake delivery
+    // (added without a schema-version bump, which would rebuild the DB).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS delegated_tasks (
+        id TEXT PRIMARY KEY,
+        parent_instance_id TEXT NOT NULL,
+        child_instance_id TEXT NOT NULL,
+        client_request_id TEXT,
+        title TEXT NOT NULL,
+        task TEXT NOT NULL,
+        role TEXT,
+        status TEXT NOT NULL,
+        result TEXT,
+        result_is_error INTEGER NOT NULL DEFAULT 0,
+        status_detail TEXT,
+        origin_tool_use_id TEXT,
+        created_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        delivered_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_delegated_tasks_parent ON delegated_tasks(parent_instance_id);
+      CREATE INDEX IF NOT EXISTS idx_delegated_tasks_child ON delegated_tasks(child_instance_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_delegated_tasks_request
+        ON delegated_tasks(parent_instance_id, client_request_id)
+        WHERE client_request_id IS NOT NULL;
+    `);
+  }
+
+  insertDelegatedTask(task: DelegatedTaskRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO delegated_tasks (id, parent_instance_id, child_instance_id, client_request_id,
+           title, task, role, status, result, result_is_error, status_detail, origin_tool_use_id,
+           created_at, ended_at, delivered_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        task.id,
+        task.parentInstanceId,
+        task.childInstanceId,
+        task.clientRequestId ?? null,
+        task.title,
+        task.task,
+        task.role ?? null,
+        task.status,
+        task.result ?? null,
+        task.resultIsError ? 1 : 0,
+        task.statusDetail ?? null,
+        task.originToolUseId ?? null,
+        task.createdAt,
+        task.endedAt ?? null,
+        task.deliveredAt ?? null,
+      );
+  }
+
+  getDelegatedTask(id: string): DelegatedTaskRecord | null {
+    const row = this.db.prepare("SELECT * FROM delegated_tasks WHERE id = ?").get(id);
+    return row ? toDelegatedTask(row as unknown as DelegatedTaskRow) : null;
+  }
+
+  findDelegatedTaskByRequest(
+    parentInstanceId: string,
+    clientRequestId: string,
+  ): DelegatedTaskRecord | null {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM delegated_tasks WHERE parent_instance_id = ? AND client_request_id = ?",
+      )
+      .get(parentInstanceId, clientRequestId);
+    return row ? toDelegatedTask(row as unknown as DelegatedTaskRow) : null;
+  }
+
+  findDelegatedTaskByChild(childInstanceId: string): DelegatedTaskRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM delegated_tasks WHERE child_instance_id = ?")
+      .get(childInstanceId);
+    return row ? toDelegatedTask(row as unknown as DelegatedTaskRow) : null;
+  }
+
+  listDelegatedTasksForParent(parentInstanceId: string): DelegatedTaskRecord[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT * FROM delegated_tasks WHERE parent_instance_id = ? ORDER BY created_at ASC, id ASC",
+        )
+        .all(parentInstanceId) as unknown as DelegatedTaskRow[]
+    ).map(toDelegatedTask);
+  }
+
+  /** Terminal tasks whose result has not been delivered (or dropped) yet. */
+  listUndeliveredDelegatedTasks(): DelegatedTaskRecord[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT * FROM delegated_tasks WHERE status != 'running' AND delivered_at IS NULL ORDER BY ended_at ASC",
+        )
+        .all() as unknown as DelegatedTaskRow[]
+    ).map(toDelegatedTask);
+  }
+
+  listRunningDelegatedTasks(): DelegatedTaskRecord[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM delegated_tasks WHERE status = 'running'")
+        .all() as unknown as DelegatedTaskRow[]
+    ).map(toDelegatedTask);
+  }
+
+  /** Move a running task to a terminal state. Returns false if it already ended. */
+  finishDelegatedTask(
+    id: string,
+    patch: {
+      status: Exclude<DelegatedTaskStatus, "running">;
+      result?: string;
+      resultIsError?: boolean;
+      statusDetail?: string;
+      endedAt: number;
+      deliveredAt?: number;
+    },
+  ): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE delegated_tasks SET status = ?, result = ?, result_is_error = ?, status_detail = ?,
+             ended_at = ?, delivered_at = ? WHERE id = ? AND status = 'running'`,
+        )
+        .run(
+          patch.status,
+          patch.result ?? null,
+          patch.resultIsError ? 1 : 0,
+          patch.statusDetail ?? null,
+          patch.endedAt,
+          patch.deliveredAt ?? null,
+          id,
+        ).changes > 0
+    );
+  }
+
+  markDelegatedTasksDelivered(ids: readonly string[], at: number): void {
+    if (ids.length === 0) return;
+    const stmt = this.db.prepare(
+      "UPDATE delegated_tasks SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+    );
+    for (const id of ids) stmt.run(at, id);
+  }
+
+  setDelegatedTaskOrigin(id: string, originToolUseId: string): void {
+    this.db
+      .prepare("UPDATE delegated_tasks SET origin_tool_use_id = ? WHERE id = ?")
+      .run(originToolUseId, id);
+  }
+
+  /** Drop the tasks a deleted chat delegated (its children are deleted with it). */
+  deleteDelegatedTasksForParent(parentInstanceId: string): void {
+    this.db
+      .prepare("DELETE FROM delegated_tasks WHERE parent_instance_id = ?")
+      .run(parentInstanceId);
   }
 
   /** Reserve before handing a message to a provider. A stale reservation means
@@ -2909,6 +3120,7 @@ ${buildSearchIndexSchemaSql()},
     this.db.exec("DELETE FROM managed_sessions");
     this.db.exec("DELETE FROM spaces");
     this.db.exec("DELETE FROM session_events");
+    this.db.exec("DELETE FROM delegated_tasks");
   }
 
   checkpointWal(): void {

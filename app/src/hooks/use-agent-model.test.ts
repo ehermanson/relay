@@ -5,6 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentInfo } from "@shared/types";
 
 vi.mock("@/lib/api", () => ({ fetchAgentModel: vi.fn(), fetchAgentHistory: vi.fn() }));
+const wsInstances: unknown[] = [];
+vi.mock("@/context/websocket-context", () => ({
+  useWSState: () => ({ instances: wsInstances }),
+}));
 import { fetchAgentModel, fetchAgentHistory } from "@/lib/api";
 import { useAgentModelLabel } from "@/hooks/use-agent-model";
 import { useAgentHistory } from "@/hooks/use-agent-history";
@@ -84,4 +88,25 @@ it("shares a model found during expansion with the collapsed label", async () =>
   await waitFor(() => expect(result.current).toBeTruthy());
   rerender({ expanded: false });
   expect(result.current).toBeTruthy();
+});
+
+it("labels a Relay child from its own chat without probing a transcript", () => {
+  wsInstances.splice(0, wsInstances.length, {
+    id: "child-chat",
+    provider: "codex",
+    preferredModel: "gpt-6",
+  });
+  const agent: AgentInfo = {
+    agentId: "relay-task:t1",
+    origin: "relay",
+    childInstanceId: "child-chat",
+    childProvider: "codex",
+    status: "running",
+  };
+  const { result } = renderHook(() => useAgentModelLabel("parent", agent, "claude"), {
+    wrapper: wrapper(),
+  });
+  expect(result.current).toBeTruthy();
+  expect(fetchAgentModel).not.toHaveBeenCalled();
+  wsInstances.splice(0);
 });

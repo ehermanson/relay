@@ -804,6 +804,40 @@ export interface InstanceInfo {
   review?: ReviewSessionInfo;
   /** Attached review instance for this chat, rendered in the sidecar rather than main nav. */
   reviewInstanceId?: string;
+  /**
+   * Set when another chat delegated this one through Relay's `delegate_task`.
+   * Delegated children never get their own inbox/sidebar row; they are
+   * reached through the parent's agent card and Agents sidecar.
+   */
+  delegation?: ChatDelegation;
+}
+
+/** Lineage of a delegated child chat (see `InstanceInfo.delegation`). */
+export interface ChatDelegation {
+  parentInstanceId: string;
+  /** `delegated_tasks.id`; the parent's agent key is `relay-task:<taskId>`. */
+  taskId: string;
+  role?: string;
+}
+
+/** Lifecycle of a Relay-delegated task (`delegated_tasks.status`). */
+export type DelegatedTaskStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface DelegatedTaskInfo {
+  id: string;
+  parentInstanceId: string;
+  childInstanceId: string;
+  status: DelegatedTaskStatus;
+  title: string;
+  task: string;
+  role?: string;
+  /** Child's last assistant reply when its delegated turn ended. */
+  result?: string;
+  resultIsError?: boolean;
+  /** Why a cancelled/failed task ended (e.g. "parent marked done"). */
+  statusDetail?: string;
+  createdAt: number;
+  endedAt?: number;
 }
 
 export interface HistoryEntry {
@@ -1350,6 +1384,17 @@ export interface AgentInfo {
    * `agentId`. Claude: the spawning tool_use id; Codex: the child thread id.
    */
   agentId: string;
+  /**
+   * Who runs the agent. `provider` (or absent): a native subagent inside the
+   * chat's own session, read-only. `relay`: a Relay-delegated child chat
+   * (`childInstanceId`), fully interactive, independent of the parent's
+   * provider capabilities.
+   */
+  origin?: "provider" | "relay";
+  /** Relay child chat backing this agent (`origin: "relay"` only). */
+  childInstanceId?: string;
+  /** Provider of a Relay child chat, for its logo (`origin: "relay"` only). */
+  childProvider?: ProviderKind;
   /** Provider-native agent identity (Claude agentId, Codex thread id) when known; used for history lookups and request matching. */
   providerAgentId?: string;
   /** Relay key of the agent that spawned this one when it is itself a child (nested delegation). Absent = direct child of the chat's agent. */

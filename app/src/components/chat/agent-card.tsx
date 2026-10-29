@@ -8,6 +8,7 @@ import { AgentAvatar } from "@/components/chat/agent-avatar";
 import { AgentDetail } from "@/components/chat/agent-detail";
 import { useAgentCards } from "@/components/chat/agent-card-context";
 import { useAgentModelLabel } from "@/hooks/use-agent-model";
+import { RelayAgentMarker } from "@/components/chat/relay-agent";
 
 interface AgentCardProps {
   agent: AgentInfo;
@@ -89,6 +90,7 @@ export function AgentCard({
                 {modelLabel}
               </span>
             )}
+            {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
             {hasPendingRequest && (
               <span
                 className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-warning/10 px-1.5 py-px text-[0.5625rem] font-medium text-warning"

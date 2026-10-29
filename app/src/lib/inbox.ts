@@ -8,6 +8,7 @@
  */
 
 import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isDelegatedChildInstance } from "@/lib/delegation";
 import { getChatRecencyTimestamp, getChatSortTimestamp, isChatDone } from "@/lib/utils";
 import type { InstanceInfo, SpaceInfo } from "@shared/types";
 
@@ -114,7 +115,8 @@ export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEnt
     for (const instance of group.groupInstances) {
       // Review chats stay attached to the chat they audit — surfacing them as
       // peers in a flat list would double-count the same work.
-      if (isAttachedReviewInstance(instance)) continue;
+      // Delegated child chats live behind their parent's card and sidecar row.
+      if (isAttachedReviewInstance(instance) || isDelegatedChildInstance(instance)) continue;
       const space = instance.spaceId ? spacesById.get(instance.spaceId) : undefined;
       // Missing metadata can be a transient loading state. Keep the chat
       // visible until its named space is actually resolved.

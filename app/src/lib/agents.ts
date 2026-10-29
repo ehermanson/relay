@@ -138,6 +138,9 @@ export function isMainStreamAgent(
   agent: AgentInfo,
   agentItems: Record<string, ChatItem[]>,
 ): boolean {
+  // A Relay delegation belongs to the chat, whichever of its agents asked:
+  // the credential is the chat's, so its card is always main-stream.
+  if (agent.origin === "relay") return true;
   if (agent.parentAgentId) return false;
   const origin = agent.originToolUseId;
   if (origin && hasAnchorInAnyStream(agentItems, origin)) return false;
@@ -224,7 +227,9 @@ export function buildAgentTree(agents: Record<string, AgentInfo>): AgentTreeNode
   const byParent = new Map<string | undefined, AgentInfo[]>();
   for (const agent of all) {
     const parent =
-      agent.parentAgentId && agents[agent.parentAgentId] ? agent.parentAgentId : undefined;
+      agent.origin !== "relay" && agent.parentAgentId && agents[agent.parentAgentId]
+        ? agent.parentAgentId
+        : undefined;
     const list = byParent.get(parent) ?? [];
     list.push(agent);
     byParent.set(parent, list);
@@ -247,6 +252,32 @@ export function buildAgentTree(agents: Record<string, AgentInfo>): AgentTreeNode
     walk(agent.agentId, 1);
   }
   return out;
+}
+
+/**
+ * The delegated-agent capability gate, applied once at the source. A provider
+ * that can't report its own subagents (`supportsAgentActivity` false) gets no
+ * provider-origin agents, but Relay-delegated children never depend on that
+ * capability and are always kept. Returns the inputs unchanged when nothing is
+ * dropped, and `empty` maps when everything is, so references stay stable.
+ */
+export function gateAgentsByCapability(
+  agents: Record<string, AgentInfo>,
+  agentItems: Record<string, ChatItem[]>,
+  supportsAgentActivity: boolean,
+  empty: { agents: Record<string, AgentInfo>; agentItems: Record<string, ChatItem[]> },
+): { agents: Record<string, AgentInfo>; agentItems: Record<string, ChatItem[]> } {
+  if (supportsAgentActivity) return { agents, agentItems };
+  const relay = Object.values(agents).filter((agent) => agent.origin === "relay");
+  if (relay.length === 0) return empty;
+  const keptAgents: Record<string, AgentInfo> = {};
+  const keptItems: Record<string, ChatItem[]> = {};
+  for (const agent of relay) {
+    keptAgents[agent.agentId] = agent;
+    const items = agentItems[agent.agentId];
+    if (items) keptItems[agent.agentId] = items;
+  }
+  return { agents: keptAgents, agentItems: keptItems };
 }
 
 /** Direct children of an agent (provider-declared `parentAgentId` only). */
