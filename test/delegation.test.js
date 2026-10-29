@@ -761,4 +761,147 @@ describe("delegated tasks", () => {
     const result = await call("chat_wait", { chatId: task.childInstanceId });
     assert.equal(result.task.status, "cancelled");
   });
+
+  it("isolation 'space' gives the child its own Space branched from the parent's", async () => {
+    const { manager, parent, repo } = setup();
+    execFileSync("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "init",
+    ]);
+    const call = mcpCaller(manager, parent.id);
+    const started = await call("delegate_task", { task: "Build the parser", isolation: "space" });
+    assert.equal(started.error, undefined, JSON.stringify(started.error));
+    const child = manager.getInstance(started.chat.id);
+    assert.equal(child.delegation.isolation, "space");
+    const space = manager.getSpaceManager().getSpace(child.spaceId);
+    assert.ok(space && !space.isDefault, "a new Space");
+    assert.equal(space.name, "Build the parser");
+    assert.equal(realpathSync(child.workingDirectory), realpathSync(space.worktreePath));
+    assert.notEqual(child.spaceId, parent.spaceId);
+
+    const shared = await call("delegate_task", { task: "Read only" });
+    assert.equal(manager.getInstance(shared.chat.id).delegation.isolation, undefined);
+    assert.equal(manager.getInstance(shared.chat.id).spaceId, parent.spaceId);
+
+    const bad = await call("delegate_task", { task: "x", isolation: "elsewhere" });
+    assert.equal(bad.error.code, "invalid_request");
+  });
+
+  it("concurrent retries share one isolated attempt", async () => {
+    const { manager, parent, repo } = setup();
+    execFileSync("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "init",
+    ]);
+    const request = { task: "x", isolation: "space", clientRequestId: "once" };
+    const [a, b] = await Promise.all([
+      manager.delegateTask(parent.id, request),
+      manager.delegateTask(parent.id, request),
+    ]);
+    assert.equal(a.id, b.id);
+    const spaces = manager
+      .getSpaceManager()
+      .listSpaces(
+        manager.getSpaceManager().getSpace(manager.getInstance(a.childInstanceId).spaceId)
+          .projectDirectory,
+      )
+      .filter((space) => !space.isDefault);
+    assert.equal(spaces.length, 1);
+  });
+
+  function commitAll(repo) {
+    execFileSync("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "init",
+    ]);
+  }
+
+  it("isolation 'space' refuses Space parents, non-git chats, and leaves nothing at the cap", async () => {
+    const { manager, parent, repo } = setup({ maxProcesses: 1 });
+    commitAll(repo);
+    const spaces = manager.getSpaceManager();
+    const capped = await manager
+      .delegateTask(parent.id, { task: "x", isolation: "space" })
+      .catch((err) => err);
+    assert.equal(capped.code, "capacity");
+    assert.deepEqual(
+      spaces.listAllSpaces(repo).filter((space) => !space.isDefault),
+      [],
+      "no worktree built, nothing archived",
+    );
+
+    const parentSpace = await spaces.createSpace(repo, { name: "parent work" });
+    manager.instances.get(parent.id).info.spaceId = parentSpace.id;
+    manager.resolveMaxProcesses = () => 10;
+    const fromSpace = await manager
+      .delegateTask(parent.id, { task: "x", isolation: "space" })
+      .catch((err) => err);
+    assert.equal(fromSpace.code, "space_unavailable");
+  });
+
+  it("discards an isolated child's Space when the child can't start", async () => {
+    const { manager, parent, repo } = setup();
+    commitAll(repo);
+    const original = manager.createInstance.bind(manager);
+    manager.createInstance = (options) => {
+      if (options.delegation) throw new Error("boom");
+      return original(options);
+    };
+    await assert.rejects(
+      manager.delegateTask(parent.id, { task: "x", isolation: "space" }),
+      /boom/,
+    );
+    await waitFor(
+      () =>
+        manager
+          .getSpaceManager()
+          .listAllSpaces(repo)
+          .every((space) => space.isDefault),
+      "the unused Space removed",
+    );
+  });
+
+  it("keeps a child's isolation through restore", async () => {
+    const { getDelegationFromRuntimePayload } =
+      await import("../dist/server/core/session-context.js");
+    assert.deepEqual(
+      getDelegationFromRuntimePayload({
+        delegation: { parentInstanceId: "p", taskId: "t", isolation: "space" },
+      }),
+      { parentInstanceId: "p", taskId: "t", isolation: "space" },
+    );
+    assert.equal(
+      getDelegationFromRuntimePayload({
+        delegation: { parentInstanceId: "p", taskId: "t", isolation: "nope" },
+      }).isolation,
+      undefined,
+    );
+  });
 });

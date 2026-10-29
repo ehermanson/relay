@@ -48,6 +48,20 @@ describe("delegation helpers", () => {
     expect(buildSpaceInstances("s", chats, [], "kid").map((i) => i.id)).toEqual(["main", "kid"]);
     expect(selectSpaceChat("s", chats, "kid")).toBe("main");
   });
+
+  it("treats an isolated child as its own Space's chat", () => {
+    const isolated = chat({
+      id: "kid",
+      spaceId: "own",
+      delegation: { parentInstanceId: "main", taskId: "t", isolation: "space" },
+    });
+    expect(isDelegatedChildInstance(isolated)).toBe(false);
+    expect(buildSpaceInstances("own", [isolated], []).map((i) => i.id)).toEqual(["kid"]);
+    expect(selectSpaceChat("own", [isolated], null)).toBe("kid");
+    const grandchild = child("gc", "kid");
+    const byId = new Map([chat({ id: "main" }), isolated, grandchild].map((i) => [i.id, i]));
+    expect(findDelegationRoot(grandchild, byId).id).toBe("kid");
+  });
 });
 
 describe("relay agents", () => {

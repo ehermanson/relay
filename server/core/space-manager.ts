@@ -1217,6 +1217,30 @@ export class SpaceManager extends EventEmitter {
   /**
    * Archive a space without merging. Stops its chats and removes the worktree.
    */
+  /**
+   * Remove a Space that was created but never used (no chats): its worktree
+   * and branch (as Archive does) and its row — unlike `deleteSpace`, nothing
+   * is left in the Closed list.
+   */
+  async discardUnusedSpace(id: string): Promise<void> {
+    const row = this.db.getSpace(id);
+    if (!row || row.is_default) return;
+    if (this.db.getSpaceChatCount(id) > 0) {
+      await this.deleteSpace(id);
+      return;
+    }
+    if (row.git_branch && row.worktree_path) {
+      const repoRoot = getRepoRoot(row.project_directory);
+      if (repoRoot && existsSync(row.worktree_path)) {
+        const removal = await removeWorktree(repoRoot, row.worktree_path, row.git_branch);
+        this.logWorktreeRemoval(id, row.worktree_path, removal);
+      }
+    }
+    this.db.deleteSpace(id);
+    this.logger.info(`[SpaceManager] Discarded unused space "${row.name}" (${id})`);
+    this.emit("space:removed", id, row.project_directory);
+  }
+
   async deleteSpace(id: string): Promise<void> {
     const row = this.db.getSpace(id);
     if (!row) throw new Error(`Space ${id} not found`);

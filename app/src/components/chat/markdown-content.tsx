@@ -10,6 +10,8 @@ import { TASK_ID_PATTERN_SOURCE } from "@/lib/task-links";
 import { isBareLink, matchLinkSource, type LinkSource } from "@/lib/link-sources";
 import { videoContentType } from "@shared/video-attachments";
 import { localImageSrc } from "@/lib/local-file-url";
+import { parseChatLinkHref, splitChatLinks } from "@/lib/chat-links";
+import { ChatLinkChip } from "@/components/chat/chat-link-chip";
 
 interface MarkdownContentProps {
   text: string;
@@ -48,6 +50,38 @@ const TOKEN_AST_RE = new RegExp(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MdastNode = any;
+
+// ── Remark plugin: bare relay://chat/<id> references → link nodes (chat chips) ──
+// GFM only autolinks http(s)/www/email, and agents write chat links bare.
+function remarkChatLinks() {
+  return (tree: MdastNode) => {
+    walkChatLinks(tree, false);
+  };
+}
+
+function walkChatLinks(node: MdastNode, insideLink: boolean): void {
+  if (!node.children) return;
+  const next: MdastNode[] = [];
+  for (const child of node.children as MdastNode[]) {
+    if (child.type === "text" && !insideLink) {
+      for (const segment of splitChatLinks(child.value as string)) {
+        next.push(
+          segment.kind === "text"
+            ? { type: "text", value: segment.text }
+            : {
+                type: "link",
+                url: segment.href,
+                children: [{ type: "text", value: segment.href }],
+              },
+        );
+      }
+    } else {
+      walkChatLinks(child, insideLink || child.type === "link");
+      next.push(child);
+    }
+  }
+  node.children = next;
+}
 
 function remarkMentions() {
   return (tree: MdastNode) => {
@@ -411,6 +445,14 @@ function MarkdownLink({
     );
   }
 
+  const chatId = parseChatLinkHref(href);
+  if (chatId) {
+    const text = textOf(children).trim();
+    // A bare link shows the chat's live title; an author-written label stays.
+    const label = text && text !== href ? text : undefined;
+    return <ChatLinkChip chatId={chatId} label={label} className={LINK_CHIP_CLASS} />;
+  }
+
   if (href.startsWith("relay-file-mention:")) {
     const path = href.slice("relay-file-mention:".length);
     const basename = path.split("/").pop() || path;
@@ -558,7 +600,7 @@ function TableBlock({ node: _, ...rest }: React.ComponentProps<"table"> & { node
   );
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMentions];
+const REMARK_PLUGINS = [remarkGfm, remarkChatLinks, remarkMentions];
 const MD_COMPONENTS = {
   code: CodeBlock,
   pre: PreBlock,
@@ -568,7 +610,7 @@ const MD_COMPONENTS = {
 };
 
 function transformUrl(url: string, key: string): string {
-  if (url.startsWith("relay-")) return url;
+  if (url.startsWith("relay-") || parseChatLinkHref(url)) return url;
   if (key === "src") {
     const local = localImageSrc(url);
     if (local) return local;

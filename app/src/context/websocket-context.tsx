@@ -129,3 +129,8 @@ export function useWSState() {
   if (!ctx) throw new Error("useWSState must be used within WebSocketProvider");
   return ctx;
 }
+
+/** `useWSState` for components that may render outside the app shell (e.g. bare markdown). */
+export function useOptionalWSState() {
+  return useContext(WSStateContext);
+}

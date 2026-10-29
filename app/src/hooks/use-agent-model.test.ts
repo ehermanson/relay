@@ -8,6 +8,7 @@ vi.mock("@/lib/api", () => ({ fetchAgentModel: vi.fn(), fetchAgentHistory: vi.fn
 const wsInstances: unknown[] = [];
 vi.mock("@/context/websocket-context", () => ({
   useWSState: () => ({ instances: wsInstances }),
+  useOptionalWSState: () => ({ instances: wsInstances }),
 }));
 import { fetchAgentModel, fetchAgentHistory } from "@/lib/api";
 import { useAgentModelLabel } from "@/hooks/use-agent-model";

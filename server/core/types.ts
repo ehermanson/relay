@@ -818,6 +818,12 @@ export interface ChatDelegation {
   /** `delegated_tasks.id`; the parent's agent key is `relay-task:<taskId>`. */
   taskId: string;
   role?: string;
+  /**
+   * `"space"`: the child got its own Space (worktree) branched from the
+   * parent's. That Space is ordinary — the user reviews, completes, or
+   * archives it — so the child shows there as its tab.
+   */
+  isolation?: "space";
 }
 
 /** Lifecycle of a Relay-delegated task (`delegated_tasks.status`). */
