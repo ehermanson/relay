@@ -53,9 +53,7 @@ function chatPath(instance: InstanceInfo): string {
       "",
   );
   const chat = encodeURIComponent(instance.id);
-  return instance.spaceId
-    ? `/projects/${project}/spaces/${encodeURIComponent(instance.spaceId)}/${chat}`
-    : `/projects/${project}/chats/${chat}`;
+  return `/projects/${project}/chats/${chat}`;
 }
 
 export class PushNotifications {

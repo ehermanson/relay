@@ -6,7 +6,7 @@
  * Cap at 8 total resolved suggestions.
  *
  * Conditions:
- * - Client-evaluated: `has-changes`, `in-space` — sent in the response, filtered by the UI
+ * - Client-evaluated: `has-changes`, `has-reviewable-diff` — sent in the response, filtered by the UI
  * - Server-evaluated: `has-tasks` — filtered during resolution, never sent to the client
  */
 
@@ -56,26 +56,6 @@ export const BUILT_IN_SUGGESTIONS: BuiltInSuggestion[] = [
     prompt:
       "Write tests for the recent changes on this branch. First, read the diff — both uncommitted edits and any commits not yet in the base branch — so you know what actually changed. Then find existing tests for similar code to learn the test framework, file layout, and assertion style used in this project. Focus on behavior that changed: new public surface, new branches and edge cases, and regression coverage for any bug fixes. Don't re-test unchanged code, and don't invent a new test style — match what's already here. When you're done, run the tests and fix any failures before handing off.",
     conditions: ["has-reviewable-diff"],
-  },
-
-  // ── Requires space with sibling chats ───────────────────────────────
-  {
-    id: "continue-work",
-    label: "Continue Work",
-    description: "Pick up where the last chat left off using the shared context.",
-    icon: "Play",
-    prompt:
-      "Pick up the next piece of unfinished work in this space. Before starting, orient yourself: read `.relay/space-context.md` for decisions, interfaces, status, and blockers recorded by sibling chats; skim recent commits on this branch (`git log --oneline -20`); and check the current working-tree state (`git status`, `git diff`). Then identify what's in progress, what's obviously next, and what's blocked. Start on the next logical piece of work and tell me up front what you're doing and why. If the direction is genuinely ambiguous, ask before committing to an approach. When you finish significant work, record it in `.relay/space-context.md` so other chats in this space stay in sync.",
-    conditions: ["in-space"],
-  },
-  {
-    id: "summarize-progress",
-    label: "Summarize Progress",
-    description: "Recap what's been done so far based on the diff and shared context.",
-    icon: "ScrollText",
-    prompt:
-      "Recap what has been accomplished in this space so far. Pull from three sources: commits on this branch that aren't in the base branch (`git log <base>..HEAD` plus the corresponding diff), uncommitted working-tree changes (`git status`, `git diff`, `git diff --staged`), and `.relay/space-context.md`. Structure the summary as: **Done** (what's landed or clearly working), **In progress** (partial or uncommitted work), and **Open questions / next steps** (anything known to be unresolved). Be concrete — reference specific files, features, or behaviors rather than talking in generalities. Keep it tight: bullets, not paragraphs.",
-    conditions: ["in-space", "has-reviewable-diff"],
   },
 
   // ── Requires open tasks (server-filtered) ───────────────────────────

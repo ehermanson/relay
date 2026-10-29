@@ -1,9 +1,8 @@
 /**
  * TerminalManager — Terminal lifecycle management for Relay
  *
- * Manages embedded PTY terminals that are either:
- * - Space-scoped: shared across all chats in a space (persists for the space lifetime)
- * - Instance-scoped: tied to a single chat session
+ * Manages embedded PTY terminals scoped to a single chat session. Terminals
+ * live in memory only; their ptys die with the server.
  *
  * Uses a pluggable PtyAdapterFactory so the PTY backend can be swapped.
  */
@@ -54,7 +53,7 @@ export interface TerminalManager {
 }
 
 function scopeKey(scope: TerminalScope): string {
-  return scope.type === "space" ? `space:${scope.spaceId}` : `instance:${scope.instanceId}`;
+  return `instance:${scope.instanceId}`;
 }
 
 // ── TerminalManager ──────────────────────────────────────────────────
@@ -218,7 +217,7 @@ export class TerminalManager extends EventEmitter {
   }
 
   /**
-   * Close all terminals for a given scope (e.g. when a space is deleted).
+   * Close all terminals for a given scope (e.g. when a chat is removed).
    */
   closeAllForScope(scope: TerminalScope): void {
     const key = scopeKey(scope);

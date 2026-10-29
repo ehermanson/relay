@@ -59,7 +59,7 @@ function persistNames(names: Record<string, string>): void {
 }
 
 export function scopeKey(scope: TerminalScope): string {
-  return scope.type === "space" ? `space:${scope.spaceId}` : `instance:${scope.instanceId}`;
+  return `instance:${scope.instanceId}`;
 }
 
 export interface TerminalContextAttachment {

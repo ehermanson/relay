@@ -6,7 +6,7 @@ import { resolveRepoStatusDir } from "#server/repo-status-targets.js";
 
 /**
  * REST fallback for the push-based `repo_status` WebSocket stream: one
- * snapshot for `?instanceId=` / `?spaceId=` / `?projectId=`. Serves the cached
+ * snapshot for `?instanceId=` / `?projectId=`. Serves the cached
  * snapshot when the directory is already subscribed, otherwise computes once.
  */
 export function registerRepoStatusRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
@@ -14,17 +14,14 @@ export function registerRepoStatusRoutes(app: Hono<AppEnv>, deps: HttpDeps): voi
 
   app.get("/api/repo-status", async (c) => {
     const instanceId = c.req.query("instanceId");
-    const spaceId = c.req.query("spaceId");
     const projectId = c.req.query("projectId");
     const target: RepoStatusTarget | null = instanceId
       ? { kind: "instance", instanceId }
-      : spaceId
-        ? { kind: "space", spaceId }
-        : projectId
-          ? { kind: "project", projectId }
-          : null;
+      : projectId
+        ? { kind: "project", projectId }
+        : null;
     if (!target) {
-      return c.json({ error: "One of instanceId, spaceId, or projectId is required" }, 400);
+      return c.json({ error: "One of instanceId or projectId is required" }, 400);
     }
     const dir = resolveRepoStatusDir(instanceManager, target);
     if (!dir) return c.json({ error: "Target not found" }, 404);

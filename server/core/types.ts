@@ -9,9 +9,7 @@
 // Terminal Types
 // =============================================================================
 
-export type TerminalScope =
-  | { type: "space"; spaceId: string }
-  | { type: "instance"; instanceId: string };
+export type TerminalScope = { type: "instance"; instanceId: string };
 
 export interface TerminalInfo {
   id: string;
@@ -150,12 +148,11 @@ export interface SuggestionsConfig {
 /**
  * Conditions that control when a suggestion is visible.
  * - `"has-changes"` — only show when the working tree has uncommitted changes (client-evaluated)
- * - `"has-reviewable-diff"` — uncommitted changes OR commits ahead of base branch; for
- *   space chats this includes committed work on the space branch (client-evaluated)
- * - `"in-space"` — only show inside a space with sibling chats (client-evaluated)
+ * - `"has-reviewable-diff"` — uncommitted changes OR commits ahead of the repo's default
+ *   branch (client-evaluated)
  * - `"has-tasks"` — only show when the project has open tasks (server-evaluated, filtered before sending)
  */
-export type SuggestionCondition = "has-changes" | "has-reviewable-diff" | "in-space" | "has-tasks";
+export type SuggestionCondition = "has-changes" | "has-reviewable-diff" | "has-tasks";
 
 /** Built-in suggestion definition (immutable base set). */
 export interface BuiltInSuggestion {
@@ -660,8 +657,6 @@ export interface GlobalSettings {
   defaultOpenTarget: string | null;
   defaultProvider: string | null;
   defaultModel: string | null;
-  defaultSpaceBranch: string | null;
-  spaceBranchSource: "local" | "remote";
   providerDefaults: Record<string, ProviderDefaults>;
   /**
    * Stored accounts: every non-default account, plus an optional
@@ -873,8 +868,6 @@ export interface CreateInstancePayload {
   resumeSessionId?: string;
   /** Model ID to use (e.g. "claude-opus-4-6") */
   model?: string;
-  /** Space to create this instance in */
-  spaceId?: string;
   /** Canonical model options (reasoning budget, effort, fast mode) */
   modelOptions?: ProviderModelOptions;
   /** Initial runtime mode (defaults to "approval-required") */
@@ -970,12 +963,6 @@ export interface RenameInstancePayload {
   name: string;
 }
 
-export interface RenameSpacePayload {
-  type: "rename_space";
-  spaceId: string;
-  name: string;
-}
-
 export interface MergeInstancePayload {
   type: "merge_instance";
   instanceId: string;
@@ -1015,30 +1002,6 @@ export interface SetReviewInstancePayload {
   type: "set_review_instance";
   instanceId: string;
   reviewInstanceId: string;
-}
-
-export interface CreateSpacePayload {
-  type: "create_space";
-  projectDirectory: string;
-  name?: string;
-  baseBranch?: string;
-}
-
-export interface CompleteSpacePayload {
-  type: "complete_space";
-  spaceId: string;
-  mergeMethod?: MergeMethod;
-  squashMessage?: string;
-}
-
-export interface MarkSpaceMergedPayload {
-  type: "mark_space_merged";
-  spaceId: string;
-}
-
-export interface DeleteSpacePayload {
-  type: "delete_space";
-  spaceId: string;
 }
 
 // ── Terminal client messages ──────────────────────────────────────────
@@ -1104,17 +1067,12 @@ export type ClientMessage =
   | InstanceTakeoverPayload
   | RespondToRequestPayload
   | RenameInstancePayload
-  | RenameSpacePayload
   | MergeInstancePayload
   | SetModelPayload
   | SetRuntimeModePayload
   | SetModelOptionsPayload
   | SetProviderPayload
   | SetReviewInstancePayload
-  | CreateSpacePayload
-  | CompleteSpacePayload
-  | MarkSpaceMergedPayload
-  | DeleteSpacePayload
   | TerminalCreatePayload
   | TerminalInputPayload
   | TerminalResizePayload
@@ -1490,32 +1448,6 @@ export interface ProjectsChangedMessage {
 export interface TasksChangedMessage {
   type: "tasks_changed";
   projectId: string;
-  /** Omitted for the Project's Main space. */
-  spaceId?: string;
-}
-
-export interface SpaceCreatedMessage {
-  type: "space_created";
-  space: SpaceInfo;
-}
-
-export interface SpaceCompletedMessage {
-  type: "space_completed";
-  spaceId: string;
-  targetBranch: string;
-  mergeMethod?: string;
-  mergeCommit?: string;
-}
-
-export interface SpaceRemovedMessage {
-  type: "space_removed";
-  spaceId: string;
-}
-
-export interface SpaceListMessage {
-  type: "space_list";
-  projectDirectory: string;
-  spaces: SpaceInfo[];
 }
 
 // ── Terminal server messages ──────────────────────────────────────────
@@ -1649,7 +1581,6 @@ export interface SpinOffSentMessage {
 /** What a repo-status subscription is about; the server resolves it to a worktree dir. */
 export type RepoStatusTarget =
   | { kind: "instance"; instanceId: string }
-  | { kind: "space"; spaceId: string }
   | { kind: "project"; projectId: string };
 
 /** Porcelain-v2 status summary (mirrors `GitStatusSummary` in core/git.ts). */
@@ -1746,10 +1677,6 @@ export type ServerMessage =
   | ScanCompleteMessage
   | ProjectsChangedMessage
   | TasksChangedMessage
-  | SpaceCreatedMessage
-  | SpaceCompletedMessage
-  | SpaceRemovedMessage
-  | SpaceListMessage
   | TerminalCreatedMessage
   | TerminalOutputMessage
   | TerminalExitMessage
@@ -1791,8 +1718,6 @@ export interface Project {
   remoteUrl: string | null;
   targetBranch: string | null;
   customInstructions: string | null;
-  defaultSpaceBranch: string | null;
-  spaceBranchSource: "local" | "remote" | null;
   defaultProvider: string | null;
   defaultModel: string | null;
   /**

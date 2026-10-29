@@ -91,8 +91,8 @@ export async function createBackendUpdateService({
         setTimeout(() => parent.postMessage({ type: "source-update-restart" }), 500);
         return { ok: true, action: "restart" };
       }
-      // A source shell may be launched from a Space where agents are editing.
-      // Never auto-stash their changes or fast-forward a feature branch.
+      // A source shell may be launched from a checkout where agents are
+      // editing. Never auto-stash their changes or fast-forward a feature branch.
       const [{ stdout: status }, { stdout: branch }] = await Promise.all([
         runCommand("git", ["status", "--porcelain"], { cwd: installDir, timeout: 10_000 }),
         runCommand("git", ["branch", "--show-current"], { cwd: installDir, timeout: 10_000 }),

@@ -50,7 +50,7 @@ describe("TerminalManager", () => {
   let tm;
   let ptys;
 
-  const spaceScope = { type: "space", spaceId: "sp-1" };
+  const otherScope = { type: "instance", instanceId: "inst-2" };
   const instanceScope = { type: "instance", instanceId: "inst-1" };
 
   beforeEach(() => {
@@ -66,10 +66,10 @@ describe("TerminalManager", () => {
       const events = [];
       tm.on("terminal:created", (info) => events.push(info));
 
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
 
       assert.ok(info.id);
-      assert.equal(info.scope, spaceScope);
+      assert.equal(info.scope, otherScope);
       assert.equal(info.cwd, "/tmp");
       assert.equal(info.exited, false);
       assert.equal(events.length, 1);
@@ -77,13 +77,13 @@ describe("TerminalManager", () => {
     });
 
     it("uses default cols/rows when not specified", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       assert.equal(info.cols, 120);
       assert.equal(info.rows, 30);
     });
 
     it("uses custom cols/rows when specified", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 80, rows: 24 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 80, rows: 24 });
       assert.equal(info.cols, 80);
       assert.equal(info.rows, 24);
     });
@@ -91,7 +91,7 @@ describe("TerminalManager", () => {
 
   describe("writeTerminal", () => {
     it("writes data to the PTY", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       tm.writeTerminal(info.id, "ls\n");
       assert.deepEqual(ptys[0].written, ["ls\n"]);
     });
@@ -103,7 +103,7 @@ describe("TerminalManager", () => {
 
   describe("resizeTerminal", () => {
     it("resizes the PTY and updates info", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       tm.resizeTerminal(info.id, 200, 50);
       assert.deepEqual(ptys[0].resizes, [{ cols: 200, rows: 50 }]);
 
@@ -118,7 +118,7 @@ describe("TerminalManager", () => {
       const events = [];
       tm.on("terminal:removed", (id) => events.push(id));
 
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       tm.closeTerminal(info.id);
 
       assert.ok(ptys[0].killed);
@@ -128,7 +128,7 @@ describe("TerminalManager", () => {
     });
 
     it("does not kill an already-exited PTY", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       // Simulate exit
       ptys[0].emit("exit", 0);
       ptys[0].killed = false; // reset
@@ -148,7 +148,7 @@ describe("TerminalManager", () => {
       const events = [];
       tm.on("terminal:output", (id, data) => events.push({ id, data }));
 
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       ptys[0].emit("data", "hello world");
 
       assert.equal(events.length, 1);
@@ -162,7 +162,7 @@ describe("TerminalManager", () => {
       const events = [];
       tm.on("terminal:exit", (id, code, signal) => events.push({ id, code, signal }));
 
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       ptys[0].emit("exit", 1, "SIGTERM");
 
       assert.equal(events.length, 1);
@@ -179,7 +179,7 @@ describe("TerminalManager", () => {
 
   describe("scrollback", () => {
     it("accumulates output data", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       ptys[0].emit("data", "line1\n");
       ptys[0].emit("data", "line2\n");
 
@@ -192,7 +192,7 @@ describe("TerminalManager", () => {
     });
 
     it("trims old scrollback when exceeding limit", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       // Push >512KB of data in chunks
       const chunk = "x".repeat(100 * 1024); // 100KB
       for (let i = 0; i < 7; i++) {
@@ -209,7 +209,7 @@ describe("TerminalManager", () => {
 
   describe("listTerminals", () => {
     it("lists all terminals when no scope given", () => {
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       tm.createTerminal({ scope: instanceScope, cwd: "/tmp" });
 
       const all = tm.listTerminals();
@@ -217,16 +217,16 @@ describe("TerminalManager", () => {
     });
 
     it("filters by scope", () => {
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       tm.createTerminal({ scope: instanceScope, cwd: "/tmp" });
 
-      const spaceOnly = tm.listTerminals(spaceScope);
-      assert.equal(spaceOnly.length, 1);
-      assert.equal(spaceOnly[0].scope.type, "space");
+      const otherOnly = tm.listTerminals(otherScope);
+      assert.equal(otherOnly.length, 1);
+      assert.equal(otherOnly[0].scope.instanceId, "inst-2");
 
       const instanceOnly = tm.listTerminals(instanceScope);
       assert.equal(instanceOnly.length, 1);
-      assert.equal(instanceOnly[0].scope.type, "instance");
+      assert.equal(instanceOnly[0].scope.instanceId, "inst-1");
     });
   });
 
@@ -234,36 +234,35 @@ describe("TerminalManager", () => {
 
   describe("closeAllForScope", () => {
     it("closes all terminals matching the scope", () => {
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       tm.createTerminal({ scope: instanceScope, cwd: "/tmp" });
 
-      tm.closeAllForScope(spaceScope);
+      tm.closeAllForScope(otherScope);
 
-      assert.equal(tm.listTerminals(spaceScope).length, 0);
+      assert.equal(tm.listTerminals(otherScope).length, 0);
       assert.equal(tm.listTerminals(instanceScope).length, 1);
     });
   });
 
   describe("listActiveScopes", () => {
     it("groups live terminals by scope with counts", () => {
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp" });
       tm.createTerminal({ scope: instanceScope, cwd: "/tmp" });
 
       const scopes = tm.listActiveScopes();
-      const space = scopes.find((s) => s.scope.type === "space");
-      const instance = scopes.find((s) => s.scope.type === "instance");
+      const other = scopes.find((s) => s.scope.instanceId === "inst-2");
+      const instance = scopes.find((s) => s.scope.instanceId === "inst-1");
 
-      assert.equal(space.count, 2);
-      assert.equal(space.scope.spaceId, "sp-1");
+      assert.equal(other.count, 2);
       assert.equal(instance.count, 1);
       assert.equal(instance.scope.instanceId, "inst-1");
     });
 
     it("excludes exited terminals from the live count", () => {
-      const info = tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      const info = tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       ptys[0].emit("exit", 0);
 
       const scopes = tm.listActiveScopes();
@@ -272,7 +271,7 @@ describe("TerminalManager", () => {
 
       // Closing the last live terminal drops the scope entirely.
       tm.closeTerminal(info.id);
-      const remaining = tm.listActiveScopes().find((s) => s.scope.type === "space");
+      const remaining = tm.listActiveScopes().find((s) => s.scope.instanceId === "inst-2");
       assert.equal(remaining.count, 1);
     });
 
@@ -283,7 +282,7 @@ describe("TerminalManager", () => {
 
   describe("closeAll", () => {
     it("closes every terminal", () => {
-      tm.createTerminal({ scope: spaceScope, cwd: "/tmp", cols: 120, rows: 30 });
+      tm.createTerminal({ scope: otherScope, cwd: "/tmp", cols: 120, rows: 30 });
       tm.createTerminal({ scope: instanceScope, cwd: "/tmp", cols: 120, rows: 30 });
 
       tm.closeAll();

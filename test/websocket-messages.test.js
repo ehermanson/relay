@@ -12,7 +12,7 @@ import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WebSocket } from "ws";
@@ -231,43 +231,6 @@ describe("WebSocket Messages — Additional Coverage", () => {
       // Verify connection is still healthy
       ws.send(JSON.stringify({ type: "list_instances" }));
       await ws.nextMessageOfType("instance_list");
-    });
-  });
-
-  describe("rename_space", () => {
-    it("renames a space and broadcasts the updated space list", async () => {
-      const session = auth.createSession();
-      const ws = await connect(session.id);
-      await ws.waitForHandshake();
-
-      const projectDir = join(tempDir, "repo");
-      mkdirSync(projectDir, { recursive: true });
-      manager.db.upsertSpace({
-        id: "space-rename",
-        project_directory: projectDir,
-        name: "Old Space Name",
-        git_branch: "relay-space/rename",
-        worktree_path: join(projectDir, ".relay", "worktrees", "space-rename"),
-        is_default: 0,
-        status: "active",
-        created_at: Date.now(),
-        last_activity_at: Date.now(),
-      });
-
-      ws.send(
-        JSON.stringify({
-          type: "rename_space",
-          spaceId: "space-rename",
-          name: "New Space Name",
-        }),
-      );
-
-      const msg = await ws.nextMessageOfType("space_list", 10000);
-      assert.equal(msg.projectDirectory, projectDir);
-      const renamed = msg.spaces.find((space) => space.id === "space-rename");
-      assert.ok(renamed);
-      assert.equal(renamed.name, "New Space Name");
-      assert.equal(manager.db.getSpace("space-rename")?.name, "New Space Name");
     });
   });
 

@@ -87,34 +87,6 @@ export function registerPublicSystemRoutes(app: Hono<AppEnv>, deps: HttpDeps): v
     return rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
   }
 
-  // Resolve space name once (won't change for this server's lifetime)
-  let resolvedGit: { branch: string; isWorktree: boolean; spaceName?: string } | null | undefined;
-  function getGitInfo() {
-    if (resolvedGit !== undefined) return resolvedGit;
-    if (!selfGitInfo) {
-      resolvedGit = null;
-      return null;
-    }
-    if (!selfGitInfo.isWorktree || !selfGitInfo.worktreePath) {
-      resolvedGit = { branch: selfGitInfo.branch, isWorktree: selfGitInfo.isWorktree };
-      return resolvedGit;
-    }
-    try {
-      const space = instanceManager
-        .getSpaceManager()
-        .getSpaceByWorktreePath(selfGitInfo.worktreePath);
-      resolvedGit = {
-        branch: selfGitInfo.branch,
-        isWorktree: true,
-        ...(space?.name ? { spaceName: space.name } : {}),
-      };
-    } catch {
-      // DB not ready on first call — leave uncached so next call retries
-      return { branch: selfGitInfo.branch, isWorktree: true };
-    }
-    return resolvedGit;
-  }
-
   app.get("/health", (c) => {
     const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
     return c.json({
@@ -123,7 +95,7 @@ export function registerPublicSystemRoutes(app: Hono<AppEnv>, deps: HttpDeps): v
       instances: instanceManager.listInstances().length,
       version: packageVersion,
       authRequired: auth.authRequired,
-      git: getGitInfo(),
+      git: selfGitInfo,
     });
   });
 

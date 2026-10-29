@@ -1,5 +1,4 @@
 import type { Hono } from "hono";
-import { existsSync } from "node:fs";
 import * as taskManager from "#core/task-manager.js";
 import {
   checkoutBranch,
@@ -22,47 +21,18 @@ import type { AppEnv, HttpDeps } from "#server/route-types.js";
 import type { Project, SuggestionsConfig } from "#core/types.js";
 
 class TaskScopeError extends Error {
-  readonly status: 404 | 409;
-  readonly code: "scope_not_found" | "scope_unavailable";
-
-  constructor(message: string, status: 404 | 409, code: "scope_not_found" | "scope_unavailable") {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
+  readonly status = 404 as const;
+  readonly code = "scope_not_found" as const;
 }
 
+/** Tasks always live in the project's main checkout. */
 function resolveTaskScope(
   instanceManager: HttpDeps["instanceManager"],
   projectId: string,
-  requestedSpaceId: string | undefined,
-): { project: Project; directory: string; spaceId?: string } {
+): { project: Project; directory: string } {
   const project = instanceManager.projectManager.getProject(projectId);
-  if (!project) {
-    throw new TaskScopeError("Project not found", 404, "scope_not_found");
-  }
-
-  const spaceId = requestedSpaceId?.trim();
-  if (!spaceId) return { project, directory: project.directory };
-
-  const space = instanceManager.getSpaceManager().getSpace(spaceId);
-  if (!space || space.projectDirectory !== project.directory) {
-    throw new TaskScopeError("Space not found for this project", 404, "scope_not_found");
-  }
-
-  // Main and the default Space are the same scope. Canonicalize both to an
-  // omitted spaceId so websocket invalidation keys cannot diverge.
-  if (space.isDefault) return { project, directory: project.directory };
-
-  if (space.status !== "active" || !space.worktreePath || !existsSync(space.worktreePath)) {
-    const reason =
-      space.status === "completed" || space.status === "archived"
-        ? `Space "${space.name}" is closed`
-        : `Space "${space.name}" has no usable worktree`;
-    throw new TaskScopeError(reason, 409, "scope_unavailable");
-  }
-
-  return { project, directory: space.worktreePath, spaceId: space.id };
+  if (!project) throw new TaskScopeError("Project not found");
+  return { project, directory: project.directory };
 }
 
 function taskErrorDetails(error: unknown): {
@@ -101,9 +71,9 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.post("/api/projects/:id/tasks/init", (c) => {
     try {
-      const scope = resolveTaskScope(instanceManager, c.req.param("id"), c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, c.req.param("id"));
       taskManager.initTasks(scope.directory);
-      instanceManager.notifyTasksChanged(scope.project.id, scope.spaceId);
+      instanceManager.notifyTasksChanged(scope.project.id);
       return c.json({ snippet: taskManager.TASKS_CLAUDE_MD_SNIPPET });
     } catch (error) {
       if (error instanceof TaskScopeError) {
@@ -116,7 +86,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.get("/api/projects/:id/tasks", (c) => {
     try {
-      const scope = resolveTaskScope(instanceManager, c.req.param("id"), c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, c.req.param("id"));
       const tasks = taskManager.hasTasks(scope.directory)
         ? taskManager.loadTasks(scope.directory, {
             includeArchived: c.req.query("includeArchived") === "true",
@@ -134,7 +104,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.get("/api/projects/:id/tasks/:taskId", (c) => {
     try {
-      const scope = resolveTaskScope(instanceManager, c.req.param("id"), c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, c.req.param("id"));
       const task = taskManager.getTask(scope.directory, c.req.param("taskId"));
       if (!task) return c.json({ error: "Task not found", code: "not_found" }, 404);
       return c.json(task);
@@ -149,7 +119,7 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.get("/api/projects/:id/tasks/:taskId/comments", (c) => {
     try {
-      const scope = resolveTaskScope(instanceManager, c.req.param("id"), c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, c.req.param("id"));
       const comments = taskManager.listTaskComments(scope.directory, c.req.param("taskId"));
       return c.json({ comments });
     } catch (error) {
@@ -163,10 +133,10 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.post("/api/projects/:id/tasks/:taskId/comments", async (c) => {
     try {
-      const scope = resolveTaskScope(instanceManager, c.req.param("id"), c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, c.req.param("id"));
       const body = await readJsonBody<taskManager.AddTaskCommentInput>(c);
       const comment = taskManager.addTaskComment(scope.directory, c.req.param("taskId"), body);
-      instanceManager.notifyTasksChanged(scope.project.id, scope.spaceId);
+      instanceManager.notifyTasksChanged(scope.project.id);
       return c.json(comment, 201);
     } catch (error) {
       if (error instanceof TaskScopeError) {
@@ -180,13 +150,13 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.post("/api/projects/:id/tasks", async (c) => {
     const projectId = c.req.param("id");
     try {
-      const scope = resolveTaskScope(instanceManager, projectId, c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, projectId);
       const body = await readJsonBody<taskManager.CreateTaskInput>(c);
       if (!body.title || typeof body.title !== "string") {
         return c.json({ error: "Missing title" }, 400);
       }
       const task = taskManager.createTask(scope.directory, body);
-      instanceManager.notifyTasksChanged(scope.project.id, scope.spaceId);
+      instanceManager.notifyTasksChanged(scope.project.id);
       return c.json(task, 201);
     } catch (error) {
       if (error instanceof TaskScopeError) {
@@ -201,13 +171,13 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const projectId = c.req.param("id");
     const taskId = c.req.param("taskId");
     try {
-      const scope = resolveTaskScope(instanceManager, projectId, c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, projectId);
       const body = await readJsonBody<taskManager.UpdateTaskInput>(c);
       const task = taskManager.updateTask(scope.directory, taskId, {
         ...body,
         expectedRevision: body.expectedRevision ?? expectedRevisionFromRequest(c),
       });
-      instanceManager.notifyTasksChanged(scope.project.id, scope.spaceId);
+      instanceManager.notifyTasksChanged(scope.project.id);
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskScopeError) {
@@ -222,9 +192,9 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const projectId = c.req.param("id");
     const taskId = c.req.param("taskId");
     try {
-      const scope = resolveTaskScope(instanceManager, projectId, c.req.query("spaceId"));
+      const scope = resolveTaskScope(instanceManager, projectId);
       taskManager.deleteTask(scope.directory, taskId, expectedRevisionFromRequest(c));
-      instanceManager.notifyTasksChanged(scope.project.id, scope.spaceId);
+      instanceManager.notifyTasksChanged(scope.project.id);
       return c.body(null, 204);
     } catch (error) {
       if (error instanceof TaskScopeError) {
@@ -323,8 +293,6 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         name?: string;
         targetBranch?: string | null;
         customInstructions?: string | null;
-        defaultSpaceBranch?: string | null;
-        spaceBranchSource?: "local" | "remote" | null;
         defaultProvider?: string | null;
         defaultModel?: string | null;
         /** Account membership (`Account.id`s); unknown ids → 400, empty ⇒ default only. */
@@ -338,14 +306,12 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ) {
         return c.json({ error: "accountIds must be a list of account ids" }, 400);
       }
-      const { name, targetBranch, customInstructions, defaultSpaceBranch } = body;
-      const { spaceBranchSource, defaultProvider, defaultModel, accountIds, suggestions } = body;
+      const { name, targetBranch, customInstructions } = body;
+      const { defaultProvider, defaultModel, accountIds, suggestions } = body;
       const project = instanceManager.projectManager.updateProject(c.req.param("id"), {
         ...(name !== undefined ? { name } : {}),
         ...(targetBranch !== undefined ? { targetBranch } : {}),
         ...(customInstructions !== undefined ? { customInstructions } : {}),
-        ...(defaultSpaceBranch !== undefined ? { defaultSpaceBranch } : {}),
-        ...(spaceBranchSource !== undefined ? { spaceBranchSource } : {}),
         ...(defaultProvider !== undefined ? { defaultProvider } : {}),
         ...(defaultModel !== undefined ? { defaultModel } : {}),
         ...(accountIds !== undefined ? { accountIds } : {}),
@@ -449,14 +415,9 @@ export function registerProjectRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         getStatusSummary(dir),
         listWorktrees(dir),
       ]);
-      const spaceManager = instanceManager.getSpaceManager();
       const worktrees = worktreeList
         .filter((w) => !w.isPrimary && w.branch)
-        .map((w) => ({
-          branch: w.branch as string,
-          path: w.path,
-          spaceId: spaceManager.getSpaceByWorktreePath(w.path)?.id,
-        }));
+        .map((w) => ({ branch: w.branch as string, path: w.path }));
       return c.json({
         ...branches,
         aheadBehind: { ahead: summary.ahead ?? 0, behind: summary.behind ?? 0 },

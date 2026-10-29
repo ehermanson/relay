@@ -1,8 +1,6 @@
 import type { Hono } from "hono";
 import {
   commitAll,
-  getCommitsAhead,
-  getDefaultBranch,
   getWorktreeStatus,
   gitFetch,
   gitPull,
@@ -31,7 +29,6 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         runtimeMode?: ProviderRuntimeMode;
         resumeSessionId?: string;
         model?: string;
-        spaceId?: string;
         modelOptions?: ProviderModelOptions;
         parentSessionId?: string;
         review?: import("#core/types.js").ReviewSessionInfo;
@@ -44,7 +41,6 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         runtimeMode: body.runtimeMode,
         resumeSessionId: body.resumeSessionId,
         model: body.model,
-        spaceId: body.spaceId,
         modelOptions: body.modelOptions,
         parentSessionId: body.parentSessionId,
         review: body.review,
@@ -234,26 +230,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     try {
       const status = await getWorktreeStatus(instance.workingDirectory);
 
-      // `reviewableDiff` is broader than `dirty`: for a space chat, committed
-      // work on the space branch (not yet in the base branch) also counts as
-      // "reviewable", so suggestions like "Review Changes" stay relevant after
-      // the agent has already committed its work.
-      let reviewableDiff = status.dirty;
-      if (!reviewableDiff) {
-        const spaceId = instance.spaceId;
-        if (spaceId) {
-          const space = instanceManager.getSpaceManager().getSpace(spaceId);
-          const baseRef =
-            space?.targetBranch || (await getDefaultBranch(instance.workingDirectory)) || null;
-          if (baseRef && baseRef !== space?.gitBranch) {
-            // An unknown base ref means "can't tell" — not reviewable.
-            reviewableDiff =
-              (await getCommitsAhead(instance.workingDirectory, baseRef).catch(() => 0)) > 0;
-          }
-        }
-      }
-
-      return c.json({ ...status, reviewableDiff });
+      return c.json({ ...status, reviewableDiff: status.dirty });
     } catch (err) {
       const { body, status } = gitErrorResponse(err, "Failed to read git status");
       return c.json(body, status);

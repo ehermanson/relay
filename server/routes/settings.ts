@@ -18,8 +18,6 @@ function rowToSettings(row: {
   default_open_target: string | null;
   default_provider: string | null;
   default_model: string | null;
-  default_space_branch: string | null;
-  space_branch_source: string;
   provider_defaults_json: string | null;
   custom_instructions: string | null;
   project_order_json: string | null;
@@ -48,8 +46,6 @@ function rowToSettings(row: {
     defaultOpenTarget: row.default_open_target,
     defaultProvider: row.default_provider,
     defaultModel: row.default_model,
-    defaultSpaceBranch: row.default_space_branch,
-    spaceBranchSource: (row.space_branch_source as "local" | "remote") ?? "local",
     providerDefaults: providerDefaults as GlobalSettings["providerDefaults"],
     customInstructions: row.custom_instructions,
     projectOrder,
@@ -86,9 +82,6 @@ export function registerSettingsRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (body.defaultOpenTarget !== undefined) dbPatch.default_open_target = body.defaultOpenTarget;
     if (body.defaultProvider !== undefined) dbPatch.default_provider = body.defaultProvider;
     if (body.defaultModel !== undefined) dbPatch.default_model = body.defaultModel;
-    if (body.defaultSpaceBranch !== undefined)
-      dbPatch.default_space_branch = body.defaultSpaceBranch;
-    if (body.spaceBranchSource !== undefined) dbPatch.space_branch_source = body.spaceBranchSource;
     if (body.customInstructions !== undefined)
       dbPatch.custom_instructions = body.customInstructions;
     if (body.sidebarLayout !== undefined)

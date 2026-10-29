@@ -28,10 +28,10 @@ export function taskQueryKey(projectId: string, view: TaskListView = "unfinished
   return ["tasks", projectId, view] as const;
 }
 
-/** Tasks are read from the Project's main checkout; changes elsewhere don't apply. */
+/** Tasks are read from the Project's main checkout. */
 export function taskChangeMatchesScope(
-  message: Pick<TasksChangedMessage, "projectId" | "spaceId">,
+  message: Pick<TasksChangedMessage, "projectId">,
   projectId: string,
 ): boolean {
-  return message.projectId === projectId && !message.spaceId;
+  return message.projectId === projectId;
 }

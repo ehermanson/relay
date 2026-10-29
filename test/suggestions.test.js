@@ -134,6 +134,13 @@ describe("resolveSuggestions", () => {
     assert.equal(resolved.length, MAX_SUGGESTIONS);
   });
 
+  it("ignores stored patches for built-ins that no longer exist", () => {
+    const baseline = resolveSuggestions(null, null);
+    const stale = { patches: { "continue-work": { disabled: true, prompt: "old" } }, custom: [] };
+    assert.deepEqual(resolveSuggestions(stale, stale), baseline);
+    assert.ok(!baseline.some((s) => s.id === "continue-work"));
+  });
+
   it("built-in definitions are non-empty and well-formed", () => {
     assert.ok(BUILT_IN_SUGGESTIONS.length > 0);
     for (const s of BUILT_IN_SUGGESTIONS) {

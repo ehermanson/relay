@@ -34,7 +34,6 @@ import { registerNativeOpenRoutes } from "#server/routes/native-open.js";
 import { registerProjectRoutes } from "#server/routes/projects.js";
 import { registerProviderRoutes } from "#server/routes/providers.js";
 import { registerAccountRoutes } from "#server/routes/accounts.js";
-import { registerSpaceRoutes } from "#server/routes/spaces.js";
 import { registerUiRoutes } from "#server/routes/ui.js";
 import { registerUploadRoutes } from "#server/routes/uploads.js";
 import { registerOutboxRoutes } from "#server/routes/outbox.js";
@@ -63,13 +62,7 @@ const packageVersion: string = JSON.parse(fs.readFileSync(packageJsonPath, "utf-
  * Detect whether the relay server itself is running from a git worktree.
  * Filesystem-only (reads HEAD/commondir), so module load never spawns git.
  */
-function getSelfGitInfo(): { branch: string; isWorktree: boolean; worktreePath?: string } | null {
-  const info = readGitHeadInfo(projectRoot);
-  if (!info) return null;
-  return { ...info, worktreePath: info.isWorktree ? projectRoot : undefined };
-}
-
-const selfGitInfo = getSelfGitInfo();
+const selfGitInfo = readGitHeadInfo(projectRoot);
 
 interface RequestHandlerOverrides {
   getTunnelUrl?: () => string | null;
@@ -305,7 +298,6 @@ export function createRequestHandler(
   registerProtectedSystemRoutes(app, deps);
   registerInstanceRoutes(app, deps);
   registerProjectRoutes(app, deps);
-  registerSpaceRoutes(app, deps);
   registerSpinOffRoutes(app, deps);
   registerWorkspaceRoutes(app, deps);
   registerRepoStatusRoutes(app, deps);

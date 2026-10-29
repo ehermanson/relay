@@ -17,7 +17,6 @@ import type { InstanceManager } from "#core/instance-manager.js";
 import { MaxProcessesError, ProviderUnavailableInAccountError } from "#core/instance-manager.js";
 import type { TerminalManager } from "#core/terminal-manager.js";
 import type { InstanceInfo } from "#core/types.js";
-import { getPrimaryRemote } from "#core/git.js";
 import { getRepoStatusService } from "#core/repo-status-service.js";
 import {
   isRepoStatusTarget,
@@ -38,6 +37,7 @@ import type {
   QueuedReorderedMessage,
   FileStatsMessage,
   RepoStatusTarget,
+  TerminalScope,
   ProviderGlobalState,
   ProviderKind,
 } from "#core/types.js";
@@ -71,7 +71,6 @@ export function createWebSocketServer(
 ): WebSocketServerHandle {
   const wss = new WebSocketServer({ server });
   const log = config.logger;
-  const spaceManager = instanceManager.getSpaceManager();
   const replayEpoch = Date.now();
 
   // Per-client subscription sets (instance subscriptions)
@@ -242,24 +241,8 @@ export function createWebSocketServer(
     }
   }
 
-  function canAccessTerminalScope(
-    ws: WebSocket,
-    scope: { type: "space"; spaceId: string } | { type: "instance"; instanceId: string },
-  ): boolean {
-    const subs = subscriptions.get(ws);
-    if (!subs) return false;
-
-    if (scope.type === "instance") {
-      return subs.has(scope.instanceId);
-    }
-
-    for (const instanceId of subs) {
-      const instance = instanceManager.listInstances().find((item) => item.id === instanceId);
-      if (instance?.spaceId === scope.spaceId) {
-        return true;
-      }
-    }
-    return false;
+  function canAccessTerminalScope(ws: WebSocket, scope: TerminalScope): boolean {
+    return scope?.type === "instance" && !!subscriptions.get(ws)?.has(scope.instanceId);
   }
 
   function getAuthorizedTerminal(ws: WebSocket, tm: TerminalManager, terminalId: string) {
@@ -317,14 +300,6 @@ export function createWebSocketServer(
         sendMessage(ws, message);
       }
     }
-  }
-
-  function broadcastSpaceList(projectDirectory: string): void {
-    broadcast({
-      type: "space_list",
-      projectDirectory,
-      spaces: spaceManager.listAllSpaces(projectDirectory),
-    });
   }
 
   // Wire up InstanceManager events
@@ -427,39 +402,10 @@ export function createWebSocketServer(
   });
 
   instanceManager.on("tasks:changed", (projectId: string, spaceId?: string) => {
-    broadcast({ type: "tasks_changed", projectId, spaceId });
-  });
-
-  spaceManager.on("space:created", (space) => {
-    broadcast({ type: "space_created", space });
-    broadcastSpaceList(space.projectDirectory);
-  });
-
-  spaceManager.on("space:updated", (space) => {
-    broadcastSpaceList(space.projectDirectory);
-  });
-
-  spaceManager.on(
-    "space:completed",
-    (spaceId, projectDirectory, targetBranch, mergeMethod, mergeCommit) => {
-      // Clean up terminals — the worktree is gone after completion
-      const tm = getTerminalManager?.();
-      if (tm) {
-        tm.closeAllForScope({ type: "space", spaceId });
-      }
-      broadcast({ type: "space_completed", spaceId, targetBranch, mergeMethod, mergeCommit });
-      broadcastSpaceList(projectDirectory);
-    },
-  );
-
-  spaceManager.on("space:removed", (spaceId, projectDirectory) => {
-    // Clean up any terminals scoped to this space
-    const tm = getTerminalManager?.();
-    if (tm) {
-      tm.closeAllForScope({ type: "space", spaceId });
-    }
-    broadcast({ type: "space_removed", spaceId });
-    broadcastSpaceList(projectDirectory);
+    // Tasks are always read from the main checkout; changes inside a Space
+    // worktree don't affect them.
+    if (spaceId) return;
+    broadcast({ type: "tasks_changed", projectId });
   });
 
   // Wire up TerminalManager events — deferred since the manager may not be
@@ -587,7 +533,6 @@ export function createWebSocketServer(
                 runtimeMode: message.runtimeMode,
                 resumeSessionId: message.resumeSessionId,
                 model: message.model,
-                spaceId: message.spaceId,
                 modelOptions: message.modelOptions,
                 parentSessionId: message.parentSessionId,
                 review: message.review,
@@ -612,7 +557,6 @@ export function createWebSocketServer(
                     runtimeMode: message.runtimeMode,
                     resumeSessionId: message.resumeSessionId,
                     model: message.model,
-                    spaceId: message.spaceId,
                     modelOptions: message.modelOptions,
                     parentSessionId: message.parentSessionId,
                     review: message.review,
@@ -897,18 +841,6 @@ export function createWebSocketServer(
             break;
           }
 
-          case "rename_space": {
-            try {
-              instanceManager.getSpaceManager().renameSpace(message.spaceId, message.name);
-            } catch (err) {
-              sendMessage(ws, {
-                type: "error",
-                message: err instanceof Error ? err.message : "Failed to rename space",
-              });
-            }
-            break;
-          }
-
           case "set_model": {
             await instanceManager.setModel(message.instanceId, message.model);
             break;
@@ -934,91 +866,6 @@ export function createWebSocketServer(
             break;
           }
 
-          case "create_space": {
-            try {
-              // Resolve effective base branch using project settings
-              let effectiveBranch: string | undefined = message.baseBranch;
-              const project = instanceManager.projectManager.getProjectByDirectory(
-                message.projectDirectory,
-              );
-              if (!effectiveBranch && project?.defaultSpaceBranch) {
-                effectiveBranch = project.defaultSpaceBranch;
-              }
-              // Fall back to global defaults if no project-level branch configured
-              const globalSettings = instanceManager.sessionDb.getGlobalSettings();
-              if (!effectiveBranch && globalSettings.default_space_branch) {
-                effectiveBranch = globalSettings.default_space_branch;
-              }
-              const branchSource = project?.spaceBranchSource ?? globalSettings.space_branch_source;
-              if (effectiveBranch && branchSource === "remote" && project?.repoRoot) {
-                const remote = await getPrimaryRemote(project.repoRoot);
-                if (remote && !effectiveBranch.includes("/")) {
-                  effectiveBranch = `${remote}/${effectiveBranch}`;
-                }
-              }
-              await instanceManager.getSpaceManager().createSpace(message.projectDirectory, {
-                name: message.name,
-                baseBranch: effectiveBranch,
-              });
-            } catch (err) {
-              sendMessage(ws, {
-                type: "error",
-                message: err instanceof Error ? err.message : "Failed to create space",
-              });
-            }
-            break;
-          }
-
-          case "complete_space": {
-            try {
-              const { targetBranch } = await instanceManager
-                .getSpaceManager()
-                .completeSpace(message.spaceId, {
-                  mergeMethod: message.mergeMethod,
-                  squashMessage: message.squashMessage,
-                });
-              sendMessage(ws, {
-                type: "notification",
-                message: `Space merged into ${targetBranch} successfully`,
-              });
-            } catch (err) {
-              sendMessage(ws, {
-                type: "error",
-                message: err instanceof Error ? err.message : "Failed to complete space",
-              });
-            }
-            break;
-          }
-
-          case "mark_space_merged": {
-            try {
-              const { targetBranch } = await instanceManager
-                .getSpaceManager()
-                .markSpaceMerged(message.spaceId);
-              sendMessage(ws, {
-                type: "notification",
-                message: `Space marked as merged into ${targetBranch}`,
-              });
-            } catch (err) {
-              sendMessage(ws, {
-                type: "error",
-                message: err instanceof Error ? err.message : "Failed to mark space as merged",
-              });
-            }
-            break;
-          }
-
-          case "delete_space": {
-            try {
-              await instanceManager.getSpaceManager().deleteSpace(message.spaceId);
-            } catch (err) {
-              sendMessage(ws, {
-                type: "error",
-                message: err instanceof Error ? err.message : "Failed to delete space",
-              });
-            }
-            break;
-          }
           case "merge_instance": {
             try {
               const { targetBranch } = await instanceManager.mergeInstance(message.instanceId);
@@ -1056,29 +903,16 @@ export function createWebSocketServer(
               }
               let cwd = message.cwd;
               if (!cwd) {
-                const scope = message.scope;
-                if (scope.type === "space") {
-                  cwd = instanceManager.getSpaceManager().getSpaceWorkingDirectory(scope.spaceId);
-                  if (!cwd) {
-                    sendMessage(ws, {
-                      type: "error",
-                      message: `Space ${scope.spaceId} not found or has no working directory`,
-                    });
-                    break;
-                  }
-                } else {
-                  // Instance-scoped: use the instance's working directory
-                  const inst = instanceManager
-                    .listInstances()
-                    .find((i) => i.id === scope.instanceId);
-                  cwd = inst?.workingDirectory;
-                  if (!cwd) {
-                    sendMessage(ws, {
-                      type: "error",
-                      message: `Instance ${scope.instanceId} not found or has no working directory`,
-                    });
-                    break;
-                  }
+                const { instanceId } = message.scope;
+                cwd = instanceManager
+                  .listInstances()
+                  .find((i) => i.id === instanceId)?.workingDirectory;
+                if (!cwd) {
+                  sendMessage(ws, {
+                    type: "error",
+                    message: `Instance ${instanceId} not found or has no working directory`,
+                  });
+                  break;
                 }
               }
               // If ifEmpty is set, skip creation when terminals already exist for this scope

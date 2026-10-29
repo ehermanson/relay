@@ -6947,8 +6947,8 @@ export class InstanceManager extends EventEmitter {
   }
 
   /** Broadcast a scoped invalidation after a server-side task mutation. */
-  notifyTasksChanged(projectId: string, spaceId?: string): void {
-    this.emit("tasks:changed", projectId, spaceId);
+  notifyTasksChanged(projectId: string): void {
+    this.emit("tasks:changed", projectId);
   }
 
   private taskWatchKey(projectId: string, spaceId?: string): string {

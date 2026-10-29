@@ -20,8 +20,6 @@ export function repoStatusTargetKey(target: RepoStatusTarget): string {
   switch (target.kind) {
     case "instance":
       return `instance:${target.instanceId}`;
-    case "space":
-      return `space:${target.spaceId}`;
     case "project":
       return `project:${target.projectId}`;
   }

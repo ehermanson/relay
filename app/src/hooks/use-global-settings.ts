@@ -7,8 +7,6 @@ export const DEFAULT_SETTINGS: GlobalSettings = {
   defaultOpenTarget: null,
   defaultProvider: null,
   defaultModel: null,
-  defaultSpaceBranch: null,
-  spaceBranchSource: "local",
   providerDefaults: {},
   customInstructions: null,
   projectOrder: null,

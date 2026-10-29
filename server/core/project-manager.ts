@@ -116,8 +116,6 @@ function rowToProject(row: ProjectRow): Project {
     remoteUrl: row.remote_url,
     targetBranch: row.target_branch,
     customInstructions: row.custom_instructions,
-    defaultSpaceBranch: row.default_space_branch,
-    spaceBranchSource: (row.space_branch_source as "local" | "remote") ?? null,
     defaultProvider: row.default_provider,
     defaultModel: row.default_model,
     // Deprecated: the column stays for old rows but is never read again.
@@ -550,8 +548,6 @@ export class ProjectManager extends EventEmitter {
       name?: string;
       targetBranch?: string | null;
       customInstructions?: string | null;
-      defaultSpaceBranch?: string | null;
-      spaceBranchSource?: "local" | "remote" | null;
       defaultProvider?: string | null;
       defaultModel?: string | null;
       /**
@@ -588,14 +584,6 @@ export class ProjectManager extends EventEmitter {
         updates.customInstructions !== undefined
           ? updates.customInstructions
           : existing.custom_instructions,
-      default_space_branch:
-        updates.defaultSpaceBranch !== undefined
-          ? updates.defaultSpaceBranch
-          : existing.default_space_branch,
-      space_branch_source:
-        updates.spaceBranchSource !== undefined
-          ? updates.spaceBranchSource
-          : existing.space_branch_source,
       default_provider:
         updates.defaultProvider !== undefined ? updates.defaultProvider : existing.default_provider,
       default_model:

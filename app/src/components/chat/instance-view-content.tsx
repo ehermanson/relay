@@ -559,8 +559,6 @@ export function InstanceViewContent() {
     const conditionState: Partial<Record<SuggestionCondition, boolean>> = {
       "has-changes": hasChanges,
       "has-reviewable-diff": hasReviewableDiff,
-      // Spaces are gone; suggestions that need one never apply.
-      "in-space": false,
     };
 
     return resolvedSuggestions.filter((s) => {

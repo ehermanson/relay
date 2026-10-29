@@ -166,20 +166,15 @@ async function projectRoots() {
   const response = await session.fetch(`${origin}/api/projects`);
   if (!response.ok) throw new Error("Project files are unavailable");
   const data = await response.json();
-  const spaces = await Promise.all(
-    data.projects.map(async (project) => {
-      const response = await session.fetch(
-        `${origin}/api/projects/${encodeURIComponent(project.id)}/spaces`,
-      );
-      return response.ok ? await response.json() : [];
-    }),
-  );
+  // A Project's Chats may run in a linked git worktree outside its directory;
+  // their working directories are authorized too (Project Chats only).
+  const chatsResponse = await session.fetch(`${origin}/api/instances`);
+  const chats = chatsResponse.ok ? await chatsResponse.json() : [];
   return [
     ...data.projects.map((project) => project.directory),
-    ...spaces
-      .flat()
-      .map((space) => space.worktreePath)
-      .filter(Boolean),
+    ...chats
+      .filter((chat) => chat.projectId && chat.workingDirectory)
+      .map((chat) => chat.workingDirectory),
     join(home, "uploads"),
   ];
 }

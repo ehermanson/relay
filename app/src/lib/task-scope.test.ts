@@ -32,12 +32,9 @@ describe("task scopes", () => {
     expect(taskQueryKey("project-1", "history")).toEqual(["tasks", "project-1", "history"]);
   });
 
-  it("matches change events only to the Project's main checkout", () => {
+  it("matches change events to their Project", () => {
     expect(taskChangeMatchesScope({ projectId: "project-1" }, "project-1")).toBe(true);
     expect(taskChangeMatchesScope({ projectId: "project-2" }, "project-1")).toBe(false);
-    expect(
-      taskChangeMatchesScope({ projectId: "project-1", spaceId: "space-1" }, "project-1"),
-    ).toBe(false);
   });
 
   it("keeps cancelled and archived terminal tasks in history", () => {

@@ -3,11 +3,9 @@ export async function profileSyntheticChat(window, expectedMessages) {
   if (!Number.isInteger(expectedMessages) || expectedMessages < 1 || expectedMessages > 50000)
     throw new Error("Invalid synthetic Chat size");
   const target = await window.webContents.executeJavaScript(
-    `(async()=>{const chats=await fetch('/api/instances').then(r=>r.json());const chat=chats.find(c=>/^Benchmark Chat 1:/.test(c.name));if(!chat)throw new Error('Synthetic Chat was not discovered ('+chats.length+'): '+chats.slice(0,5).map(c=>c.name).join(', '));return{chatId:chat.id,projectId:chat.projectSlug||chat.projectId||chat.workingDirectory.split('/').pop(),spaceId:chat.spaceId}})()`,
+    `(async()=>{const chats=await fetch('/api/instances').then(r=>r.json());const chat=chats.find(c=>/^Benchmark Chat 1:/.test(c.name));if(!chat)throw new Error('Synthetic Chat was not discovered ('+chats.length+'): '+chats.slice(0,5).map(c=>c.name).join(', '));return{chatId:chat.id,projectId:chat.projectSlug||chat.projectId||chat.workingDirectory.split('/').pop()}})()`,
   );
-  const path = target.spaceId
-    ? `/projects/${encodeURIComponent(target.projectId)}/spaces/${encodeURIComponent(target.spaceId)}/${encodeURIComponent(target.chatId)}`
-    : `/projects/${encodeURIComponent(target.projectId)}/chats/${encodeURIComponent(target.chatId)}`;
+  const path = `/projects/${encodeURIComponent(target.projectId)}/chats/${encodeURIComponent(target.chatId)}`;
   await window.webContents.executeJavaScript(
     `(()=>{window.__relayBenchmark={started:performance.now(),tasks:[]};window.__relayBenchmark.observer=new PerformanceObserver(list=>{for(const entry of list.getEntries())window.__relayBenchmark.tasks.push(entry.duration)});window.__relayBenchmark.observer.observe({entryTypes:['longtask']});})()`,
   );

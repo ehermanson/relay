@@ -87,11 +87,11 @@ test("a deferred source restart reports waiting and a retry re-requests the rela
   assert.equal(restarts(), 2);
 });
 
-test("source updates refuse busy Chats, dirty working trees and feature Spaces", async () => {
+test("source updates refuse busy Chats, dirty working trees and feature branches", async () => {
   for (const options of [
     { busy: true },
     { status: " M desktop/main.mjs" },
-    { branch: "space/native" },
+    { branch: "feature/native" },
   ]) {
     const state = await source(options);
     assert.equal((await state.service.installUpdate()).ok, false);
