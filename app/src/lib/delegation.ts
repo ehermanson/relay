@@ -90,3 +90,44 @@ export function buildDelegationFamily(
   visit(root, 0);
   return tabs.length > 1 ? tabs : [];
 }
+
+/** A delegated child whose task ended quietly (completed or cancelled): foldable in the strip. */
+export function isFinishedDelegationTab(tab: DelegationTab): boolean {
+  if (tab.depth === 0) return false;
+  const status = tab.instance.delegation?.taskStatus;
+  return status === "completed" || status === "cancelled";
+}
+
+/** The strip after folding finished children into one trailing chip. */
+export interface DelegationTabSplit {
+  /** Tabs to render, in family order (root first). */
+  visible: DelegationTab[];
+  /** Finished children the chip folds away while collapsed (the same set when expanded). */
+  folded: DelegationTab[];
+}
+
+/**
+ * Split a family into the tabs to show and the finished children folded into
+ * the "done" chip. Running and failed children always show; completed and
+ * cancelled ones fold unless `expanded`. Never folded: the root, the chat on
+ * screen, and a finished chat with a visible descendant (a nested tab keeps
+ * its parent). `folded` is what the chip counts and toggles; empty means no
+ * chip. A reopened child (running again) leaves the fold by itself.
+ */
+export function splitDelegationTabs(
+  tabs: readonly DelegationTab[],
+  activeId: string | null,
+  expanded: boolean,
+): DelegationTabSplit {
+  const pinned = tabs.map((tab) => !isFinishedDelegationTab(tab) || tab.instance.id === activeId);
+  const shown = tabs.map((tab, i) => {
+    if (pinned[i]) return true;
+    // Descendants follow a tab in depth-first order until the depth returns.
+    for (let j = i + 1; j < tabs.length && tabs[j].depth > tab.depth; j++) {
+      if (pinned[j]) return true;
+    }
+    return false;
+  });
+  const folded = tabs.filter((_, i) => !shown[i]);
+  return { visible: expanded ? [...tabs] : tabs.filter((_, i) => shown[i]), folded };
+}

@@ -165,9 +165,12 @@ export interface DelegatedTaskRecord extends DelegatedTaskInfo {
   originToolUseId?: string;
   /** When the result was delivered to the parent, or deliberately dropped. */
   deliveredAt?: number;
+  /** When the task first ended. Set on a running row = reopened by a new turn in the child. */
+  firstEndedAt?: number;
 }
 
 interface DelegatedTaskRow {
+  first_ended_at?: number | null;
   id: string;
   parent_instance_id: string;
   child_instance_id: string;
@@ -202,6 +205,7 @@ function toDelegatedTask(row: DelegatedTaskRow): DelegatedTaskRecord {
     ...(row.client_request_id ? { clientRequestId: row.client_request_id } : {}),
     ...(row.origin_tool_use_id ? { originToolUseId: row.origin_tool_use_id } : {}),
     ...(row.delivered_at != null ? { deliveredAt: row.delivered_at } : {}),
+    ...(row.first_ended_at != null ? { firstEndedAt: row.first_ended_at } : {}),
   };
 }
 
@@ -846,6 +850,13 @@ export class SessionDB {
         ON delegated_tasks(parent_instance_id, client_request_id)
         WHERE client_request_id IS NOT NULL;
     `);
+    // When a task first ended; a running row that has one was reopened.
+    const taskColumns = this.db.prepare("PRAGMA table_info(delegated_tasks)").all() as Array<{
+      name?: string;
+    }>;
+    if (!taskColumns.some((column) => column.name === "first_ended_at")) {
+      this.db.exec("ALTER TABLE delegated_tasks ADD COLUMN first_ended_at INTEGER");
+    }
   }
 
   insertDelegatedTask(task: DelegatedTaskRecord): void {
@@ -944,7 +955,8 @@ export class SessionDB {
       this.db
         .prepare(
           `UPDATE delegated_tasks SET status = ?, result = ?, result_is_error = ?, status_detail = ?,
-             ended_at = ?, delivered_at = ? WHERE id = ? AND status = 'running'`,
+             ended_at = ?, delivered_at = ?, first_ended_at = COALESCE(first_ended_at, ?)
+           WHERE id = ? AND status = 'running'`,
         )
         .run(
           patch.status,
@@ -953,17 +965,65 @@ export class SessionDB {
           patch.statusDetail ?? null,
           patch.endedAt,
           patch.deliveredAt ?? null,
+          patch.endedAt,
           id,
         ).changes > 0
     );
   }
 
+  /**
+   * Move a completed/failed task back to running (its child took a new turn).
+   * The previous result stays until the next end replaces it. Cancelled tasks
+   * never reopen. Returns false if nothing changed.
+   */
+  reopenDelegatedTask(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE delegated_tasks SET status = 'running', result_is_error = 0, status_detail = NULL,
+             ended_at = NULL, delivered_at = NULL
+           WHERE id = ? AND status IN ('completed', 'failed')`,
+        )
+        .run(id).changes > 0
+    );
+  }
+
+  /** Progress note on a running task (e.g. "Waiting for 2 delegated tasks"). */
+  setDelegatedTaskDetail(id: string, detail: string | null): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE delegated_tasks SET status_detail = ?
+           WHERE id = ? AND status = 'running' AND status_detail IS NOT ?`,
+        )
+        .run(detail, id, detail).changes > 0
+    );
+  }
+
+  /** A running task (possibly reopened) is never delivered: its result isn't final. */
   markDelegatedTasksDelivered(ids: readonly string[], at: number): void {
     if (ids.length === 0) return;
     const stmt = this.db.prepare(
-      "UPDATE delegated_tasks SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+      "UPDATE delegated_tasks SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL AND status != 'running'",
     );
     for (const id of ids) stmt.run(at, id);
+  }
+
+  /**
+   * Mark specific ends delivered: `(id, endedAt)` as captured when a wake was
+   * built. A task that reopened (and maybe ended again) since has another
+   * `ended_at`, so its fresh result stays owed.
+   */
+  markDelegatedTaskEndsDelivered(
+    ends: ReadonlyArray<{ id: string; endedAt?: number }>,
+    at: number,
+  ): void {
+    const stmt = this.db.prepare(
+      "UPDATE delegated_tasks SET delivered_at = ? WHERE id = ? AND ended_at = ? AND delivered_at IS NULL",
+    );
+    for (const end of ends) {
+      if (end.endedAt !== undefined) stmt.run(at, end.id, end.endedAt);
+    }
   }
 
   setDelegatedTaskOrigin(id: string, originToolUseId: string): void {

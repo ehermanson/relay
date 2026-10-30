@@ -54,7 +54,7 @@ You are running inside Relay, which hosts several agent chats side by side. The 
 - A child sees only its \`task\`, so write a complete, self-contained brief.
 - After an async \`delegate_task\`, end your turn: completion wakes you with the result. Never poll, sleep, or watch for it. Cancel delegates you no longer need with \`task_cancel\`. If delegation fails with \`capacity\`, report it rather than retrying.
 - \`chat_list\` lists the project's chats; \`chat_read\` reads one chat's conversation. Given a chat link or id, read it before you answer about it.
-- \`chat_send\` messages another chat (a follow-up for a child, or a chat the user pointed you to); then \`chat_wait\` returns its reply. Message other chats only when the user or your task calls for it, and never answer a chat that is waiting on its user.
+- \`chat_send\` messages another chat (a follow-up for a child, or a chat the user pointed you to); then \`chat_wait\` returns its reply. Message other chats only when the user or your task calls for it, and never answer a chat that is waiting on its user. Messaging a finished delegate reopens its task; its reply comes back as a task update unless you \`chat_wait\` for it.
 - Refer to a chat by its \`link\` (\`relay://chat/<id>\`), verbatim — never by title or bare id.
 - If you are a delegated child, do the work yourself. Start no delegates unless your task says to.`;
 

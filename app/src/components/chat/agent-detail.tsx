@@ -9,6 +9,7 @@ import {
   formatAgentDuration,
   getChildAgents,
   isAgentActive,
+  isAgentTerminal,
 } from "@/lib/agents";
 import { formatTokens } from "@/lib/utils";
 import { useAgentHistory } from "@/hooks/use-agent-history";
@@ -272,7 +273,10 @@ export function AgentDetail({ agent, fallbackResult, depth = 0 }: AgentDetailPro
     usageParts.push(`${usage.toolUses} tool ${usage.toolUses === 1 ? "use" : "uses"}`);
   const duration = formatAgentDuration(
     usage?.durationMs ??
-      (current.startedAt && current.endedAt ? current.endedAt - current.startedAt : undefined),
+      // A reopened (running again) agent keeps its previous endedAt; ignore it.
+      (isAgentTerminal(current.status) && current.startedAt && current.endedAt
+        ? current.endedAt - current.startedAt
+        : undefined),
   );
   if (duration) usageParts.push(duration);
 

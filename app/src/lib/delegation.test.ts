@@ -5,7 +5,9 @@ import {
   buildDelegationFamily,
   findDelegationRoot,
   isDelegatedChildInstance,
+  isFinishedDelegationTab,
   relayTaskIdOf,
+  splitDelegationTabs,
 } from "@/lib/delegation";
 
 function chat(overrides: Partial<InstanceInfo> & { id: string }): InstanceInfo {
@@ -84,6 +86,73 @@ describe("buildDelegationFamily", () => {
     const x = child("x", "y");
     const y = child("y", "x");
     expect(buildDelegationFamily([x, y], "x")).toHaveLength(2);
+  });
+});
+
+describe("splitDelegationTabs", () => {
+  const withTask = (
+    id: string,
+    parent: string,
+    taskStatus: NonNullable<InstanceInfo["delegation"]>["taskStatus"],
+    createdAt: number,
+  ) =>
+    chat({
+      id,
+      createdAt,
+      delegation: { parentInstanceId: parent, taskId: `t-${id}`, taskStatus },
+    });
+  // root → run (running) → grand (failed); done1, done2 (completed); gone (cancelled);
+  // doneParent (completed) → doneKid (completed)
+  const family = buildDelegationFamily(
+    [
+      chat({ id: "root" }),
+      withTask("run", "root", "running", 1),
+      withTask("grand", "run", "failed", 2),
+      withTask("done1", "root", "completed", 3),
+      withTask("gone", "root", "cancelled", 4),
+      withTask("done2", "root", "completed", 5),
+      withTask("doneParent", "root", "completed", 6),
+      withTask("doneKid", "doneParent", "completed", 7),
+      withTask("legacy", "root", undefined, 8),
+    ],
+    "root",
+  );
+  const ids = (tabs: { instance: InstanceInfo }[]) => tabs.map((tab) => tab.instance.id);
+
+  it("folds completed and cancelled children, keeping the root, running, failed and unknown", () => {
+    const split = splitDelegationTabs(family, "root", false);
+    expect(ids(split.visible)).toEqual(["root", "run", "grand", "legacy"]);
+    expect(ids(split.folded)).toEqual(["done1", "gone", "done2", "doneParent", "doneKid"]);
+    expect(isFinishedDelegationTab(family[0])).toBe(false);
+  });
+
+  it("shows everything in family order when expanded, with the same fold", () => {
+    const split = splitDelegationTabs(family, "root", true);
+    expect(ids(split.visible)).toEqual(ids(family));
+    expect(ids(split.folded)).toEqual(ids(splitDelegationTabs(family, "root", false).folded));
+  });
+
+  it("never hides the chat on screen, nor the parent of a visible tab", () => {
+    const split = splitDelegationTabs(family, "doneKid", false);
+    expect(ids(split.visible)).toEqual(["root", "run", "grand", "doneParent", "doneKid", "legacy"]);
+    expect(ids(split.folded)).toEqual(["done1", "gone", "done2"]);
+  });
+
+  it("unfolds a reopened child and drops the chip when nothing is finished", () => {
+    const reopened = family.map((tab) =>
+      tab.instance.id === "done1"
+        ? {
+            ...tab,
+            instance: {
+              ...tab.instance,
+              delegation: { ...tab.instance.delegation!, taskStatus: "running" as const },
+            },
+          }
+        : tab,
+    );
+    expect(ids(splitDelegationTabs(reopened, "root", false).visible)).toContain("done1");
+    const live = family.filter((tab) => !isFinishedDelegationTab(tab));
+    expect(splitDelegationTabs(live, "root", false).folded).toEqual([]);
   });
 });
 

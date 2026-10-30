@@ -219,7 +219,11 @@ describe("delegated tasks", () => {
     });
     const child = manager.getInstance(task.childInstanceId);
     assert.equal(child.provider, "codex");
-    assert.deepEqual(child.delegation, { parentInstanceId: parent.id, taskId: task.id });
+    assert.deepEqual(child.delegation, {
+      parentInstanceId: parent.id,
+      taskId: task.id,
+      taskStatus: "running",
+    });
     assert.equal(child.runtimeMode, "approval-required");
     assert.deepEqual(sessions.get(child.id).sent, ["Review the diff"]);
 
@@ -243,11 +247,305 @@ describe("delegated tasks", () => {
     assert.deepEqual(note.author, { kind: "agent", name: "Review" });
     assert.ok(!note.text.startsWith("[Relay"));
     await waitFor(() => manager.getDelegatedTask(task.id).deliveredAt, "delivery");
+  });
 
-    // The child's later, user-driven turns never republish or re-wake.
-    await manager.sendMessage(child.id, "one more thing");
-    await endTurn(manager, sessions.get(child.id), child.id, "Different answer.");
-    assert.equal(manager.getDelegatedTask(task.id).result, "All good.");
+  it("mirrors the task's state onto the child's info and summary, live", async () => {
+    const { manager, sessions, parent } = setup();
+    const statuses = [];
+    manager.on("instance:status", (id, info) => statuses.push([id, info]));
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    const lastActivityAt = manager.getInstance(childId).lastActivityAt;
+    await endTurn(manager, sessions.get(childId), childId, "done");
+
+    const ended = manager.getDelegatedTask(task.id);
+    const info = manager.getInstance(childId);
+    assert.equal(info.delegation.taskStatus, "completed");
+    assert.equal(info.delegation.taskEndedAt, ended.endedAt);
+    assert.ok(
+      statuses.some(([id, i]) => id === childId && i.delegation?.taskStatus === "completed"),
+      "broadcast to open UIs",
+    );
+    assert.equal(manager.getChatSummary(childId).delegation.taskStatus, "completed");
+
+    // A summary read from the DB row takes the state from the task table.
+    const live = manager.instances.get(childId);
+    live.info.lastActivityAt = lastActivityAt;
+    manager.instances.delete(childId);
+    const summary = manager.getChatSummary(childId);
+    assert.equal(summary.delegation.taskId, task.id);
+    assert.equal(summary.delegation.taskStatus, "completed");
+    assert.equal(summary.delegation.taskEndedAt, ended.endedAt);
+    manager.instances.set(childId, live);
+  });
+
+  it("a new turn in a completed child reopens its task and wakes the parent again", async () => {
+    const { manager, sessions, parent, events } = setup();
+    const parentProc = sessions.get(parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "Review", title: "Review" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    await endTurn(manager, childProc, childId, "All good.");
+    await waitFor(() => manager.getDelegatedTask(task.id).deliveredAt, "first delivery");
+    await endTurn(manager, parentProc, parent.id, "Noted.");
+    const firstEnd = manager.getDelegatedTask(task.id).endedAt;
+
+    await manager.sendMessage(childId, "one more thing");
+    const reopened = manager.getDelegatedTask(task.id);
+    assert.equal(reopened.status, "running");
+    assert.equal(reopened.endedAt, undefined);
+    assert.equal(reopened.deliveredAt, undefined);
+    assert.equal(reopened.result, "All good.", "kept until the next end replaces it");
+    assert.equal(manager.getInstance(childId).delegation.taskStatus, "running");
+    assert.equal(manager.getInstance(childId).delegation.taskEndedAt, undefined);
+    assert.equal(events.agentUpdates.at(-1)[1].status, "running");
+    assert.equal(events.agentUpdates.at(-1)[1].statusDetail, "", "clears the old end's detail");
+
+    // Idempotent: a message queued mid-turn drains as the next turn, still open.
+    await manager.sendMessage(childId, "and this");
+    await endTurn(manager, childProc, childId, "Interim.");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.equal(childProc.sent.length, 3);
+
+    await endTurn(manager, childProc, childId, "Different answer.");
+    const second = manager.getDelegatedTask(task.id);
+    assert.equal(second.status, "completed");
+    assert.equal(second.result, "Different answer.");
+    assert.ok(second.endedAt >= firstEnd);
+    await waitFor(() => parentProc.sent.length === 2, "the second wake");
+    assert.match(parentProc.sent[1], /Different answer\./);
+    await waitFor(() => manager.getDelegatedTask(task.id).deliveredAt, "second delivery");
+  });
+
+  it("a failed task reopens too; a cancelled one never does", async () => {
+    const { manager, sessions, parent } = setup();
+    const parentProc = sessions.get(parent.id);
+    const failed = await manager.delegateTask(parent.id, { task: "f" });
+    await endTurn(manager, sessions.get(failed.childInstanceId), failed.childInstanceId);
+    assert.equal(manager.getDelegatedTask(failed.id).status, "failed");
+    await manager.sendMessage(failed.childInstanceId, "try again");
+    assert.equal(manager.getDelegatedTask(failed.id).status, "running");
+    await endTurn(manager, sessions.get(failed.childInstanceId), failed.childInstanceId, "ok");
+    assert.equal(manager.getDelegatedTask(failed.id).status, "completed");
+
+    const cancelled = await manager.delegateTask(parent.id, { task: "c" });
+    manager.cancelDelegatedTask(cancelled.id, "not needed");
+    const childId = cancelled.childInstanceId;
+    await manager.sendMessage(childId, "keep going anyway");
+    assert.equal(manager.getDelegatedTask(cancelled.id).status, "cancelled");
+    await endTurn(manager, sessions.get(childId), childId, "late work");
+    assert.equal(manager.getDelegatedTask(cancelled.id).status, "cancelled");
+    assert.equal(manager.getInstance(childId).delegation.taskStatus, "cancelled");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(!parentProc.sent.some((t) => /late work/.test(t)), "never wakes the parent");
+  });
+
+  it("a wait on a reopened task waits for its new end", async () => {
+    const { manager, sessions, parent } = setup();
+    const call = mcpCaller(manager, parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    await endTurn(manager, sessions.get(childId), childId, "first");
+    await manager.sendMessage(childId, "again");
+
+    const waiting = manager.waitForDelegatedTask(task.id, 5000);
+    const chatWait = call("chat_wait", { chatId: childId, timeoutMs: 5000 });
+    let settled = false;
+    void waiting.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(settled, false, "the first end doesn't count");
+
+    await endTurn(manager, sessions.get(childId), childId, "second");
+    assert.equal((await waiting).result, "second");
+    const result = await chatWait;
+    assert.equal(result.outcome, "finished");
+    assert.equal(result.task.status, "completed");
+    assert.equal(result.lastReply, "second");
+  });
+
+  it("a child isn't complete while its own delegate runs; the delegate's wake finishes it", async () => {
+    const { manager, sessions, parent, events } = setup();
+    const parentProc = sessions.get(parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "child" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    const grand = await manager.delegateTask(childId, { task: "grandchild" });
+    const other = await manager.delegateTask(childId, { task: "second grandchild" });
+
+    await endTurn(manager, childProc, childId, "Delegated; waiting.");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.equal(manager.getDelegatedTask(task.id).statusDetail, "Waiting for 2 delegated tasks");
+    const card = events.agentUpdates.filter(([id]) => id === parent.id).at(-1)[1];
+    assert.equal(card.status, "running");
+    assert.equal(card.lastActivity, "Waiting for 2 delegated tasks");
+
+    // A cancelled delegate counts as ended; it wakes the child.
+    manager.cancelDelegatedTask(other.id, "not needed", { notifyParent: true });
+    await waitFor(() => childProc.sent.length === 2, "the cancel wake");
+    await endTurn(manager, childProc, childId, "Still waiting on the tests.");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.equal(manager.getDelegatedTask(task.id).statusDetail, "Waiting for 1 delegated task");
+
+    await endTurn(manager, sessions.get(grand.childInstanceId), grand.childInstanceId, "tests ok");
+    await waitFor(() => childProc.sent.length === 3, "the grandchild's wake");
+    assert.match(childProc.sent[2], /^\[Relay task update\][\s\S]*tests ok/);
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(parentProc.sent, [], "the parent isn't woken early");
+
+    await endTurn(manager, childProc, childId, "Final report.");
+    const done = manager.getDelegatedTask(task.id);
+    assert.equal(done.status, "completed");
+    assert.equal(done.result, "Final report.");
+    await waitFor(() => parentProc.sent.length === 1, "the parent's wake");
+    assert.match(parentProc.sent[0], /Final report\./);
+  });
+
+  it("an errored child waiting on its delegate settles once the delegate ends", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "child" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    const grand = await manager.delegateTask(childId, { task: "grandchild" });
+    childProc.isProcessing = false;
+    childProc.emit("exit", { type: "exit", code: 1 });
+    await manager.worktreeReconcileIdle(childId);
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+
+    // No wake reaches an errored chat, so the settle check finishes it.
+    await endTurn(manager, sessions.get(grand.childInstanceId), grand.childInstanceId, "done");
+    await waitFor(() => manager.getDelegatedTask(task.id).status !== "running", "settled");
+    assert.equal(manager.getDelegatedTask(task.id).status, "failed");
+    assert.equal(childProc.sent.length, 1, "no wake into the errored child");
+  });
+
+  it("parent cascades leave a child the user reopened running", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    await endTurn(manager, sessions.get(childId), childId, "first");
+    await manager.sendMessage(childId, "keep going");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.ok(manager.getDelegatedTask(task.id).firstEndedAt, "reopened, not fresh");
+
+    await manager.sendMessage(parent.id, "busy");
+    await manager.cancelMessage(parent.id);
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.equal(sessions.get(childId).closed, false);
+    await endTurn(manager, sessions.get(childId), childId, "second");
+    assert.equal(manager.getDelegatedTask(task.id).status, "completed");
+  });
+
+  it("a queued wake sent after the child reopened and ended again carries the fresh result", async () => {
+    const { manager, sessions, parent } = setup();
+    const parentProc = sessions.get(parent.id);
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    await manager.sendMessage(parent.id, "busy");
+    await endTurn(manager, childProc, childId, "first result");
+    await waitFor(() => manager.queuedTaskWakes.get(parent.id), "queued wake");
+    const queuedId = manager.queuedTaskWakes.get(parent.id).queuedId;
+
+    await manager.sendMessage(childId, "again");
+    await endTurn(manager, childProc, childId, "second result");
+    const secondEnd = manager.getDelegatedTask(task.id).endedAt;
+    // Keep the stale queued wake: no fresh wake replaces it.
+    clearTimeout(manager.taskWakeTimers.get(parent.id));
+    manager.taskWakeTimers.delete(parent.id);
+
+    // "Send now" drains it as-is when the turn ends.
+    manager.instances.get(parent.id).sendNowQueuedId = queuedId;
+    await endTurn(manager, parentProc, parent.id, "ok");
+    await waitFor(() => parentProc.sent.length === 2, "the wake");
+    assert.match(parentProc.sent[1], /second result/);
+    assert.doesNotMatch(parentProc.sent[1], /first result/);
+    const delivered = manager.getDelegatedTask(task.id);
+    assert.equal(delivered.endedAt, secondEnd);
+    assert.ok(delivered.deliveredAt);
+  });
+
+  it("delivery marks only the end a wake reported", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    await endTurn(manager, sessions.get(childId), childId, "first");
+    const firstEnd = manager.getDelegatedTask(task.id).endedAt;
+    await manager.sendMessage(childId, "again");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await endTurn(manager, sessions.get(childId), childId, "second");
+    manager.db.markDelegatedTaskEndsDelivered([{ id: task.id, endedAt: firstEnd }], Date.now());
+    assert.equal(
+      manager.getDelegatedTask(task.id).deliveredAt,
+      undefined,
+      "the fresh end stays owed",
+    );
+  });
+
+  it("a waiting child whose delegate results are dropped fails instead of completing", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "child" });
+    const childId = task.childInstanceId;
+    const grand = await manager.delegateTask(childId, { task: "grandchild" });
+    await endTurn(manager, sessions.get(childId), childId, "Delegated; waiting.");
+    // Put away without stopping it, so the grandchild's wake is dropped.
+    manager.instances.get(childId).info.doneAt = Date.now() + 60_000;
+    await endTurn(manager, sessions.get(grand.childInstanceId), grand.childInstanceId, "r");
+    await waitFor(() => manager.getDelegatedTask(task.id).status !== "running", "settled");
+    const settled = manager.getDelegatedTask(task.id);
+    assert.equal(settled.status, "failed");
+    assert.equal(settled.statusDetail, "Ended without reading 1 delegated result");
+  });
+
+  it("an interrupt in the child fails its task, and a later turn reopens it", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "x" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    await manager.cancelMessage(childId);
+    childProc.isProcessing = false;
+    childProc.emit("output", { type: "output", text: "", isWaiting: true, aborted: true });
+    await manager.worktreeReconcileIdle(childId);
+    const interrupted = manager.getDelegatedTask(task.id);
+    assert.equal(interrupted.status, "failed");
+    assert.equal(interrupted.statusDetail, "interrupted");
+    await manager.sendMessage(childId, "continue");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+  });
+
+  it("after a restart, a failed grandchild's wake boots the waiting child, which then settles", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "child" });
+    const childId = task.childInstanceId;
+    const grand = await manager.delegateTask(childId, { task: "grandchild" });
+    await endTurn(manager, sessions.get(childId), childId, "Delegated; waiting.");
+    const before = sessions.get(childId);
+    manager.instances.get(childId).process = null;
+    manager.instances.get(grand.childInstanceId).process = null;
+    manager.restartContinuedIds = new Set();
+    manager.recoverDelegatedTasks();
+    assert.equal(manager.getDelegatedTask(grand.id).status, "failed");
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+
+    await waitFor(() => sessions.get(childId) !== before, "the child booted by the wake");
+    const booted = sessions.get(childId);
+    await waitFor(() => booted.sent.length === 1, "the wake");
+    assert.match(booted.sent[0], /^\[Relay task update\][\s\S]*restart/);
+    await endTurn(manager, booted, childId, "Grandchild failed; here is what I have.");
+    const done = manager.getDelegatedTask(task.id);
+    assert.equal(done.status, "completed");
+    assert.equal(done.result, "Grandchild failed; here is what I have.");
+  });
+
+  it("restart recovery leaves a child waiting on its delegates alone", async () => {
+    const { manager, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "child" });
+    const grand = await manager.delegateTask(task.childInstanceId, { task: "grandchild" });
+    manager.instances.get(task.childInstanceId).process = null;
+    manager.restartContinuedIds = new Set([grand.childInstanceId]);
+    manager.recoverDelegatedTasks();
+    assert.equal(manager.getDelegatedTask(task.id).status, "running");
+    assert.equal(manager.getDelegatedTask(grand.id).status, "running");
   });
 
   it("queues one wake behind a busy parent and folds later results into it", async () => {

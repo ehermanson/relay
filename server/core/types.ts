@@ -740,6 +740,14 @@ export interface ChatDelegation {
   /** `delegated_tasks.id`; the parent's agent key is `relay-task:<taskId>`. */
   taskId: string;
   role?: string;
+  /**
+   * The task's state (`delegated_tasks.status`), filled from the table on
+   * create, restore, summaries and every task transition — never persisted
+   * with the chat. Absent when the row is gone.
+   */
+  taskStatus?: DelegatedTaskStatus;
+  /** When the task last ended; absent while it runs. */
+  taskEndedAt?: number;
 }
 
 /** Lifecycle of a Relay-delegated task (`delegated_tasks.status`). */

@@ -23,7 +23,119 @@ export interface AgentScene {
   };
 }
 
-/** A family of Relay chats for the delegation tab strip: root, two children, one grandchild. */
+/** One Relay child chat of the (h) scene: drives both its tab and its card. */
+interface RelayChildFixture {
+  id: string;
+  taskId: string;
+  parentId: string;
+  provider: "claude" | "codex";
+  title: string;
+  task: string;
+  model: string;
+  taskStatus: "running" | "completed" | "failed" | "cancelled";
+  /** The child chat's own process state (`InstanceInfo.status`). */
+  chatStatus: InstanceInfo["status"];
+  startedAgo: number;
+  endedAgo?: number;
+  pendingTool?: string;
+  lastActivity?: string;
+  result?: string;
+  statusDetail?: string;
+}
+
+const RELAY_ROOT_ID = "sbx-root";
+
+/**
+ * The (h) family: a running Codex reviewer with a grandchild waiting on
+ * input, a failed benchmark, two completed children and a cancelled spike.
+ */
+const RELAY_CHILDREN: RelayChildFixture[] = [
+  {
+    id: "sbx-child-docs",
+    taskId: "sbx-docs",
+    parentId: RELAY_ROOT_ID,
+    provider: "claude",
+    title: "Update the outbox docs",
+    task: "Update AGENTS.md's outbox section to describe reserved vs accepted receipts.",
+    model: "claude-sonnet-4-5",
+    taskStatus: "completed",
+    chatStatus: "idle",
+    startedAgo: 64_000,
+    endedAgo: 30_000,
+    result:
+      "Updated the Offline Drafts section: reserved receipts are uncertain and never retried.",
+  },
+  {
+    id: "sbx-child-review",
+    taskId: "sbx-review",
+    parentId: RELAY_ROOT_ID,
+    provider: "codex",
+    title: "Review the migration",
+    task: "Review the outbox migration in server/core/db.ts for data loss on downgrade.",
+    model: "gpt-5.5",
+    taskStatus: "running",
+    chatStatus: "processing",
+    startedAgo: 60_000,
+    lastActivity: "Read db.ts",
+  },
+  {
+    id: "sbx-grandchild-tests",
+    taskId: "sbx-tests",
+    parentId: "sbx-child-review",
+    provider: "claude",
+    title: "Add receipt regression tests",
+    task: "Add regression tests covering reserved-but-unaccepted outbox receipts.",
+    model: "claude-sonnet-4-5",
+    taskStatus: "running",
+    chatStatus: "idle",
+    startedAgo: 40_000,
+    pendingTool: "Bash",
+  },
+  {
+    id: "sbx-child-bench",
+    taskId: "sbx-bench",
+    parentId: RELAY_ROOT_ID,
+    provider: "claude",
+    title: "Benchmark the outbox drain",
+    task: "Measure how long a 500-message outbox takes to drain after reconnect.",
+    model: "claude-sonnet-4-5",
+    taskStatus: "failed",
+    chatStatus: "error",
+    startedAgo: 56_000,
+    endedAgo: 20_000,
+    statusDetail: "the child chat exited with code 1",
+  },
+  {
+    id: "sbx-child-lint",
+    taskId: "sbx-lint",
+    parentId: RELAY_ROOT_ID,
+    provider: "codex",
+    title: "Fix lint in the outbox store",
+    task: "Fix the oxlint warnings in app/src/lib/outbox-store.ts without changing behaviour.",
+    model: "gpt-5.5",
+    taskStatus: "completed",
+    chatStatus: "idle",
+    startedAgo: 52_000,
+    endedAgo: 25_000,
+    result: "Removed two unused imports and a redundant await. No behaviour change.",
+  },
+  {
+    id: "sbx-child-spike",
+    taskId: "sbx-spike",
+    parentId: RELAY_ROOT_ID,
+    provider: "codex",
+    title: "Spike an IndexedDB-free outbox",
+    task: "Prototype an outbox on the Cache API to see whether IndexedDB can go.",
+    model: "gpt-5.5",
+    taskStatus: "cancelled",
+    chatStatus: "stopped",
+    startedAgo: 48_000,
+    endedAgo: 35_000,
+    statusDetail: "stopped by the user",
+  },
+];
+
+/** The (h) family as tabs: root first, then the children depth-first. */
 function relayFamilyTabs(ts: number): DelegationTab[] {
   const base = {
     workingDirectory: "/Users/dev/projects/relay",
@@ -33,42 +145,64 @@ function relayFamilyTabs(ts: number): DelegationTab[] {
   const instances: InstanceInfo[] = [
     {
       ...base,
-      id: "sbx-root",
+      id: RELAY_ROOT_ID,
       provider: "claude",
       name: "Harden the offline outbox before the release",
       status: "idle",
       createdAt: ts - 70_000,
     },
-    {
-      ...base,
-      id: "sbx-child-review",
-      provider: "codex",
-      name: "Review the migration for data loss on downgrade",
-      status: "processing",
-      createdAt: ts - 40_000,
-      delegation: { parentInstanceId: "sbx-root", taskId: "sbx-review" },
-    },
-    {
-      ...base,
-      id: "sbx-child-docs",
-      provider: "claude",
-      name: "Update the outbox docs with reserved vs accepted receipts",
-      status: "idle",
-      createdAt: ts - 60_000,
-      delegation: { parentInstanceId: "sbx-root", taskId: "sbx-docs" },
-    },
-    {
-      ...base,
-      id: "sbx-grandchild-tests",
-      provider: "claude",
-      name: "Write regression tests for uncertain receipts",
-      status: "idle",
-      createdAt: ts - 30_000,
-      pendingTool: "Bash",
-      delegation: { parentInstanceId: "sbx-child-review", taskId: "sbx-tests" },
-    },
+    ...RELAY_CHILDREN.map(
+      (child): InstanceInfo => ({
+        ...base,
+        id: child.id,
+        provider: child.provider,
+        name: child.title,
+        status: child.chatStatus,
+        createdAt: ts - child.startedAgo,
+        ...(child.pendingTool ? { pendingTool: child.pendingTool } : {}),
+        delegation: {
+          parentInstanceId: child.parentId,
+          taskId: child.taskId,
+          taskStatus: child.taskStatus,
+          ...(child.endedAgo !== undefined ? { taskEndedAt: ts - child.endedAgo } : {}),
+        },
+      }),
+    ),
   ];
-  return buildDelegationFamily(instances, "sbx-root");
+  return buildDelegationFamily(instances, RELAY_ROOT_ID);
+}
+
+const RELAY_AGENT_STATUS = {
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "stopped",
+} as const;
+
+/** The root's cards for its direct children, matching the tabs. */
+function relayRootAgents(ts: number): Record<string, AgentInfo> {
+  const agents: Record<string, AgentInfo> = {};
+  RELAY_CHILDREN.filter((child) => child.parentId === RELAY_ROOT_ID).forEach((child, index) => {
+    const agentId = `relay-task:${child.taskId}`;
+    agents[agentId] = {
+      agentId,
+      origin: "relay",
+      childInstanceId: child.id,
+      childProvider: child.provider,
+      originToolUseId: `tu-relay-${index + 1}`,
+      relation: "child",
+      name: child.title,
+      assignment: child.task,
+      model: child.model,
+      status: RELAY_AGENT_STATUS[child.taskStatus],
+      startedAt: ts - child.startedAgo,
+      ...(child.endedAgo !== undefined ? { endedAt: ts - child.endedAgo } : {}),
+      ...(child.lastActivity ? { lastActivity: child.lastActivity } : {}),
+      ...(child.result ? { result: child.result } : {}),
+      ...(child.statusDetail ? { statusDetail: child.statusDetail } : {}),
+    };
+  });
+  return agents;
 }
 
 const now = () => Date.now();
@@ -598,77 +732,58 @@ export const AGENT_SCENES: AgentScene[] = [
   {
     label: "(h) Relay child chats (cross-provider)",
     description:
-      "delegate_task children: family tab strip, plus cards with provider logo, Delegated marker, Open chat and Stop",
+      "delegate_task children: family tab strip (running, failed, finished folded into a done chip, a grandchild), plus matching cards",
     build: () => {
       const ts = now();
-      const relayCall = (toolUseId: string, task: string, provider: string): MergedActivity =>
+      const rootChildren = RELAY_CHILDREN.filter((child) => child.parentId === RELAY_ROOT_ID);
+      const relayCall = (toolUseId: string, child: RelayChildFixture): MergedActivity =>
         ({
           type: "activity",
           activity: "tool_use",
           tool: "mcp__relay__delegate_task",
           toolUseId,
           description: "delegate_task",
-          inputDescription: task,
-          input: { task, target: { provider } },
+          inputDescription: child.title,
+          input: { task: child.task, title: child.title, target: { provider: child.provider } },
         }) as MergedActivity;
-      const agents: Record<string, AgentInfo> = {
-        "relay-task:sbx-review": {
-          agentId: "relay-task:sbx-review",
-          origin: "relay",
-          childInstanceId: "sbx-child-review",
-          childProvider: "codex",
-          originToolUseId: "tu-relay-1",
-          relation: "child",
-          name: "Review the migration",
-          assignment:
-            "Review the outbox migration in server/core/db.ts for data loss on downgrade.",
-          model: "gpt-5.5",
-          status: "running",
-          startedAt: ts - 40_000,
-          lastActivity: "Read db.ts",
-        },
-        "relay-task:sbx-docs": {
-          agentId: "relay-task:sbx-docs",
-          origin: "relay",
-          childInstanceId: "sbx-child-docs",
-          childProvider: "claude",
-          originToolUseId: "tu-relay-2",
-          relation: "child",
-          name: "Update the outbox docs",
-          description: "Document the receipt states",
-          assignment:
-            "Update AGENTS.md's outbox section to describe reserved vs accepted receipts.",
-          model: "claude-sonnet-4-5",
-          status: "completed",
-          startedAt: ts - 60_000,
-          endedAt: ts - 15_000,
-          result:
-            "Updated the Offline Drafts section: reserved receipts are uncertain and never retried.",
-        },
+      const ended = [...rootChildren]
+        .filter((child) => child.endedAgo !== undefined)
+        .sort((a, b) => (b.endedAgo ?? 0) - (a.endedAgo ?? 0));
+      const wakeLine = (child: RelayChildFixture) => {
+        const verb =
+          child.taskStatus === "cancelled"
+            ? "was cancelled"
+            : child.taskStatus === "failed"
+              ? "failed"
+              : "completed";
+        const detail = child.statusDetail ? `: ${child.statusDetail}` : "";
+        const result = child.result ? `\n\nResult:\n${child.result}` : "";
+        return `Delegated task "${child.title}" ${verb}${detail}.${result}`;
       };
       return {
-        agents,
+        agents: relayRootAgents(ts),
         agentItems: {},
         familyTabs: relayFamilyTabs(ts),
         items: [
           {
             kind: "user",
-            text: "Have Codex review the migration and Claude update the docs.",
-            timestamp: ts - 65_000,
+            text: "Harden the offline outbox before the release. Split the work across Codex and Claude.",
+            timestamp: ts - 66_000,
           },
           {
             kind: "activity-group",
-            activities: [
-              relayCall("tu-relay-1", "Review the migration", "codex"),
-              relayCall("tu-relay-2", "Update the outbox docs", "claude"),
-            ],
+            activities: rootChildren.map((child, index) =>
+              relayCall(`tu-relay-${index + 1}`, child),
+            ),
           },
-          {
-            kind: "agent-note",
-            name: "Update the outbox docs",
-            text: "Delegated task completed: Updated the Offline Drafts section.",
-            timestamp: ts - 15_000,
-          },
+          ...ended.map(
+            (child): ChatItem => ({
+              kind: "agent-note",
+              name: child.title,
+              text: wakeLine(child),
+              timestamp: ts - (child.endedAgo ?? 0),
+            }),
+          ),
         ],
       };
     },

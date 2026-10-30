@@ -108,7 +108,13 @@ export function agentInfoForTask(
     assignment: task.task,
     ...(model ? { model } : {}),
     status: AGENT_STATUS[task.status],
-    ...(task.statusDetail ? { statusDetail: task.statusDetail } : {}),
+    // Agent updates merge sparsely, so a running task (possibly reopened)
+    // sends empty strings to clear a previous end's detail.
+    ...(task.status === "running"
+      ? { statusDetail: task.statusDetail ?? "", lastActivity: task.statusDetail ?? "" }
+      : task.statusDetail
+        ? { statusDetail: task.statusDetail }
+        : {}),
     ...(task.result !== undefined ? { result: task.result } : {}),
     ...(task.resultIsError ? { resultIsError: true } : {}),
     startedAt: task.createdAt,
@@ -141,6 +147,9 @@ const STATUS_WORDS: Record<DelegatedTaskStatus, string> = {
  * inlined, oldest first, until the budget runs out.
  */
 export function buildTaskWakeMessage(tasks: readonly DelegatedTaskInfo[]): string {
+  if (tasks.length === 0) {
+    return `${TASK_WAKE_PREFIX}Delegated tasks\n\nNo new results: they were already delivered.`;
+  }
   const sender = tasks.length === 1 ? tasks[0].title : `${tasks.length} delegated tasks`;
   let budget = TASK_WAKE_RESULT_BUDGET;
   const sections = tasks.map((task) => {
