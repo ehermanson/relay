@@ -4505,10 +4505,23 @@ export class InstanceManager extends EventEmitter {
     );
   }
 
+  /**
+   * Where a chat's git status, diff and git actions run: the worktree the
+   * agent moved itself into when it still exists, else its working directory.
+   * The branch the UI shows comes from the same place (`gitInfo`), so the two
+   * can't disagree.
+   */
+  getGitDirectory(id: string): string | null {
+    const instance = this.instances.get(id);
+    if (!instance) return null;
+    const moved = instance.info.gitInfo?.directory;
+    return moved && existsSync(moved) ? moved : this.runnableCwd(instance);
+  }
+
   async getInstanceDiff(id: string, filePath?: string): Promise<string | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
-    const cwd = this.runnableCwd(instance);
+    const cwd = this.getGitDirectory(id) ?? this.runnableCwd(instance);
     // A read-only chat's checkout is gone: there is nothing to diff.
     if (!existsSync(cwd)) return null;
     const origBranch = instance.originalDirectory
@@ -6008,14 +6021,17 @@ export class InstanceManager extends EventEmitter {
           changed = true;
         }
         if (currentBranch) {
+          const directory = agentMovedDir ? gitDir : undefined;
           if (
             !live.info.gitInfo ||
             live.info.gitInfo.branch !== currentBranch ||
-            live.info.gitInfo.isWorktree !== currentIsWorktree
+            live.info.gitInfo.isWorktree !== currentIsWorktree ||
+            live.info.gitInfo.directory !== directory
           ) {
             live.info.gitInfo = {
               branch: currentBranch,
               isWorktree: currentIsWorktree,
+              ...(directory ? { directory } : {}),
             };
             changed = true;
           }

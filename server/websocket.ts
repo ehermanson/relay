@@ -84,8 +84,9 @@ export function createWebSocketServer(
   const terminalSubscriptions = new Map<WebSocket, Set<string>>();
 
   // ── Repo status subscriptions (push-based git status) ──
-  // Per client: target key → unsubscribe from the shared status service.
-  const repoStatusSubscriptions = new Map<WebSocket, Map<string, () => void>>();
+  // Per client: target key → the watched directory and its unsubscribe.
+  type RepoStatusSubscription = { target: RepoStatusTarget; dir: string; unsubscribe: () => void };
+  const repoStatusSubscriptions = new Map<WebSocket, Map<string, RepoStatusSubscription>>();
   const repoStatusService = getRepoStatusService();
 
   function subscribeRepoStatus(ws: WebSocket, target: RepoStatusTarget): void {
@@ -97,7 +98,7 @@ export function createWebSocketServer(
     }
     if (subs.has(key)) {
       // Re-subscribe (e.g. a second view mounted): resend the snapshot.
-      subs.get(key)?.();
+      subs.get(key)?.unsubscribe();
       subs.delete(key);
     }
     const dir = resolveRepoStatusDir(instanceManager, target);
@@ -108,20 +109,34 @@ export function createWebSocketServer(
     const unsubscribe = repoStatusService.subscribe(dir, (status) => {
       sendMessage(ws, { type: "repo_status", target, status });
     });
-    subs.set(key, unsubscribe);
+    subs.set(key, { target, dir, unsubscribe });
+  }
+
+  /**
+   * A chat's git directory can change under an open subscription (its agent
+   * entered or left a worktree), so re-point any subscription for it.
+   */
+  function refreshInstanceRepoStatus(instanceId: string): void {
+    const key = repoStatusTargetKey({ kind: "instance", instanceId });
+    for (const [ws, subs] of repoStatusSubscriptions) {
+      const sub = subs.get(key);
+      if (!sub) continue;
+      const dir = resolveRepoStatusDir(instanceManager, sub.target);
+      if (dir && dir !== sub.dir) subscribeRepoStatus(ws, sub.target);
+    }
   }
 
   function unsubscribeRepoStatus(ws: WebSocket, target: RepoStatusTarget): void {
     const subs = repoStatusSubscriptions.get(ws);
     const key = repoStatusTargetKey(target);
-    subs?.get(key)?.();
+    subs?.get(key)?.unsubscribe();
     subs?.delete(key);
   }
 
   function clearRepoStatusSubscriptions(ws: WebSocket): void {
     const subs = repoStatusSubscriptions.get(ws);
     if (!subs) return;
-    for (const unsubscribe of subs.values()) unsubscribe();
+    for (const sub of subs.values()) sub.unsubscribe();
     repoStatusSubscriptions.delete(ws);
   }
   const MAX_REPLAY_EVENTS = 500;
@@ -328,6 +343,7 @@ export function createWebSocketServer(
   });
 
   instanceManager.on("instance:status", (instanceId: string, info: InstanceInfo) => {
+    refreshInstanceRepoStatus(instanceId);
     broadcast({ type: "instance_status", instanceId, instance: info });
   });
 

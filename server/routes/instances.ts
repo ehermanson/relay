@@ -15,6 +15,10 @@ import type { AppEnv, HttpDeps } from "#server/route-types.js";
 
 export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   const { instanceManager } = deps;
+  // A chat's git reads and actions follow the worktree its agent moved into,
+  // the same place its branch label comes from.
+  const gitDir = (instance: { id: string; workingDirectory: string }): string =>
+    instanceManager.getGitDirectory(instance.id) ?? instance.workingDirectory;
 
   app.get("/api/instances", (c) => {
     return c.json(instanceManager.listInstances());
@@ -210,7 +214,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     }
     try {
       const body = await readJsonBody<{ message?: string }>(c);
-      const dir = instance.workingDirectory;
+      const dir = gitDir(instance);
       if (!(await isWorktreeDirty(dir))) {
         return c.json({ success: false, error: "Nothing to commit — working tree is clean" }, 400);
       }
@@ -228,7 +232,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Instance not found" }, 404);
     }
     try {
-      const status = await getWorktreeStatus(instance.workingDirectory);
+      const status = await getWorktreeStatus(gitDir(instance));
 
       return c.json({ ...status, reviewableDiff: status.dirty });
     } catch (err) {
@@ -248,7 +252,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         setUpstream?: boolean;
         commitMessage?: string;
       }>(c);
-      const dirty = await isWorktreeDirty(instance.workingDirectory);
+      const dirty = await isWorktreeDirty(gitDir(instance));
       const commitMessage = body.commitMessage?.trim();
       if (dirty && !commitMessage) {
         return c.json(
@@ -257,13 +261,13 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         );
       }
       if (dirty && commitMessage) {
-        const commitResult = await commitAll(instance.workingDirectory, commitMessage);
+        const commitResult = await commitAll(gitDir(instance), commitMessage);
         if (!commitResult.success) {
           return c.json(commitResult, gitResultStatus(commitResult));
         }
       }
       const result = await gitPush(
-        instance.workingDirectory,
+        gitDir(instance),
         body.branch || instance.gitInfo?.branch || instance.gitBranch,
         body.setUpstream,
       );
@@ -279,7 +283,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (!instance) {
       return c.json({ error: "Instance not found" }, 404);
     }
-    const result = await gitFetch(instance.workingDirectory);
+    const result = await gitFetch(gitDir(instance));
     return c.json(result, gitResultStatus(result));
   });
 
@@ -291,7 +295,7 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     const body = await readJsonBody<{ rebase?: boolean }>(c).catch(
       () => ({}) as { rebase?: boolean },
     );
-    const result = await gitPull(instance.workingDirectory, { rebase: body.rebase === true });
+    const result = await gitPull(gitDir(instance), { rebase: body.rebase === true });
     return c.json(result, gitResultStatus(result));
   });
 }

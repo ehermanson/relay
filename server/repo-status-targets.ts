@@ -30,7 +30,8 @@ export function resolveRepoStatusDir(
 ): string | null {
   switch (target.kind) {
     case "instance":
-      return instanceManager.getInstance(target.instanceId)?.workingDirectory ?? null;
+      // Follows the worktree the chat's agent moved into, like its branch label.
+      return instanceManager.getGitDirectory(target.instanceId);
     case "project": {
       const project = instanceManager.projectManager.getProject(target.projectId);
       return project ? project.repoRoot || project.directory : null;

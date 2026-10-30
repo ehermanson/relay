@@ -686,7 +686,16 @@ export interface InstanceInfo {
   /** Original project directory before worktree substitution */
   originalDirectory?: string;
   /** Git metadata for the working directory (directory-level, independent of worktrees) */
-  gitInfo?: { branch: string; isWorktree: boolean };
+  gitInfo?: {
+    branch: string;
+    isWorktree: boolean;
+    /**
+     * The worktree the agent moved itself into (Claude `EnterWorktree`), when
+     * it differs from the spawn directory. Git status, diff and actions for
+     * the chat run here, so they match the branch shown.
+     */
+    directory?: string;
+  };
   /** Git branch at session creation time — used to detect mid-chat branch switches */
   originalGitBranch?: string;
   /** Set when the current branch differs from the branch this chat started on */

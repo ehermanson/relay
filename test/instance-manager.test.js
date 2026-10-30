@@ -1011,7 +1011,18 @@ describe("InstanceManager", () => {
       instance.jsonlPath = jsonlPath;
 
       await manager.refreshGitBranchStateAsync(info.id, instance);
-      assert.deepEqual(instance.info.gitInfo, { branch: "worktree-feat", isWorktree: true });
+      assert.deepEqual(instance.info.gitInfo, {
+        branch: "worktree-feat",
+        isWorktree: true,
+        directory: worktreePath,
+      });
+      // Git status and diff follow the branch shown, not the spawn checkout.
+      assert.equal(manager.getGitDirectory(info.id), worktreePath);
+      writeFileSync(join(worktreePath, "agent-edit.txt"), "hi\n");
+      writeFileSync(join(repoDir, "spawn-edit.txt"), "hi\n");
+      const diff = await manager.getInstanceDiff(info.id);
+      assert.match(diff, /agent-edit\.txt/);
+      assert.doesNotMatch(diff, /spawn-edit\.txt/);
       assert.equal(
         instance.info.branchChanged,
         undefined,
@@ -1021,6 +1032,7 @@ describe("InstanceManager", () => {
       appendFileSync(jsonlPath, worktreeState(null) + "\n");
       await manager.refreshGitBranchStateAsync(info.id, instance);
       assert.equal(instance.info.gitInfo?.branch, "main");
+      assert.equal(manager.getGitDirectory(info.id), repoDir);
     });
 
     it("re-points a managed chat at its relocated transcript and watcher", async () => {
