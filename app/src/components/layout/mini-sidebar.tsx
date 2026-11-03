@@ -14,6 +14,7 @@ import { AccountSwitcher } from "@/components/layout/account-switcher";
 import { NewChatMenu } from "@/components/layout/new-chat-menu";
 import { SidebarItem } from "@/components/layout/sidebar-item";
 import { useAuthContext } from "@/context/auth-context";
+import { UpdateTooltipContent } from "@/components/layout/update-tooltip-content";
 import { SidebarActionsProvider, useSidebarActions } from "@/context/sidebar-actions-context";
 import { useSidebarLayout } from "@/hooks/use-global-settings";
 import {
@@ -493,9 +494,11 @@ export function MiniSidebar({ onExpand }: { onExpand: () => void }) {
             {showUpdateButton && (
               <Tooltip
                 content={
-                  isInstalling
-                    ? (updateStageLabel ?? "Installing update…")
-                    : "Install update and restart Relay"
+                  <UpdateTooltipContent
+                    snapshot={updateSnapshot}
+                    installing={isInstalling}
+                    stageLabel={updateStageLabel}
+                  />
                 }
                 side="right"
               >

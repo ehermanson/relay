@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthContext } from "@/context/auth-context";
+import { UpdateTooltipContent } from "@/components/layout/update-tooltip-content";
 import { useWSState } from "@/context/websocket-context";
 import {
   addProject as apiAddProject,
@@ -339,9 +340,11 @@ export function SidebarFooter() {
           {showUpdateButton && (
             <Tooltip
               content={
-                isUpdateInstalling
-                  ? (updateStageLabel ?? "Installing update…")
-                  : "Install update and restart Relay"
+                <UpdateTooltipContent
+                  snapshot={updateSnapshot}
+                  installing={isUpdateInstalling}
+                  stageLabel={updateStageLabel}
+                />
               }
               side="top"
             >
