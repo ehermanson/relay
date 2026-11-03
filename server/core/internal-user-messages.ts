@@ -1,4 +1,5 @@
 import {
+  ASIDE_INSTRUCTIONS,
   LEGACY_TASK_CONTEXT_MSG,
   RUNTIME_CONTEXT_PREFIX,
   TASK_CONTEXT_MSG,
@@ -35,6 +36,17 @@ export function buildCustomInstructionsPrompt(userMessage: string, instructions:
 /** Injected by the removed Spaces feature; still hidden in older transcripts. */
 const SPACE_CONTEXT_PREFIX = "<space-context>";
 
+const ASIDE_PREFIX = "<aside>";
+
+/**
+ * Wrap a message sent in an aside chat with the aside instructions. Sent per
+ * turn rather than as a system prompt so the fork keeps the source's prompt
+ * prefix (and its provider-side cache). Replay strips it back to the request.
+ */
+export function buildAsidePrompt(userMessage: string): string {
+  return `${ASIDE_PREFIX}\n${ASIDE_INSTRUCTIONS}\n</aside>\n\n${USER_REQUEST_MARKER}${userMessage}`;
+}
+
 export function isInternalInjectedUserText(text: string): boolean {
   return (
     text === AUTO_CONTINUE_MSG ||
@@ -42,6 +54,7 @@ export function isInternalInjectedUserText(text: string): boolean {
     text.startsWith(LEGACY_TASK_CONTEXT_MSG) ||
     text.startsWith(CUSTOM_INSTRUCTIONS_PREFIX) ||
     text.startsWith(SPACE_CONTEXT_PREFIX) ||
+    text.startsWith(ASIDE_PREFIX) ||
     text.startsWith(RUNTIME_CONTEXT_PREFIX) ||
     /^Permission granted for .+\. Please continue\.$/.test(text)
   );
@@ -60,6 +73,7 @@ export function stripInjectedWrapper(text: string): string {
     text.startsWith(LEGACY_TASK_CONTEXT_MSG) ||
     text.startsWith(CUSTOM_INSTRUCTIONS_PREFIX) ||
     text.startsWith(SPACE_CONTEXT_PREFIX) ||
+    text.startsWith(ASIDE_PREFIX) ||
     text.startsWith(RUNTIME_CONTEXT_PREFIX)
   ) {
     const idx = text.lastIndexOf(USER_REQUEST_MARKER);

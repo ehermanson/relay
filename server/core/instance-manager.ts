@@ -205,6 +205,7 @@ import {
 } from "#core/agent-messages.js";
 import {
   AUTO_CONTINUE_MSG,
+  buildAsidePrompt,
   buildCustomInstructionsPrompt,
   buildFirstTurnTaskContextPrompt,
   buildPermissionGrantedRetryMessage,
@@ -269,7 +270,12 @@ import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { findClaudeBinary, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { normalizeConfigDir, type DefaultLogins } from "#core/accounts.js";
 import { AccountStore } from "#core/account-store.js";
-import { DEFAULT_ACCOUNT_ID, type Account, type ProviderDefaults } from "#core/types.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  type Account,
+  type AsideSessionInfo,
+  type ProviderDefaults,
+} from "#core/types.js";
 import { OrchestrationCredentials } from "#core/orchestration/credentials.js";
 import {
   agentInfoForTask,
@@ -1531,6 +1537,16 @@ export class MaxProcessesError extends Error {
  * chat's provider. A provider without a login in an account is unavailable
  * there — Relay never falls back to another account's login.
  */
+/** An aside could not be forked from its source chat (409 on the REST route). */
+export class AsideUnavailableError extends Error {
+  readonly code = "aside_unavailable";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AsideUnavailableError";
+  }
+}
+
 export class ProviderUnavailableInAccountError extends Error {
   readonly code = "provider_unavailable_in_account";
   readonly provider: ProviderKind;
@@ -2199,10 +2215,18 @@ export class InstanceManager extends EventEmitter {
       configDir?: string;
       /** The chat this session serves; it gets the Relay MCP token, when served. */
       instanceId?: string;
+      /** Fork the given provider session (aside chats) instead of starting fresh. */
+      forkFrom?: { sessionId: string; cursor?: string };
+      /** Read-only side thread (aside chats). */
+      readOnly?: boolean;
     },
   ): ProviderSession {
     const provider = options?.provider ?? "claude";
-    const relayMcp = this.issueRelayMcp(options?.instanceId, provider);
+    // Asides are read-only side threads: they never get Relay's orchestration
+    // tools (delegates wouldn't inherit the read-only guard).
+    const relayMcp = options?.readOnly
+      ? undefined
+      : this.issueRelayMcp(options?.instanceId, provider);
     // A bound chat's config and driver context both point at its login dir,
     // so the spawn and any path the driver derives from `providerDirs` agree
     // on where the transcript lives.
@@ -3415,6 +3439,132 @@ export class InstanceManager extends EventEmitter {
     return max;
   }
 
+  /**
+   * Fork a chat into a read-only aside ("btw") thread: same provider, model,
+   * account and working directory, its provider session forked at the end of
+   * the source's last completed turn. The source chat is never touched.
+   */
+  createAside(sourceId: string): InstanceInfo {
+    const source = this.instances.get(sourceId);
+    if (!source) throw new AsideUnavailableError("Chat not found");
+    if (source.info.aside) throw new AsideUnavailableError("An aside can't have its own aside");
+    const provider = source.info.provider;
+    if (!getProviderCapabilities(provider).supportsAside) {
+      throw new AsideUnavailableError(
+        `${getProviderDisplayName(provider)} chats don't support asides`,
+      );
+    }
+    const forkFrom = this.asideForkPoint(source);
+    if (!forkFrom) {
+      throw new AsideUnavailableError("Nothing to fork yet — wait for the first reply");
+    }
+    const sessionId = forkFrom.sessionId;
+    // Opening a new aside discards earlier ones that were never used, so
+    // opening and abandoning the composer doesn't pile up empty asides.
+    for (const [candidateId, candidate] of Array.from(this.instances)) {
+      if (candidate.info.aside?.sourceInstanceId === sourceId && this.isUnusedAside(candidate)) {
+        this.removeInstance(candidateId);
+      }
+    }
+    const forkedAt = Date.now();
+    return this.createInstance({
+      provider,
+      workingDirectory: source.info.workingDirectory,
+      accountId: source.info.accountId,
+      model: source.info.preferredModel ?? source.lastTurnModel,
+      modelOptions: source.info.modelOptions,
+      runtimeMode: "approval-required",
+      // No parentSessionId: that marks plan continuations, and `aside` already
+      // records the source.
+      forkFrom,
+      aside: {
+        sourceInstanceId: source.info.id,
+        sourceSessionId: sessionId,
+        sourceName: source.info.name,
+        forkedAt,
+      },
+    });
+  }
+
+  /**
+   * Where to fork `source` now: its provider session, cut at the end of the
+   * last completed turn when it is mid-turn (an aside never sees half a turn).
+   * Idle (or unknown), fork everything on disk.
+   */
+  private asideForkPoint(source: Instance): { sessionId: string; cursor?: string } | null {
+    const sessionId =
+      source.sessionId ??
+      source.info.sessionId ??
+      source.providerBinding?.providerSessionId ??
+      source.process?.getRuntimeBinding().providerSessionId;
+    if (!sessionId) return null;
+    const processing = source.info.status === "processing" || !!source.process?.isProcessing;
+    const cursor = processing ? source.process?.getForkCursor?.() : undefined;
+    return { sessionId, cursor };
+  }
+
+  /** An aside that was opened but never sent anything (no session of its own). */
+  private isUnusedAside(instance: Instance): boolean {
+    return (
+      !!instance.info.aside &&
+      !instance.sessionId &&
+      !instance.info.sessionId &&
+      !instance.history.some((entry) => entry.message.type === "user")
+    );
+  }
+
+  /**
+   * An aside is created when its composer opens, but the source keeps moving
+   * while you type — so its first message re-forks from the source as it is
+   * now, replacing the unused session.
+   */
+  private reforkAsideForFirstMessage(id: string, instance: Instance): void {
+    const sourceId = instance.info.aside?.sourceInstanceId;
+    const source = sourceId ? this.instances.get(sourceId) : undefined;
+    const forkFrom = source ? this.asideForkPoint(source) : null;
+    if (!forkFrom || !instance.info.aside) return;
+    const previous = instance.process;
+    const proc = this.createProviderSession(
+      {
+        ...this.baseConfig,
+        workingDirectory: instance.actualCwd || instance.info.workingDirectory,
+        defaultRuntimeMode: instance.info.runtimeMode ?? this.baseConfig.defaultRuntimeMode,
+      },
+      {
+        provider: instance.info.provider,
+        model: instance.info.preferredModel,
+        runtimeMode: instance.info.runtimeMode,
+        modelOptions: instance.info.modelOptions,
+        bootstrapContext: instance.info.sessionContext?.bootstrap,
+        configDir: instance.info.configDir,
+        forkFrom,
+        readOnly: true,
+      },
+    );
+    // Swap before closing: event handlers ignore a process that isn't current.
+    instance.process = proc;
+    instance.providerBinding = mergeProviderBinding(
+      instance.providerBinding,
+      proc.getRuntimeBinding(),
+    );
+    instance.info.aside = {
+      ...instance.info.aside,
+      sourceSessionId: forkFrom.sessionId,
+      sourceName: source?.info.name ?? instance.info.aside.sourceName,
+      forkedAt: Date.now(),
+    };
+    this.wireProcessEvents(id, proc);
+    this.captureSessionId(id, instance, proc);
+    void previous?.close();
+  }
+
+  /** History an aside shows: its own turns, not the conversation it forked. */
+  private ownHistory(instance: Instance, history: HistoryEntry[]): HistoryEntry[] {
+    const forkedAt = instance.info.aside?.forkedAt;
+    if (forkedAt === undefined) return history;
+    return history.filter((entry) => entry.timestamp >= forkedAt);
+  }
+
   createInstance(options?: {
     provider?: ProviderKind;
     name?: string;
@@ -3425,6 +3575,9 @@ export class InstanceManager extends EventEmitter {
     modelOptions?: ProviderModelOptions;
     parentSessionId?: string;
     review?: import("#core/types.js").ReviewSessionInfo;
+    /** Aside metadata + fork source (set only by `createAside`). */
+    aside?: AsideSessionInfo;
+    forkFrom?: { sessionId: string; cursor?: string };
     /** Account the chat is created in (`Account.id`); absent/unknown = the default account. */
     accountId?: string;
     /** Set when another chat delegates this one (`delegate_task`). */
@@ -3475,8 +3628,10 @@ export class InstanceManager extends EventEmitter {
     // A resume follows its transcript: it must run under the login whose dir
     // the transcript lives in (and takes that login's account), whatever
     // account the caller asked for.
-    const transcriptRoot = resumeId
-      ? this.findTranscriptRoot(provider, resumeId, workingDirectory)
+    // A fork reads the source transcript, so it binds to the same login.
+    const transcriptRootSessionId = resumeId ?? options?.forkFrom?.sessionId;
+    const transcriptRoot = transcriptRootSessionId
+      ? this.findTranscriptRoot(provider, transcriptRootSessionId, workingDirectory)
       : undefined;
     const { accountId, configDir } =
       transcriptRoot !== undefined
@@ -3548,18 +3703,21 @@ export class InstanceManager extends EventEmitter {
               ? (getCachedCodexModels(configDir ?? this.providerDirs.codex) ?? undefined)
               : undefined,
           )?.id);
-    const bootstrapContext = resumeId
-      ? this.buildBootstrapContext(project, {
-          workingDirectory,
-          includeProjectInstructions: false,
-          includeTaskContext: false,
-        })
-      : this.buildBootstrapContext(project, {
-          workingDirectory,
-          delegatedChildNote: options?.delegation
-            ? this.delegatedChildNote(options.delegation)
-            : undefined,
-        });
+    // An aside continues the source conversation, so like a resume it gets no
+    // re-injected project context — the fork already carries it.
+    const bootstrapContext =
+      resumeId || options?.aside
+        ? this.buildBootstrapContext(project, {
+            workingDirectory,
+            includeProjectInstructions: false,
+            includeTaskContext: false,
+          })
+        : this.buildBootstrapContext(project, {
+            workingDirectory,
+            delegatedChildNote: options?.delegation
+              ? this.delegatedChildNote(options.delegation)
+              : undefined,
+          });
 
     const proc = this.createProviderSession(instanceConfig, {
       provider,
@@ -3570,6 +3728,8 @@ export class InstanceManager extends EventEmitter {
       bootstrapContext,
       configDir,
       instanceId: id,
+      forkFrom: options?.forkFrom,
+      readOnly: !!options?.aside,
     });
     const deliveredBootstrap = bootstrapContext ?? proc.bootstrapContext;
     const initialBinding = proc.getRuntimeBinding();
@@ -3592,6 +3752,12 @@ export class InstanceManager extends EventEmitter {
       providerBinding.runtimePayload = {
         ...providerBinding.runtimePayload,
         delegation: options.delegation,
+      };
+    }
+    if (options?.aside) {
+      providerBinding.runtimePayload = {
+        ...providerBinding.runtimePayload,
+        aside: options.aside,
       };
     }
 
@@ -3634,6 +3800,7 @@ export class InstanceManager extends EventEmitter {
       delegation: options?.delegation
         ? { ...options.delegation, taskStatus: "running" }
         : undefined,
+      aside: options?.aside,
     };
 
     const dirBasename = workingDirectory.split("/").pop() || "";
@@ -3646,12 +3813,13 @@ export class InstanceManager extends EventEmitter {
       fileStateRevision: 0,
       autoTitle: !hasCustomName && !resumeId,
       hydrated: true,
-      taskContextInjected: !!deliveredBootstrap?.blocks.some(
-        (b) => b.kind === TASK_CONTEXT_BLOCK_KIND,
-      ),
-      customInstructionsInjected: !!deliveredBootstrap?.blocks.some(
-        (b) => b.kind === CUSTOM_INSTRUCTIONS_BLOCK_KIND,
-      ),
+      // An aside's fork already carries the source's injected context.
+      taskContextInjected:
+        !!options?.aside ||
+        !!deliveredBootstrap?.blocks.some((b) => b.kind === TASK_CONTEXT_BLOCK_KIND),
+      customInstructionsInjected:
+        !!options?.aside ||
+        !!deliveredBootstrap?.blocks.some((b) => b.kind === CUSTOM_INSTRUCTIONS_BLOCK_KIND),
     };
     this.instances.set(id, instance);
 
@@ -3785,6 +3953,12 @@ export class InstanceManager extends EventEmitter {
     for (const attachedReviewId of attachedReviewIds) {
       if (this.instances.has(attachedReviewId)) {
         this.removeInstance(attachedReviewId, purge ? { purge: true } : undefined);
+      }
+    }
+    // Asides exist only for their source chat; they go with it.
+    for (const [candidateId, candidate] of Array.from(this.instances)) {
+      if (candidate.info.aside?.sourceInstanceId === id) {
+        this.removeInstance(candidateId, purge ? { purge: true } : undefined);
       }
     }
 
@@ -4546,6 +4720,10 @@ export class InstanceManager extends EventEmitter {
     this.hydrateInstance(id, instance);
     this.assertChatWritable(instance);
 
+    if (!internal && this.isUnusedAside(instance)) {
+      this.reforkAsideForFirstMessage(id, instance);
+    }
+
     let resumed: InstanceInfo | undefined;
     if (instance.info.external) {
       resumed = await this.resumeInstanceLocked(id, instance);
@@ -4621,6 +4799,9 @@ export class InstanceManager extends EventEmitter {
     if (customInstructions) {
       outboundMessage = buildCustomInstructionsPrompt(outboundMessage, customInstructions);
     }
+    if (instance.info.aside && !internal) {
+      outboundMessage = buildAsidePrompt(outboundMessage);
+    }
 
     // A task wake is an agent note from the delegated chat, never a human turn.
     const wake = parseRelayAgentMessage(messageText);
@@ -4638,7 +4819,11 @@ export class InstanceManager extends EventEmitter {
     // Turn-start worktree baseline, before the provider sees the message. A
     // dispatch into a turn that is still tracked (queued drain, interrupt-to-
     // send, a request reply) keeps the existing baseline.
-    if (instance.turnWorktreeBaseline === undefined) {
+    if (instance.info.aside) {
+      // Read-only: anything that changes in the checkout meanwhile is the
+      // source chat's (or someone else's) work, never the aside's.
+      instance.turnWorktreeBaseline = null;
+    } else if (instance.turnWorktreeBaseline === undefined) {
       instance.turnWorktreeBaseline = await captureWorktreeSnapshot(
         instance.actualCwd || instance.info.workingDirectory,
         { timeoutMs: TURN_BASELINE_TIMEOUT_MS },
@@ -5140,6 +5325,7 @@ export class InstanceManager extends EventEmitter {
     let proc: ProviderSession;
     try {
       proc = this.createProviderSession(instanceConfig, {
+        readOnly: !!instance.info.aside,
         provider: instance.info.provider,
         resumeSessionId: sessionId,
         model: instance.info.preferredModel,
@@ -5215,6 +5401,7 @@ export class InstanceManager extends EventEmitter {
     let proc: ProviderSession;
     try {
       proc = this.createProviderSession(instanceConfig, {
+        readOnly: !!instance.info.aside,
         provider: instance.info.provider,
         resumeSessionId: sessionId,
         model: instance.info.preferredModel,
@@ -5285,7 +5472,7 @@ export class InstanceManager extends EventEmitter {
       `[InstanceManager] Read passive history for ${id} from ${transcriptPath} in ${Date.now() - hydrateStartedAt}ms (${cacheHit ? "cache hit" : "cache miss"}, ${parsed.history.length} history entries)`,
     );
 
-    const history = this.mergeSessionEvents(id, parsed.history);
+    const history = this.mergeSessionEvents(id, this.ownHistory(instance, parsed.history));
     const files = this.withDetectedFileChanges(
       id,
       this.withAgentFileChanges(
@@ -5626,7 +5813,7 @@ export class InstanceManager extends EventEmitter {
         `[InstanceManager] Hydrated ${id} from ${transcriptPath} in ${Date.now() - hydrateStartedAt}ms (${cacheHit ? "cache hit" : "cache miss"}, ${parsed.history.length} history entries)`,
       );
 
-      instance.history = this.mergeSessionEvents(id, parsed.history);
+      instance.history = this.mergeSessionEvents(id, this.ownHistory(instance, parsed.history));
       instance.tasks = parsed.tasks.size > 0 ? parsed.tasks : undefined;
       this.rebuildInstanceAgents(instance, instance.history);
       instance.files = this.withDetectedFileChanges(
@@ -6103,6 +6290,7 @@ export class InstanceManager extends EventEmitter {
     }
 
     const proc = this.createProviderSession(instanceConfig, {
+      readOnly: !!instance.info.aside,
       provider: instance.info.provider,
       resumeSessionId,
       model: instance.info.preferredModel,
@@ -10878,6 +11066,9 @@ export class InstanceManager extends EventEmitter {
    * session tables. Returns false when the title is empty or unchanged.
    */
   private applyGeneratedTitle(instance: Instance, rawTitle: string): boolean {
+    // An aside is named after its own first question at dispatch; a forked
+    // transcript's recorded titles belong to the source conversation.
+    if (instance.info.aside) return false;
     const title = sanitiseForTitle(rawTitle) || rawTitle.trim();
     if (!title || title === instance.info.name) return false;
     instance.info.name = title;
@@ -11240,6 +11431,7 @@ export class InstanceManager extends EventEmitter {
       };
 
       const proc = this.createProviderSession(instanceConfig, {
+        readOnly: !!instance.info.aside,
         provider,
         runtimeMode: instance.info.runtimeMode,
         configDir: instance.info.configDir,

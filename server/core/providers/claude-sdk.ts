@@ -228,6 +228,8 @@ interface SDKOptions {
   model?: string;
   resume?: string;
   resumeSessionAt?: string;
+  /** With `resume`: continue under a new session id (aside forks). */
+  forkSession?: boolean;
   permissionMode?: string;
   allowDangerouslySkipPermissions?: boolean;
   includePartialMessages?: boolean;
@@ -244,6 +246,7 @@ interface SDKOptions {
     string,
     { type: "http"; url: string; headers?: Record<string, string>; timeout?: number }
   >;
+  disallowedTools?: string[];
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   settings?: Record<string, unknown>;
   systemPrompt?:
@@ -389,6 +392,26 @@ function toSdkEffort(effort: string | undefined): SDKOptions["effort"] {
   return effort as SDKOptions["effort"];
 }
 
+/**
+ * Tools an aside session never gets: writes, plan-mode transitions (they
+ * would raise a plan review) and delegation — subagents and Relay delegates
+ * don't inherit the aside's read-only guard, and messaging other chats would
+ * leak the aside into them. Paired with canUseTool denying approvals.
+ */
+const READ_ONLY_DISALLOWED_TOOLS = [
+  ...FILE_WRITE_TOOLS,
+  "MultiEdit",
+  "ExitPlanMode",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
+  "Agent",
+  "Task",
+  "AskUserQuestion",
+  "mcp__relay__delegate_task",
+  "mcp__relay__chat_send",
+];
+
 // =============================================================================
 // ClaudeSdkSession
 // =============================================================================
@@ -406,6 +429,13 @@ export interface ClaudeSdkSessionOptions {
   runtimeMode?: ProviderRuntimeMode;
   /** Session ID to resume */
   resumeSessionId?: string;
+  /**
+   * Fork this session into a new one (aside chats): `resume` + `forkSession`,
+   * pinned at `cursor` (a transcript chain uuid) when given.
+   */
+  forkFrom?: { sessionId: string; cursor?: string };
+  /** Read-only side thread: no edits, no delegation, no permission prompts. */
+  readOnly?: boolean;
   /** Logger from CoreConfig */
   logger: CoreConfig["logger"];
   /** Process timeout in ms (0 = no timeout) */
@@ -1156,6 +1186,12 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _lastMessageWasExitPlanMode = false;
   /** True until the first user message is sent — suppresses replay emissions. */
   private _isResumeReplay = false;
+  /** Aside session: never edits, never asks for permission. */
+  private readOnly = false;
+  /** Uuid of the latest root transcript chain entry seen in the stream. */
+  private _lastRootUuid: string | undefined;
+  /** Chain uuid ending the last completed turn — `getForkCursor()`. */
+  private _forkCursor: string | undefined;
   /** Set from the init event when the CLI advertises interrupt_cancel_queued_v1. */
   private _cancelQueuedSupported = false;
   /** Last emitted fast-mode disabled reason; used to emit a null-clear when it lifts. */
@@ -1285,6 +1321,23 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (options.resumeSessionId) {
       sdkOptions.resume = options.resumeSessionId;
       this._isResumeReplay = true;
+    } else if (options.forkFrom) {
+      // A fork gets a fresh session id (captured from the stream like a new
+      // chat's) whose transcript starts as a copy of the source's.
+      sdkOptions.resume = options.forkFrom.sessionId;
+      sdkOptions.forkSession = true;
+      if (options.forkFrom.cursor) sdkOptions.resumeSessionAt = options.forkFrom.cursor;
+      this._isResumeReplay = true;
+    }
+
+    if (options.readOnly) {
+      // Default permission mode, never plan: plan mode injects Claude Code's
+      // plan workflow prompt (explore, write a plan file, end with
+      // ExitPlanMode), which fights the aside instructions. Writes are stopped
+      // by disallowedTools plus canUseTool denying anything needing approval.
+      this.readOnly = true;
+      this._runtimeMode = "approval-required";
+      sdkOptions.disallowedTools = [...READ_ONLY_DISALLOWED_TOOLS];
     }
 
     if (this._runtimeMode === "plan") {
@@ -1350,6 +1403,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
   get sessionId(): string | undefined {
     return this._sessionId;
+  }
+
+  getForkCursor(): string | undefined {
+    return this._forkCursor;
   }
 
   getRuntimeBinding(): ProviderRuntimeBinding {
@@ -1480,6 +1537,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
   setRuntimeMode(mode: ProviderRuntimeMode): void {
     if (this._stopped) return;
+    if (this.readOnly) return;
     if (
       mode !== "approval-required" &&
       mode !== "full-access" &&
@@ -1611,6 +1669,16 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       }
     | { behavior: "deny"; message: string; interrupt?: boolean }
   > {
+    // Asides are read-only and never stop to ask: anything the CLI wants
+    // approval for (edits, non-read-only commands, questions) is refused.
+    if (this.readOnly) {
+      return Promise.resolve({
+        behavior: "deny" as const,
+        message:
+          "This is a read-only aside: you cannot modify files, run commands that need approval, or ask questions. Answer from the conversation and read-only tools.",
+      });
+    }
+
     // AskUserQuestion always blocks — it needs user interaction regardless of
     // bypass/allowed status. We emit a "user_input" request (with questions)
     // so the UI renders the question panel instead of a permission banner.
@@ -1786,6 +1854,19 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (!this._sessionId && typeof msg.session_id === "string" && msg.session_id) {
       this._sessionId = msg.session_id;
       this.logger.debug(`[SdkSession] Captured session ID: ${this._sessionId}`);
+    }
+
+    // Root assistant/user frames carry the transcript chain uuid; the last one
+    // before a turn's result is where a fork can cut without the next turn.
+    if (
+      (type === "assistant" || type === "user") &&
+      typeof msg.uuid === "string" &&
+      !frameAgentKey(msg)
+    ) {
+      this._lastRootUuid = msg.uuid;
+    }
+    if (type === "result" && this._lastRootUuid) {
+      this._forkCursor = this._lastRootUuid;
     }
 
     switch (type) {

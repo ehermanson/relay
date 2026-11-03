@@ -8,7 +8,7 @@ import { ChevronDown, ChevronRight, MoreVertical, Plus } from "lucide-react";
 import type { InstanceInfo, Project } from "@shared/types";
 import { getInstanceProjectRouteId, getProjectName } from "../../lib/project-route";
 import { getChatRecencyTimestamp } from "@/lib/utils";
-import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isAttachedChatInstance } from "@/lib/review-session";
 import { useSidebarActions } from "../../context/sidebar-actions-context";
 import { EmptyProjectActions } from "../empty-project-actions";
 import { Button } from "../ui/button";
@@ -91,7 +91,7 @@ export function SidebarProjectGroup({
     name: project?.name ?? dirName,
     directory: dir,
   };
-  const mainInstances = groupInstances.filter((instance) => !isAttachedReviewInstance(instance));
+  const mainInstances = groupInstances.filter((instance) => !isAttachedChatInstance(instance));
 
   const childIds = new Set<string>();
   const parentChildren = new Map<string, InstanceInfo[]>();

@@ -16,6 +16,7 @@ import {
   LayoutGrid,
   ListChecks,
   MessageCircleCode,
+  MessageCircleQuestion,
   Pencil,
   ScrollText,
   Trash2,
@@ -66,6 +67,11 @@ interface SidecarTogglesProps {
   hasAgentsContent?: boolean;
   hasPlanContent: boolean;
   hasReviewContent: boolean;
+  /** Asides exist, or one can be started — the toggle opens the Aside tab. */
+  asideCount?: number;
+  canStartAside?: boolean;
+  /** Opening the Aside tab when hidden (starts one when there are none). */
+  onOpenAside?: () => void;
   hasStats: boolean;
   stats?: SessionStats;
   provider?: ProviderKind;
@@ -95,6 +101,9 @@ function SidecarToggles({
   hasAgentsContent = false,
   hasPlanContent,
   hasReviewContent,
+  asideCount = 0,
+  canStartAside = false,
+  onOpenAside,
   hasStats,
   stats,
   provider,
@@ -103,6 +112,7 @@ function SidecarToggles({
   onSelectTab,
   onOpenMobileSidecar,
 }: SidecarTogglesProps) {
+  const hasAsideToggle = asideCount > 0 || canStartAside;
   const hasTasksContent = tasksCount > 0;
   const hasFilesContent = filesCount > 0;
   const hasAny =
@@ -111,6 +121,7 @@ function SidecarToggles({
     hasFilesContent ||
     hasPlanContent ||
     hasReviewContent ||
+    hasAsideToggle ||
     hasStats;
   if (!loading && !hasAny) return null;
 
@@ -191,6 +202,22 @@ function SidecarToggles({
                 </Button>
               </Tooltip>
             )}
+            {hasAsideToggle && (
+              <Tooltip content={isShowing("aside") ? "Hide aside" : "Open aside (btw)"}>
+                <Button
+                  variant="icon"
+                  toggled={isShowing("aside")}
+                  onClick={() =>
+                    !isShowing("aside") && onOpenAside ? onOpenAside() : onSelectTab("aside")
+                  }
+                  className="relative shrink-0"
+                  aria-label="Aside"
+                >
+                  <MessageCircleQuestion size={15} strokeWidth={2} />
+                  {asideCount > 0 && <CountBadge count={asideCount} />}
+                </Button>
+              </Tooltip>
+            )}
             {hasStats && (
               <HeaderContextToggle
                 stats={stats}
@@ -242,6 +269,10 @@ interface InstanceHeaderProps {
   hasAgentsContent?: boolean;
   hasPlanContent: boolean;
   hasReviewContent: boolean;
+  asideCount?: number;
+  canStartAside?: boolean;
+  /** Open the Aside tab (mobile: also the sidecar overlay). */
+  onOpenAside?: () => void;
   hasStats: boolean;
   sidecarContentCount: number;
   loadingSidecarActions?: boolean;
@@ -371,6 +402,9 @@ export function InstanceHeader({
   hasAgentsContent = false,
   hasPlanContent,
   hasReviewContent,
+  asideCount = 0,
+  canStartAside = false,
+  onOpenAside,
   hasStats,
   sidecarContentCount,
   loadingSidecarActions = false,
@@ -564,6 +598,12 @@ export function InstanceHeader({
             Rename
           </Menu.Item>
         )}
+        {onOpenAside && (canStartAside || asideCount > 0) && (
+          <Menu.Item onClick={onOpenAside}>
+            <MessageCircleQuestion size={13} strokeWidth={2} className="text-muted" />
+            Open aside
+          </Menu.Item>
+        )}
         {onSplit && !isMobile && (
           <Menu.Item onClick={onSplit}>
             <Columns2 size={13} strokeWidth={2} className="text-muted" />
@@ -606,6 +646,9 @@ export function InstanceHeader({
             hasAgentsContent={hasAgentsContent}
             hasPlanContent={hasPlanContent}
             hasReviewContent={hasReviewContent}
+            asideCount={asideCount}
+            canStartAside={canStartAside}
+            onOpenAside={onOpenAside}
             hasStats={hasStats}
             stats={instance.stats}
             provider={instance.provider}
@@ -735,6 +778,9 @@ export function InstanceHeader({
           hasAgentsContent={hasAgentsContent}
           hasPlanContent={hasPlanContent}
           hasReviewContent={hasReviewContent}
+          asideCount={asideCount}
+          canStartAside={canStartAside}
+          onOpenAside={onOpenAside}
           hasStats={hasStats}
           stats={instance.stats}
           provider={instance.provider}

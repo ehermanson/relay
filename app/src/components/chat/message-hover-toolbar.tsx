@@ -114,21 +114,23 @@ export function MessageHoverToolbar({
           {relay.sourceChat && relay.onSendToSourceChat && (
             <div className="relative">
               <ToolbarIconTooltip
-                content={`Send to ${relay.sourceChat.name}`}
+                content={relay.sourceChatActionLabel ?? `Send to ${relay.sourceChat.name}`}
                 visible={hoveredIcon === "source"}
                 align="end"
               />
               <button
                 onClick={() => {
                   relay.onSendToSourceChat?.(text);
-                  toast.success(`Sent to "${relay.sourceChat?.name}"`);
+                  toast.success(
+                    relay.sourceChatActionToast ?? `Sent to "${relay.sourceChat?.name}"`,
+                  );
                 }}
                 onMouseEnter={() => setHoveredIcon("source")}
                 onMouseLeave={() => setHoveredIcon(null)}
                 onFocus={() => setHoveredIcon("source")}
                 onBlur={() => setHoveredIcon(null)}
                 className="rounded p-1 text-muted transition-colors hover:bg-surface-hover hover:text-text"
-                aria-label={`Send to ${relay.sourceChat.name}`}
+                aria-label={relay.sourceChatActionLabel ?? `Send to ${relay.sourceChat.name}`}
               >
                 <Reply size={12} />
               </button>

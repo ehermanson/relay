@@ -155,6 +155,7 @@ const TAB_LABELS: Record<SidecarTab, string> = {
   plan: "Plan",
   context: "Context",
   review: "Review",
+  aside: "Aside",
 };
 
 interface SidecarProps {
@@ -186,6 +187,10 @@ interface SidecarProps {
   onSelectTab?: (tab: SidecarTab) => void;
   /** Called when the close (X) button is clicked. */
   reviewContent?: ReactNode;
+  /** Aside ("btw") threads for this chat, rendered by the Aside tab. */
+  asideContent?: ReactNode;
+  /** Number of asides, shown as the Aside tab count. */
+  asideCount?: number;
   onClose?: () => void;
   isMobileOverlay?: boolean;
 }
@@ -219,6 +224,8 @@ export const Sidecar = memo(
     activeTab,
     onSelectTab,
     reviewContent,
+    asideContent,
+    asideCount = 0,
     onClose,
     isMobileOverlay,
   }: SidecarProps) {
@@ -254,9 +261,10 @@ export const Sidecar = memo(
         if (tab === "tasks" && tasks) def.count = tasks.length;
         if (tab === "files" && files) def.count = files.length;
         if (tab === "agents" && agentCount > 0) def.count = agentCount;
+        if (tab === "aside" && asideCount > 0) def.count = asideCount;
         return def;
       });
-    }, [tabs, tasks, files, agentCount]);
+    }, [tabs, tasks, files, agentCount, asideCount]);
 
     const renderTabContent = (key: string) => {
       if (key === "tasks" && hasTasks) return <TasksPanel tasks={tasks} />;
@@ -295,6 +303,9 @@ export const Sidecar = memo(
         );
       if (key === "review" && hasReview) {
         return <div className="min-h-0 flex-1 overflow-hidden">{reviewContent}</div>;
+      }
+      if (key === "aside" && asideContent) {
+        return <div className="min-h-0 flex-1 overflow-hidden">{asideContent}</div>;
       }
       return null;
     };
@@ -357,6 +368,8 @@ export const Sidecar = memo(
       prev.providerGlobalState === next.providerGlobalState &&
       prev.planContent === next.planContent &&
       prev.reviewContent === next.reviewContent &&
+      prev.asideContent === next.asideContent &&
+      prev.asideCount === next.asideCount &&
       prev.onSelectTab === next.onSelectTab &&
       prev.onClose === next.onClose &&
       sameTasks(prev.tasks, next.tasks) &&

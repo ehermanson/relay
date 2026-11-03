@@ -13,7 +13,7 @@
 import { useCallback, useMemo } from "react";
 import { create } from "zustand";
 
-export type SidecarTab = "tasks" | "agents" | "files" | "plan" | "context" | "review";
+export type SidecarTab = "tasks" | "agents" | "files" | "plan" | "context" | "review" | "aside";
 
 const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
   "tasks",
@@ -22,6 +22,7 @@ const VALID_TABS: ReadonlySet<SidecarTab> = new Set([
   "plan",
   "context",
   "review",
+  "aside",
 ]);
 
 // Priority for fallback when the selected tab has no content.
@@ -32,6 +33,8 @@ const FALLBACK_ORDER: readonly SidecarTab[] = [
   "plan",
   "context",
   "review",
+  // Last: an empty aside tab is only worth showing when chosen.
+  "aside",
 ];
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -165,6 +168,13 @@ interface UseSidecarPanelsOptions {
    */
   contentLoading?: boolean;
   hasReviewContent?: boolean;
+  /** The chat has asides to show. */
+  hasAsideContent?: boolean;
+  /**
+   * An aside can be started here. Unlike other tabs, an empty Aside tab counts
+   * as content only while selected — it never becomes the fallback tab.
+   */
+  canStartAside?: boolean;
 }
 
 export interface UseSidecarPanelsResult {
@@ -200,6 +210,8 @@ export function useSidecarPanels({
   hasAgentsContent = false,
   contentLoading = false,
   hasReviewContent = false,
+  hasAsideContent = false,
+  canStartAside = false,
 }: UseSidecarPanelsOptions): UseSidecarPanelsResult {
   const activeTab = useSidecarStore((s) => s.chatTab);
   const isOpen = useSidecarStore((s) => s.chatOpen);
@@ -230,9 +242,14 @@ export function useSidecarPanels({
           return hasStats;
         case "review":
           return hasReviewContent;
+        case "aside":
+          return hasAsideContent || (canStartAside && activeTab === "aside");
       }
     },
     [
+      activeTab,
+      hasAsideContent,
+      canStartAside,
       hasTasksContent,
       hasAgentsContent,
       hasFilesContent,

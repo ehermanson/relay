@@ -120,6 +120,13 @@ export interface ProviderSession extends EventEmitter {
   getRuntimeBinding(): ProviderRuntimeBinding;
 
   /**
+   * Provider cursor for the end of the last completed turn (Claude: transcript
+   * chain uuid for `resumeSessionAt`; Codex: turn id for `thread/fork`'s
+   * `lastTurnId`). Used to fork an aside without the in-flight turn.
+   */
+  getForkCursor?(): string | undefined;
+
+  /**
    * Resolve a pending provider request (SDK only for now).
    * Returns true if the request was found and handled.
    */

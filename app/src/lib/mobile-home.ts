@@ -1,6 +1,6 @@
 import { buildInboxEntries, type InboxEntry, type InboxSourceGroup } from "@/lib/inbox";
 import { getChatSortTimestamp } from "@/lib/utils";
-import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isAttachedChatInstance } from "@/lib/review-session";
 import { isDelegatedChildInstance } from "@/lib/delegation";
 import type { InstanceInfo } from "@shared/types";
 
@@ -17,7 +17,7 @@ export type HomeEntry = InboxEntry & HomeActivity;
 
 export function homeActivity(instances: readonly InstanceInfo[]): HomeActivity {
   const eligible = instances.filter(
-    (chat) => !isAttachedReviewInstance(chat) && !isDelegatedChildInstance(chat),
+    (chat) => !isAttachedChatInstance(chat) && !isDelegatedChildInstance(chat),
   );
   const attention = eligible.filter(
     (chat) =>

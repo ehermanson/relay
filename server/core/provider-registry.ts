@@ -106,6 +106,14 @@ interface ProviderDriverContext {
 
 interface ProviderSessionOptions {
   resumeSessionId?: string;
+  /**
+   * Fork this provider session into a new one instead of starting fresh
+   * (aside chats). `cursor` is the source's `getForkCursor()` — the end of its
+   * last completed turn — when the source is mid-turn; absent = fork it all.
+   */
+  forkFrom?: { sessionId: string; cursor?: string };
+  /** Read-only side thread: the provider must not modify files. */
+  readOnly?: boolean;
   model?: string;
   runtimeMode?: ProviderRuntimeMode;
   allowedTools?: string[];
@@ -643,6 +651,8 @@ function createClaudeSession(
         fastMode: options?.modelOptions?.fastMode,
         runtimeMode: options?.runtimeMode ?? config.defaultRuntimeMode,
         resumeSessionId: options?.resumeSessionId,
+        forkFrom: options?.forkFrom,
+        readOnly: options?.readOnly,
         logger: config.logger,
         processTimeout: config.processTimeout,
         allowedTools: options?.allowedTools,
@@ -654,6 +664,9 @@ function createClaudeSession(
     );
   }
 
+  if (options?.forkFrom || options?.readOnly) {
+    throw new Error("Aside chats need the Claude Agent SDK");
+  }
   // The legacy process reads `config.providerDirs.claude` for its spawn env.
   if (configDir && configDir !== config.providerDirs.claude) {
     config = { ...config, providerDirs: { ...config.providerDirs, claude: configDir } };
@@ -926,6 +939,8 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
         model: options?.model,
         runtimeMode: options?.runtimeMode ?? config.defaultRuntimeMode,
         resumeSessionId: options?.resumeSessionId,
+        forkFrom: options?.forkFrom,
+        readOnly: options?.readOnly,
         logger: config.logger,
         processTimeout: config.processTimeout,
         modelOptions: options?.modelOptions,

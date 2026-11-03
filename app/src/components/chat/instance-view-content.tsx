@@ -577,16 +577,20 @@ export function InstanceViewContent() {
     return {
       instanceId,
       sourceChat: relaySource,
-      onSendToSourceChat: relaySource
-        ? (messageText: string) => {
-            const attributed = buildReviewSendBackMessage({
-              reviewName: shared.instance.name,
-              sourceName: relaySource.name,
-              message: messageText,
-            });
-            send({ type: "instance_message", instanceId: relaySource.id, text: attributed });
-          }
-        : undefined,
+      sourceChatActionLabel: embeddedSourceChat?.sendBackLabel,
+      sourceChatActionToast: embeddedSourceChat?.sendBackToast,
+      onSendToSourceChat: embeddedSourceChat?.onSendBack
+        ? embeddedSourceChat.onSendBack
+        : relaySource
+          ? (messageText: string) => {
+              const attributed = buildReviewSendBackMessage({
+                reviewName: shared.instance.name,
+                sourceName: relaySource.name,
+                message: messageText,
+              });
+              send({ type: "instance_message", instanceId: relaySource.id, text: attributed });
+            }
+          : undefined,
       allowSpinOff: !isReviewMode && !embeddedSourceChat,
       onSpinOff: (request?: SpinOffRequest) => {
         if (isReviewMode || embeddedSourceChat) return;
@@ -647,7 +651,9 @@ export function InstanceViewContent() {
         // Empty state + suggestions share one scrollable region so the composer
         // (shrink-0, below) always stays on screen even on short viewports.
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <EmptyChatState projectName={getProjectName(shared.instance.workingDirectory)} />
+          {shared.embeddedSourceChat?.emptyState ?? (
+            <EmptyChatState projectName={getProjectName(shared.instance.workingDirectory)} />
+          )}
           {!shared.instance.external &&
             !isReviewMode &&
             filteredSuggestions &&

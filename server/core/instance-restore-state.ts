@@ -1,4 +1,5 @@
 import {
+  getAsideSessionFromRuntimePayload,
   getSessionContextFromRuntimePayload,
   hasSessionBootstrapBlock,
 } from "#core/session-context.js";
@@ -136,6 +137,7 @@ export function buildManagedRestoreState(options: {
     sessionContext,
     review,
     reviewInstanceId,
+    aside: getAsideSessionFromRuntimePayload(runtimePayload),
   };
   return {
     info,

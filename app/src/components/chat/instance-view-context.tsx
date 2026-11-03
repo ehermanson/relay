@@ -19,6 +19,18 @@ import type {
   UserInputAnswer,
 } from "@shared/types";
 
+/** The chat an embedded (review/aside) chat belongs to. */
+export interface EmbeddedSourceChat {
+  id: string;
+  name: string;
+  /** Replaces the review send-back (which sends) — asides add to a draft. */
+  onSendBack?: (text: string) => void;
+  sendBackLabel?: string;
+  sendBackToast?: string;
+  /** Replaces the "Ready when you are" empty state. */
+  emptyState?: ReactNode;
+}
+
 type ConnectionBannerState = {
   kind: "reconnecting" | "resyncing" | "running" | "interrupted";
   onDismiss?: () => void;
@@ -31,8 +43,14 @@ export type InstanceViewContextValue = {
     id: string;
     compact: boolean;
     instance: InstanceInfo;
-    embeddedSourceChat?: { id: string; name: string };
+    embeddedSourceChat?: EmbeddedSourceChat;
     attachedReviews: InstanceInfo[];
+    /** This chat's aside ("btw") threads, newest first. */
+    attachedAsides: InstanceInfo[];
+    /** Aside shown in the Aside tab; null = none yet. */
+    selectedAsideId: string | null;
+    canStartAside: boolean;
+    hasAsideContent: boolean;
     planChild?: InstanceInfo;
     items: ChatItem[];
     /**
@@ -154,6 +172,14 @@ export type InstanceViewContextValue = {
     handleSelectReview: (reviewInstanceId: string) => void;
     handleSendReviewToChat: (reviewInstanceId: string) => void;
     handleReReview: (reviewInstanceId: string) => void;
+    /** Create a fresh aside and select it. */
+    handleNewAside: () => void;
+    isStartingAside: boolean;
+    handleSelectAside: (asideId: string) => void;
+    handleDiscardAside: (asideId: string) => void;
+    handleAddAsideToDraft: (text: string) => void;
+    /** Open the Aside tab (and the mobile sidecar). */
+    openAside: () => void;
     showReReview: boolean;
     expandTerminalPanel: () => void;
     handleTerminalResizeStart: (e: MouseEvent) => void;

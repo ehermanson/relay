@@ -1,4 +1,5 @@
 import type {
+  AsideSessionInfo,
   ProviderContextBlock,
   ChatDelegation,
   ReviewSessionInfo,
@@ -110,6 +111,32 @@ export function getDelegationFromRuntimePayload(
   if (typeof parentInstanceId !== "string" || typeof taskId !== "string") return undefined;
   return { parentInstanceId, taskId, ...(typeof role === "string" && role ? { role } : {}) };
 }
+
+export function getAsideSessionFromRuntimePayload(
+  runtimePayload: Record<string, unknown> | undefined,
+): AsideSessionInfo | undefined {
+  const value = runtimePayload?.aside;
+  if (!value || typeof value !== "object") return undefined;
+  const aside = value as Partial<AsideSessionInfo>;
+  if (typeof aside.sourceInstanceId !== "string" || !aside.sourceInstanceId) return undefined;
+  if (typeof aside.forkedAt !== "number") return undefined;
+  return {
+    sourceInstanceId: aside.sourceInstanceId,
+    sourceSessionId: typeof aside.sourceSessionId === "string" ? aside.sourceSessionId : undefined,
+    sourceName: typeof aside.sourceName === "string" ? aside.sourceName : "",
+    forkedAt: aside.forkedAt,
+  };
+}
+
+/**
+ * Instructions every aside turn carries, wrapped around the user's message by
+ * `buildAsidePrompt` (never the system prompt, which would invalidate the
+ * forked conversation's prompt cache).
+ */
+export const ASIDE_INSTRUCTIONS = [
+  "This is an aside: the user is asking a side question about the conversation above, in a separate thread that the main conversation will never see.",
+  "Answer the question directly and concisely. Do not continue or resume the main task, and do not modify files — this thread is read-only. You may use read-only tools (reading files, searching, inspecting git) when they help answer.",
+].join("\n");
 
 export function getReviewInstanceIdFromRuntimePayload(
   runtimePayload: Record<string, unknown> | undefined,

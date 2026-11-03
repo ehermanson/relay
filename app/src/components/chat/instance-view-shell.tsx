@@ -4,6 +4,7 @@ import { CollapsedTerminalBar } from "@/components/terminal/terminal-collapsed-b
 import { LazyTerminalPanel } from "@/components/terminal/lazy-terminal-panel";
 import { Sidecar } from "@/components/chat/sidecar";
 import { ReviewSidecarPanel } from "@/components/chat/review-sidecar-panel";
+import { AsideSidecarPanel } from "@/components/chat/aside-sidecar-panel";
 import { ReviewSetupPanel } from "@/components/chat/review-setup-panel";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { InstanceViewContent } from "@/components/chat/instance-view-content";
@@ -77,6 +78,20 @@ export function InstanceViewShell() {
     ) : (
       setupPanel
     );
+
+  const asideContent =
+    shared.canStartAside || shared.hasAsideContent ? (
+      <AsideSidecarPanel
+        asides={shared.attachedAsides}
+        selectedAsideId={shared.selectedAsideId}
+        sourceChat={{ id: shared.instance.id, name: shared.instance.name }}
+        onSelectAside={actions.handleSelectAside}
+        onNewAside={actions.handleNewAside}
+        isCreatingAside={actions.isStartingAside}
+        onDiscardAside={actions.handleDiscardAside}
+        onAddToChatDraft={actions.handleAddAsideToDraft}
+      />
+    ) : undefined;
 
   if (shared.compact) {
     return (
@@ -156,6 +171,8 @@ export function InstanceViewShell() {
                   files={shared.currentFiles}
                   planContent={shared.instance.planContent}
                   reviewContent={reviewContent}
+                  asideContent={asideContent}
+                  asideCount={shared.attachedAsides.length}
                   stats={shared.instance.stats}
                   items={shared.items}
                   agents={shared.agents}
@@ -185,6 +202,8 @@ export function InstanceViewShell() {
             files={shared.currentFiles}
             planContent={shared.instance.planContent}
             reviewContent={reviewContent}
+            asideContent={asideContent}
+            asideCount={shared.attachedAsides.length}
             stats={shared.instance.stats}
             items={shared.items}
             agents={shared.agents}

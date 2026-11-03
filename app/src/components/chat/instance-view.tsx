@@ -3,7 +3,10 @@ import { gateAgentsByCapability } from "@/lib/agents";
 import { useParams, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { chatSummaryQueryOptions } from "@/lib/chat-query-options";
-import { InstanceViewProvider } from "@/components/chat/instance-view-context";
+import {
+  InstanceViewProvider,
+  type EmbeddedSourceChat,
+} from "@/components/chat/instance-view-context";
 import { InstanceViewShell } from "@/components/chat/instance-view-shell";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
 import { useOutbox } from "@/context/outbox-context";
@@ -20,7 +23,13 @@ import { useTerminalStore } from "@/stores/terminal-store";
 import { useTerminalMessages } from "@/hooks/use-terminal-messages";
 import { useTerminalShortcut } from "@/hooks/use-terminal-shortcut";
 import { useVerticalResize } from "@/hooks/use-vertical-resize";
-import { createInstance, fetchInstanceHistory } from "@/lib/api";
+import { createAside, createInstance, fetchInstanceHistory } from "@/lib/api";
+import {
+  buildAsideDraftQuote,
+  getAttachedAsides,
+  parseBtw,
+  resolveAsideSelection,
+} from "@/lib/aside";
 import { reportCreateInstanceError } from "@/stores/process-limit-store";
 import { getInstanceChatRoute, getInstanceProjectRouteId } from "@/lib/project-route";
 import {
@@ -76,7 +85,7 @@ interface InstanceViewProps {
   /** Compact mode: hide header and sidecar (used in split view). */
   compact?: boolean;
   /** Parent/source chat when rendering a review inside its sidecar. */
-  embeddedSourceChat?: { id: string; name: string };
+  embeddedSourceChat?: EmbeddedSourceChat;
 }
 
 export function InstanceView({
@@ -136,6 +145,15 @@ export function InstanceView({
   const attachedReviews = instance ? getAttachedReviewInstances(instance, instances) : [];
   const attachedReview = instance ? getAttachedReviewInstance(instance, instances) : null;
   const [selectedReviewInstanceId, setSelectedReviewInstanceId] = useState<string | null>(null);
+  const attachedAsides = instance ? getAttachedAsides(instance, instances) : [];
+  // undefined = the newest aside, id = that aside.
+  const [asideSelection, setAsideSelection] = useState<string | undefined>(undefined);
+  const [pendingAsideId, setPendingAsideId] = useState<string | null>(null);
+  const [startingAside, setStartingAside] = useState(false);
+  // handleSend is defined before the capability/sidecar state it needs.
+  const canStartAsideRef = useRef(false);
+  const showAsideTabRef = useRef<() => void>(() => {});
+  const selectedAsideId = resolveAsideSelection(attachedAsides, asideSelection, pendingAsideId);
   const [queuedRestore, setQueuedRestore] = useState<QueuedRestore | null>(null);
   /**
    * Edits awaiting server removal confirmation, with their attachments already
@@ -197,6 +215,8 @@ export function InstanceView({
 
   useEffect(() => {
     setSelectedReviewInstanceId(null);
+    setAsideSelection(undefined);
+    setPendingAsideId(null);
   }, [id]);
 
   useEffect(() => {
@@ -302,6 +322,13 @@ export function InstanceView({
     attachments?: string[],
   ) => {
     if (!id) return false;
+    // `/btw <message>` sends it to a new aside instead of this chat.
+    const btwMessage = internal || images?.length || attachments?.length ? null : parseBtw(text);
+    if (btwMessage && canStartAsideRef.current) {
+      showAsideTabRef.current();
+      void startAside(btwMessage);
+      return true;
+    }
     // Prepend terminal context if attached
     let finalText = text;
     if (terminalContexts.length > 0 && !internal) {
@@ -493,6 +520,32 @@ export function InstanceView({
     }
   };
 
+  /**
+   * Create an aside and select it, optionally sending its first message. Its
+   * provider session is forked again on that first message, so creating it
+   * when the composer opens doesn't freeze the context early.
+   */
+  const startAside = async (firstMessage?: string): Promise<void> => {
+    if (!id || !instance || startingAside) return;
+    const sourceId = id;
+    setStartingAside(true);
+    try {
+      const created = await createAside(sourceId);
+      if (firstMessage) {
+        send({ type: "instance_message", instanceId: created.id, text: firstMessage });
+      }
+      if (currentIdRef.current !== sourceId) return;
+      setPendingAsideId(created.id);
+      setAsideSelection(created.id);
+    } catch (err) {
+      if (!reportCreateInstanceError(err)) {
+        toast.error(err instanceof Error ? err.message : "Failed to start aside");
+      }
+    } finally {
+      setStartingAside(false);
+    }
+  };
+
   // ── Terminal panel state ──────────────────────────────────────────
   const terminalScope: TerminalScope = useMemo(() => ({ type: "instance", instanceId: id! }), [id]);
   const {
@@ -583,6 +636,16 @@ export function InstanceView({
       }),
     [rawAgents, rawAgentItems, supportsAgentActivity],
   );
+  // Asides fork the provider session, so there must be one; an aside or a
+  // review never gets its own asides, and embedded (compact) views have none.
+  const canStartAside =
+    !compact &&
+    !!providerCapabilities.supportsAside &&
+    !!resolvedInstance?.sessionId &&
+    !resolvedInstance.aside &&
+    !resolvedInstance.review;
+  const hasAsideContent = !compact && attachedAsides.length > 0;
+  canStartAsideRef.current = canStartAside;
   const hasAgentsContent = Object.keys(agents).length > 0;
   const branchChangeKey =
     resolvedInstance?.branchChanged && resolvedInstance.id
@@ -608,6 +671,8 @@ export function InstanceView({
     hasFilesContent,
     hasPlanContent,
     hasReviewContent,
+    hasAsideContent,
+    canStartAside,
     hasStats,
     contentLoading: connectionId > 0 && !hasLoadedHistory,
   });
@@ -790,6 +855,17 @@ export function InstanceView({
     });
   };
 
+  const showAsideTab = () => {
+    if (!isSidecarOpen || activeTab !== "aside") selectTab("aside");
+    if (isMobile) setSidecarMobileOpen(true);
+  };
+  showAsideTabRef.current = showAsideTab;
+  // Explicit "open aside": with none yet, start one so the composer is ready.
+  const openAside = () => {
+    showAsideTab();
+    if (attachedAsides.length === 0 && canStartAside) void startAside();
+  };
+
   const contextValue = {
     shared: {
       id: instanceId,
@@ -797,6 +873,10 @@ export function InstanceView({
       instance: resolvedInstance,
       embeddedSourceChat,
       attachedReviews,
+      attachedAsides,
+      selectedAsideId,
+      canStartAside,
+      hasAsideContent,
       planChild,
       items,
       agents,
@@ -893,6 +973,19 @@ export function InstanceView({
       handleSelectReview,
       handleSendReviewToChat,
       handleReReview,
+      handleNewAside: () => void startAside(),
+      isStartingAside: startingAside,
+      handleSelectAside: (asideId: string) => setAsideSelection(asideId),
+      handleDiscardAside: (asideId: string) => {
+        send({ type: "remove_instance", instanceId: asideId });
+        setAsideSelection(undefined);
+      },
+      handleAddAsideToDraft: (text: string) => {
+        setQueuedRestore({ key: Date.now(), text: buildAsideDraftQuote(text), files: [] });
+        // On a phone the sidecar covers the composer the quote just went into.
+        if (isMobile) setSidecarMobileOpen(false);
+      },
+      openAside,
       showReReview: !!(
         activeReviewInstanceId &&
         sentReviewSnapshots.has(activeReviewInstanceId) &&

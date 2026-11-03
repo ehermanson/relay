@@ -259,6 +259,13 @@ export interface CodexAppServerSessionOptions {
   /** Initial runtime mode (defaults to "approval-required") */
   runtimeMode?: ProviderRuntimeMode;
   resumeSessionId?: string;
+  /**
+   * Fork this thread into a new one on first send (aside chats) via
+   * `thread/fork`; `cursor` is the last completed turn id (`lastTurnId`).
+   */
+  forkFrom?: { sessionId: string; cursor?: string };
+  /** Read-only side thread: read-only sandbox, never asks for approval. */
+  readOnly?: boolean;
   logger: CoreConfig["logger"];
   processTimeout?: number;
   spawnProcess?: SpawnFn;
@@ -868,6 +875,12 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private stderrBuffer = "";
   private initialized = false;
   private _currentTurnId: string | null = null;
+  /** Root turn id of the last completed turn — `getForkCursor()`. */
+  private _lastCompletedTurnId: string | undefined;
+  /** Pending `thread/fork` source; cleared once the fork has a thread id. */
+  private _forkFrom: { sessionId: string; cursor?: string } | undefined;
+  /** Aside session: read-only sandbox, no approvals. */
+  private readOnly = false;
   private _lastCompactionTurnId: string | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly proposedPlanParser = new ProposedPlanStreamParser();
@@ -917,6 +930,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     this.codexHome = options.codexHome;
 
     this._sessionId = options.resumeSessionId;
+    this._forkFrom = options.resumeSessionId ? undefined : options.forkFrom;
+    this.readOnly = !!options.readOnly;
     this._preferredModel = options.model ?? null;
     this._runtimeMode = options.runtimeMode ?? "approval-required";
     this._modelOptions = options.modelOptions ?? {};
@@ -945,6 +960,10 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   get stats(): SessionStats {
     return { ...this._stats };
+  }
+
+  getForkCursor(): string | undefined {
+    return this._lastCompletedTurnId;
   }
 
   getRuntimeBinding(): ProviderRuntimeBinding {
@@ -1074,6 +1093,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   }
 
   setRuntimeMode(mode: ProviderRuntimeMode): void {
+    if (this.readOnly) return;
     if (
       mode !== "approval-required" &&
       mode !== "full-access" &&
@@ -1238,6 +1258,22 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         ...this.resolveCodexModelParams(),
       });
       this.emitSessionInitEvent(result);
+    } else if (this._forkFrom) {
+      const forkFrom = this._forkFrom;
+      this.logger.info(`[CodexAppServer] Forking thread ${forkFrom.sessionId}`);
+      const result = await this.sendRootThreadRpc("thread/fork", {
+        threadId: forkFrom.sessionId,
+        lastTurnId: forkFrom.cursor ?? undefined,
+        model: this._preferredModel ?? undefined,
+        cwd: this.cwd,
+        developerInstructions: this.bootstrapContext?.developerInstructions ?? undefined,
+        approvalPolicy: this.resolveApprovalPolicy(),
+        sandbox: this.resolveSandboxMode(),
+        excludeTurns: true,
+        ...this.resolveCodexModelParams(),
+      });
+      if (result?.thread?.id) this._forkFrom = undefined;
+      this.emitSessionInitEvent(result);
     } else {
       const result = await this.sendRootThreadRpc("thread/start", {
         model: this._preferredModel ?? undefined,
@@ -1299,7 +1335,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
    * remains authoritative for the final id/path.
    */
   private async sendRootThreadRpc(
-    method: "thread/start" | "thread/resume",
+    method: "thread/start" | "thread/resume" | "thread/fork",
     params: Record<string, unknown>,
   ): Promise<{ thread?: ThreadInfo }> {
     this._rootThreadRpcPending = true;
@@ -1985,6 +2021,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
       case "turn/completed": {
         const turn = params.turn as TurnInfo | undefined;
         this._currentTurnId = null;
+        if (turn?.id && turn.status !== "inProgress") this._lastCompletedTurnId = turn.id;
         this.emit("systemEvent", {
           type: "system_event",
           event: "provider_status",
@@ -2960,6 +2997,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   // ===========================================================================
 
   private resolveApprovalPolicy(): string {
+    // Read-only asides never stop to ask: anything outside the sandbox fails.
+    if (this.readOnly) return "never";
     if (this._runtimeMode === "full-access") return "never";
     if (this._runtimeMode === "writes-only") return "writes";
     // Plan and approval-required both use the same approval policy: let the
@@ -2970,6 +3009,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   }
 
   private resolveSandboxMode(): string {
+    if (this.readOnly) return "read-only";
     if (this._runtimeMode === "full-access") return "danger-full-access";
     return "workspace-write";
   }

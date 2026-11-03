@@ -445,6 +445,12 @@ export interface ProviderCapabilities {
    */
   supportsRelayOrchestration?: boolean;
   /**
+   * The provider can fork a session into a read-only side thread (Claude:
+   * resume + `forkSession`; Codex: `thread/fork`), which powers aside ("btw")
+   * chats. When false/absent the UI offers no aside entry point.
+   */
+  supportsAside?: boolean;
+  /**
    * The provider's login lives in a config dir Relay can point the CLI at
    * (Claude: `CLAUDE_CONFIG_DIR`, Codex: `CODEX_HOME`), so an `Account` other
    * than the default can carry a login for it. Without this a provider belongs
@@ -651,6 +657,22 @@ export interface ReviewSessionInfo {
   filePaths?: string[];
 }
 
+/**
+ * An aside ("btw") chat: a read-only fork of another chat's provider session,
+ * so a side question sees the whole conversation without adding to it.
+ * Rendered only in its source chat's Aside sidecar — never in navigation.
+ */
+export interface AsideSessionInfo {
+  sourceInstanceId: string;
+  sourceSessionId?: string;
+  sourceName: string;
+  /**
+   * When the fork was taken (ms). History entries before it were inherited
+   * from the source and are hidden in the aside; only its own turns show.
+   */
+  forkedAt: number;
+}
+
 export interface InstanceInfo {
   id: string;
   provider: ProviderKind;
@@ -735,6 +757,8 @@ export interface InstanceInfo {
   review?: ReviewSessionInfo;
   /** Attached review instance for this chat, rendered in the sidecar rather than main nav. */
   reviewInstanceId?: string;
+  /** Aside metadata when this chat is a read-only side-question fork of another chat. */
+  aside?: AsideSessionInfo;
   /**
    * Set when another chat delegated this one through Relay's `delegate_task`.
    * Delegated children never get their own inbox/sidebar row; they are

@@ -7,7 +7,7 @@
  * testable without mounting the whole sidebar.
  */
 
-import { isAttachedReviewInstance } from "@/lib/review-session";
+import { isAttachedChatInstance } from "@/lib/review-session";
 import { isDelegatedChildInstance } from "@/lib/delegation";
 import { getChatRecencyTimestamp, getChatSortTimestamp, isChatDone } from "@/lib/utils";
 import type { InstanceInfo } from "@shared/types";
@@ -72,7 +72,7 @@ export function buildInboxEntries(groups: readonly InboxSourceGroup[]): InboxEnt
       // Review chats stay attached to the chat they audit — surfacing them as
       // peers in a flat list would double-count the same work.
       // Delegated child chats live behind their parent's card and sidecar row.
-      if (isAttachedReviewInstance(instance) || isDelegatedChildInstance(instance)) continue;
+      if (isAttachedChatInstance(instance) || isDelegatedChildInstance(instance)) continue;
       entries.push({
         id: `chat:${instance.id}`,
         instance,

@@ -27,6 +27,10 @@ export interface InlineReplyFragment {
 interface MessageRelayContextValue {
   sourceChat?: RelaySourceChat;
   onSendToSourceChat?: (messageText: string) => void;
+  /** Tooltip/label for the send-to-source action (default "Send to <name>"). */
+  sourceChatActionLabel?: string;
+  /** Toast after the send-to-source action (default `Sent to "<name>"`). */
+  sourceChatActionToast?: string;
   allowSpinOff?: boolean;
   /** Trigger a spin-off from this chat, optionally anchored to a message or excerpt */
   onSpinOff: (request?: SpinOffRequest) => void;

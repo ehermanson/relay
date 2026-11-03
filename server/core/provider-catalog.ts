@@ -241,6 +241,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     composerHints: { helpText: "Use @ for files and / for commands and skills" },
     supportsAgentActivity: true,
     supportsRelayOrchestration: true,
+    supportsAside: true,
     supportsAccountLogins: true,
     accountLoginHowTo: {
       exampleDir: "~/.claude-work",
@@ -288,6 +289,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     composerHints: { helpText: "Use @ for files, / for commands, and $ for skills" },
     supportsAgentActivity: true,
     supportsRelayOrchestration: true,
+    supportsAside: true,
     supportsAccountLogins: true,
     accountLoginHowTo: {
       exampleDir: "~/.codex-work",

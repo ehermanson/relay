@@ -59,6 +59,12 @@ export function buildPersistedRuntimePayload(
     delete next.review;
   }
 
+  if (info.aside) {
+    next.aside = info.aside;
+  } else {
+    delete next.aside;
+  }
+
   if (info.reviewInstanceId) {
     next.reviewInstanceId = info.reviewInstanceId;
   } else {

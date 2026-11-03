@@ -584,6 +584,18 @@ export function sanitizeSnippet(html: string | null): string | null {
   return s;
 }
 
+/** A managed row persisted for an aside chat (`runtimePayload.aside`). */
+function isAsideManagedRow(row: ManagedInstanceRow): boolean {
+  const json = row.runtime_payload_json;
+  if (!json || !json.includes('"aside"')) return false;
+  try {
+    const payload = JSON.parse(json) as { aside?: unknown };
+    return !!payload.aside && typeof payload.aside === "object";
+  } catch {
+    return false;
+  }
+}
+
 export class SessionDB {
   private db: DatabaseSync;
   private transactionDepth = 0;
@@ -2489,6 +2501,8 @@ ${buildSearchIndexSchemaSql()},
     source: "session" | "managed",
     row: SessionRow | ManagedInstanceRow,
   ): void {
+    // Asides live inside their source chat's sidecar; they are never results.
+    if (source === "managed" && isAsideManagedRow(row as ManagedInstanceRow)) return;
     // Read transcript text from the search_content side table (populated by instance-manager)
     const contentRow = this.stmtGetSearchContent.get(row.instance_id) as
       | { transcript_text: string }
@@ -2564,6 +2578,7 @@ ${buildSearchIndexSchemaSql()},
     this.removeFromSearchIndex(instanceId);
 
     const managed = this.getManagedByInstanceId(instanceId);
+    if (managed && isAsideManagedRow(managed)) return;
     if (managed && !managed.archived) {
       this.insertSearchDoc("managed", managed);
       return;

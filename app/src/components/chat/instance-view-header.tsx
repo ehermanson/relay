@@ -20,6 +20,9 @@ export function InstanceViewHeader() {
       hasAgentsContent={shared.hasAgentsContent}
       hasPlanContent={shared.hasPlanContent}
       hasReviewContent={shared.hasReviewContent}
+      asideCount={shared.attachedAsides.length}
+      canStartAside={shared.canStartAside}
+      onOpenAside={actions.openAside}
       hasStats={shared.hasStats}
       sidecarContentCount={shared.sidecarContentCount}
       loadingSidecarActions={shared.isLoadingSession}

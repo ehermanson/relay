@@ -377,6 +377,27 @@ export async function createInstance(
   return res.json();
 }
 
+/**
+ * Fork a chat into a read-only aside ("btw") thread. The question is sent to
+ * the returned instance like any other message.
+ */
+export async function createAside(sourceInstanceId: string): Promise<InstanceInfo> {
+  const res = await fetch(`/api/instances/${encodeURIComponent(sourceInstanceId)}/aside`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: "Failed to start aside" }));
+    if (data.code === "max_processes") {
+      throw new MaxProcessesError(
+        data.error || "Maximum processes reached",
+        typeof data.limit === "number" ? data.limit : 0,
+      );
+    }
+    throw new Error(data.error || "Failed to start aside");
+  }
+  return res.json();
+}
+
 export async function fetchInstanceHistory(instanceId: string): Promise<HistoryEntry[]> {
   const res = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/history`);
   if (!res.ok) throw new Error("Failed to fetch instance history");

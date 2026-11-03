@@ -46,6 +46,7 @@ Right now, the main supported providers are:
 - Respond to approval requests and other agent prompts from the browser
 - Follow delegated work: subagents show up as collapsed cards where they were spawned (name, model when known, status, result) and in an Agents sidecar; agent-to-agent reports are never shown as your own messages
 - Start review chats for a branch or for the files changed in a chat
+- Take a tangent ("btw") in an aside: a read-only fork of the chat that sees its full context, lives in the sidecar, and never adds to the main conversation (`/btw <message>` in the composer)
 - Browse project tasks, plans, installed skills, docs, and usage stats
 - Set global defaults and project-specific instructions
 - See which MCP servers are available to a chat and manage supported Provider-global or project-scoped MCP configuration

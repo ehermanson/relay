@@ -5,11 +5,25 @@ function looksLikeReviewTitle(name: string): boolean {
 }
 
 export function isAttachedReviewInstance(instance: InstanceInfo): boolean {
+  if (instance.aside) return false;
   return Boolean(
     instance.review?.sourceInstanceId ||
     instance.review?.sourceSessionId ||
     (instance.parentSessionId && looksLikeReviewTitle(instance.name)),
   );
+}
+
+/** An aside ("btw") chat: a read-only fork shown only in its source chat's sidecar. */
+export function isAsideInstance(instance: InstanceInfo): boolean {
+  return !!instance.aside?.sourceInstanceId;
+}
+
+/**
+ * A chat that lives inside another chat (an attached review or an aside) and
+ * so never appears in navigation, lists, Home, or the stale-chat sweep.
+ */
+export function isAttachedChatInstance(instance: InstanceInfo): boolean {
+  return isAsideInstance(instance) || isAttachedReviewInstance(instance);
 }
 
 export function getReviewSourceInstance(
