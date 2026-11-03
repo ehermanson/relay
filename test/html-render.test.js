@@ -22,6 +22,7 @@ import {
   HTML_RENDER_CONTENT_SECURITY_POLICY,
   HTML_RENDER_EVENT,
   HTML_RENDER_MAX_BYTES,
+  HTML_RENDER_THEME_TOKENS,
   injectHtmlRenderBootstrap,
   readHtmlRenderReference,
 } from "../dist/server/core/html-render.js";
@@ -84,6 +85,18 @@ describe("html render pages", () => {
     );
     assert.equal(readHtmlRenderReference(null), undefined);
     assert.equal(readHtmlRenderReference({ id: RENDER_ID }).height, 360);
+  });
+});
+
+describe("html render fallback theme", () => {
+  it("defines every page-facing token in both appearances", () => {
+    const page = injectHtmlRenderBootstrap("<p>x</p>");
+    const dark = page.slice(0, page.indexOf("@media (prefers-color-scheme: light)"));
+    const light = page.slice(page.indexOf("@media (prefers-color-scheme: light)"));
+    for (const [name] of HTML_RENDER_THEME_TOKENS) {
+      assert.ok(dark.includes(`${name}:`), `dark fallback lacks ${name}`);
+      assert.ok(light.includes(`${name}:`), `light fallback lacks ${name}`);
+    }
   });
 });
 

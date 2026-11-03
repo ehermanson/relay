@@ -138,7 +138,11 @@ export interface HtmlRenderTheme {
   variables: Record<string, string>;
 }
 
-/** Rarely seen: the UI always passes the live theme before first paint. */
+/**
+ * Rarely seen: the UI always passes the live theme before first paint. Covers
+ * every page-facing token, for a page opened outside the chat frame. Values
+ * mirror app/src/index.css.
+ */
 const FALLBACK_THEMES: Record<"light" | "dark", Record<string, string>> = {
   dark: {
     "--background": "hsl(231 4% 12%)",
@@ -146,9 +150,25 @@ const FALLBACK_THEMES: Record<"light" | "dark", Record<string, string>> = {
     "--foreground-strong": "hsl(0 0% 98%)",
     "--muted": "hsl(240 4% 46%)",
     "--surface": "hsl(231 4% 16%)",
+    "--surface-hover": "hsl(231 4% 15%)",
     "--border": "hsl(240 13% 20%)",
     "--accent": "hsl(160 84% 39%)",
+    "--accent-surface": "hsl(160 84% 39% / 0.1)",
+    "--success": "hsl(160 84% 39%)",
+    "--warning": "hsl(38 92% 50%)",
+    "--warning-surface": "hsl(38 92% 50% / 0.1)",
     "--error": "hsl(0 91% 71%)",
+    "--error-surface": "hsl(0 91% 71% / 0.08)",
+    "--info": "hsl(213 94% 68%)",
+    "--code-background": "hsl(240 10% 8%)",
+    "--chart-1": "hsl(160 84% 39%)",
+    "--chart-2": "hsl(255 92% 76%)",
+    "--chart-3": "hsl(213 94% 68%)",
+    "--chart-4": "hsl(38 92% 50%)",
+    "--chart-5": "hsl(0 91% 71%)",
+    "--chart-6": "hsl(329 86% 70%)",
+    "--chart-7": "hsl(83 78% 55%)",
+    "--chart-8": "hsl(198 93% 60%)",
   },
   light: {
     "--background": "hsl(0 0% 100%)",
@@ -156,9 +176,25 @@ const FALLBACK_THEMES: Record<"light" | "dark", Record<string, string>> = {
     "--foreground-strong": "hsl(222 47% 11%)",
     "--muted": "hsl(220 9% 46%)",
     "--surface": "hsl(0 0% 100%)",
+    "--surface-hover": "hsl(220 10% 96.5%)",
     "--border": "hsl(220 13% 91%)",
     "--accent": "hsl(161 94% 30%)",
+    "--accent-surface": "hsl(161 94% 30% / 0.07)",
+    "--success": "hsl(161 94% 30%)",
+    "--warning": "hsl(32 95% 44%)",
+    "--warning-surface": "hsl(32 95% 44% / 0.06)",
     "--error": "hsl(0 72% 51%)",
+    "--error-surface": "hsl(0 72% 51% / 0.05)",
+    "--info": "hsl(217 91% 60%)",
+    "--code-background": "hsl(220 14% 97%)",
+    "--chart-1": "hsl(160 84% 39%)",
+    "--chart-2": "hsl(255 92% 76%)",
+    "--chart-3": "hsl(213 94% 68%)",
+    "--chart-4": "hsl(38 92% 50%)",
+    "--chart-5": "hsl(0 91% 71%)",
+    "--chart-6": "hsl(329 86% 70%)",
+    "--chart-7": "hsl(83 78% 55%)",
+    "--chart-8": "hsl(198 93% 60%)",
   },
 };
 
