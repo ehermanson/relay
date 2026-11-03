@@ -9,8 +9,12 @@ import { createRelayMcpServer } from "#core/orchestration/tools.js";
 import { readBodyBuffer } from "#server/hono-utils.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
 
-/** JSON-RPC bodies are tiny; anything bigger is not a legitimate MCP client. */
-const MCP_MAX_BODY_BYTES = 1024 * 1024;
+/**
+ * JSON-RPC bodies are small, except an `html_render` page (up to
+ * `HTML_RENDER_MAX_BYTES`, plus JSON escaping). Anything bigger is not a
+ * legitimate MCP client.
+ */
+const MCP_MAX_BODY_BYTES = 3 * 1024 * 1024;
 
 /**
  * Relay's own MCP endpoint (stateless Streamable HTTP, JSON responses only).

@@ -17,6 +17,7 @@ import type { ChatItem, LiveActivity, MergedActivity, UserChatItem } from "@/lib
 import { classifyLargeUserText } from "@/lib/message-rendering";
 import { hasAnchorInItems, isMainStreamAgent } from "@/lib/agents";
 import { mergeAgentInfo } from "@shared/agent-info";
+import { HTML_RENDER_EVENT, readHtmlRenderReference } from "@shared/html-render";
 import { INTERACTIVE_TOOLS } from "@shared/tools";
 
 // Re-export for consumers
@@ -527,6 +528,9 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
           main.push({ kind: "compact-boundary", timestamp: entry.timestamp });
         } else if (msg.event === "model_switched") {
           main.push(buildModelSwitchItem(msg.payload, entry.timestamp));
+        } else if (msg.event === HTML_RENDER_EVENT) {
+          const render = readHtmlRenderReference(msg.payload);
+          if (render) main.push({ kind: "html-render", render, timestamp: entry.timestamp });
         }
         break;
       }
@@ -1158,6 +1162,15 @@ function coreReducer(state: State, action: Action): State {
         const items = [...state.items];
         items.push(buildModelSwitchItem(action.message.payload, Date.now()));
         return { ...state, items };
+      }
+      if (action.message.event === HTML_RENDER_EVENT) {
+        const render = readHtmlRenderReference(action.message.payload);
+        if (!render) return state;
+        // A page arrives mid-turn: it never ends the turn or its indicators.
+        return {
+          ...state,
+          items: [...state.items, { kind: "html-render", render, timestamp: Date.now() }],
+        };
       }
       if (action.message.event !== "compact_boundary") return state;
       const items = [...state.items];

@@ -1178,7 +1178,9 @@ export type SystemEventType =
   | "provider_status"
   | "provider_notice"
   | "model_rerouted"
-  | "model_switched";
+  | "model_switched"
+  /** A page an agent showed with `html_render`; payload is an `HtmlRenderReference`. */
+  | "html_render";
 
 export interface SystemEventMessage {
   type: "system_event";

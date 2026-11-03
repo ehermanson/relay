@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import type { Hono } from "hono";
+import { HTML_RENDER_CONTENT_SECURITY_POLICY } from "#core/html-render.js";
 import {
   commitAll,
   getWorktreeStatus,
@@ -217,6 +219,30 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Agent history not available" }, 404);
     }
     return c.json({ history });
+  });
+
+  // A page an agent showed with `html_render`. Sandboxed by its CSP even when
+  // opened directly in a tab, so it never runs with Relay's origin.
+  app.get("/api/html-renders/:instanceId/:renderId", async (c) => {
+    const path = instanceManager.getHtmlRenderPath(
+      c.req.param("instanceId"),
+      c.req.param("renderId"),
+    );
+    if (!path) return c.json({ error: "Page not found" }, 404);
+    try {
+      return new Response(await readFile(path), {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Security-Policy": HTML_RENDER_CONTENT_SECURITY_POLICY,
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+          // A stored page never changes.
+          "Cache-Control": "private, max-age=31536000, immutable",
+        },
+      });
+    } catch {
+      return c.json({ error: "Page not found" }, 404);
+    }
   });
 
   app.get("/api/instances/:id/diff", async (c) => {

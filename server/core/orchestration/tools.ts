@@ -19,6 +19,17 @@ import {
   type DelegateTaskRequest,
 } from "#core/orchestration/delegation.js";
 import {
+  clampHtmlRenderHeight,
+  findViewportHeightUnit,
+  HTML_RENDER_DEFAULT_HEIGHT,
+  HTML_RENDER_MAX_BYTES,
+  HTML_RENDER_MAX_HEIGHT,
+  HTML_RENDER_MAX_TITLE_LENGTH,
+  HTML_RENDER_MIN_HEIGHT,
+  HTML_RENDER_TOOL_DESCRIPTION,
+  type HtmlRenderReference,
+} from "#core/html-render.js";
+import {
   DEFAULT_ACCOUNT_ID,
   type DelegatedTaskInfo,
   type HistoryEntry,
@@ -95,6 +106,15 @@ export interface OrchestrationHost {
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<ChatWaitOutcome>;
+  /**
+   * Inline the page's local images, store it, and show it in the caller's
+   * chat. Inputs are already validated; throws `McpToolError` for images
+   * that can't be inlined.
+   */
+  publishHtmlRender(
+    callerId: string,
+    page: { html: string; title: string; height: number },
+  ): Promise<HtmlRenderReference>;
 }
 
 /**
@@ -556,6 +576,72 @@ const chatWait: Tool = {
   },
 };
 
+const htmlRender: Tool = {
+  name: "html_render",
+  description: HTML_RENDER_TOOL_DESCRIPTION,
+  inputSchema: {
+    type: "object",
+    properties: {
+      html: { type: "string", description: "The complete page." },
+      title: {
+        type: "string",
+        maxLength: HTML_RENDER_MAX_TITLE_LENGTH,
+        description: "Short title shown with the page.",
+      },
+      height: {
+        type: "integer",
+        minimum: HTML_RENDER_MIN_HEIGHT,
+        maximum: HTML_RENDER_MAX_HEIGHT,
+        description: `Expected page height in CSS pixels, used until the page reports its own. Default ${HTML_RENDER_DEFAULT_HEIGHT}.`,
+      },
+    },
+    required: ["html", "title"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Show HTML page",
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
+  async handler(args, ctx) {
+    const caller = requireCaller(ctx);
+    const html = typeof args.html === "string" ? args.html : "";
+    if (!html.trim()) throw new McpToolError("invalid_request", "html is required.");
+    const bytes = Buffer.byteLength(html, "utf8");
+    if (bytes > HTML_RENDER_MAX_BYTES) {
+      throw new McpToolError(
+        "invalid_request",
+        `The page is ${Math.ceil(bytes / 1024)} KB; the limit is ${HTML_RENDER_MAX_BYTES / 1024} KB. Load large data or images from a URL instead.`,
+      );
+    }
+    const title = optionalString(args, "title");
+    if (!title) throw new McpToolError("invalid_request", "title is required.");
+    const viewportUnit = findViewportHeightUnit(html);
+    if (viewportUnit) {
+      throw new McpToolError(
+        "invalid_request",
+        `The page uses a viewport height unit (${viewportUnit}). The frame grows to fit the page, so a height that follows the viewport grows it forever. Let content set the height, or use fixed pixel heights.`,
+      );
+    }
+    const height =
+      typeof args.height === "number" && Number.isFinite(args.height)
+        ? clampHtmlRenderHeight(args.height)
+        : HTML_RENDER_DEFAULT_HEIGHT;
+    const render = await ctx.host.publishHtmlRender(caller.id, {
+      html,
+      title: title.slice(0, HTML_RENDER_MAX_TITLE_LENGTH),
+      height,
+    });
+    return {
+      shown: true,
+      title: render.title,
+      next: "Shown to the user above your reply. Don't describe or restate the page; reply only with what it doesn't already say.",
+    };
+  },
+};
+
 export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   relayCapabilities,
   delegateTask,
@@ -565,6 +651,7 @@ export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   chatRead,
   chatSend,
   chatWait,
+  htmlRender,
 ];
 
 /** Inline result size for tool replies other than `task_status`. */

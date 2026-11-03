@@ -9,6 +9,7 @@ import { ChatRail } from "@/components/chat/chat-rail";
 import { AgentMessage } from "@/components/chat/agent-message";
 import { CompactBoundary } from "@/components/chat/compact-boundary";
 import { ModelSwitchDivider } from "@/components/chat/model-switch-divider";
+import { HtmlRenderCard } from "@/components/chat/html-render-card";
 import { LiveStatusStrip } from "@/components/chat/live-status-strip";
 import { ResponseDivider } from "@/components/chat/response-divider";
 import { SystemMessage } from "@/components/chat/system-message";
@@ -506,6 +507,8 @@ export function MessageList({
             timestamp={row.timestamp}
           />
         );
+      case "html-render":
+        return instanceId ? <HtmlRenderCard instanceId={instanceId} render={row.render} /> : null;
       case "thinking-block":
         return <ThinkingBlock text={row.text} />;
       case "agent-card": {

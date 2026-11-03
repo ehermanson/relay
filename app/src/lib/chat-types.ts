@@ -5,6 +5,7 @@
  * shared enums/literals used across multiple components.
  */
 
+import type { HtmlRenderReference } from "@shared/html-render";
 import type { ActivityMessage } from "@shared/types";
 import type { LargeUserRenderMode } from "@/lib/message-rendering";
 
@@ -80,6 +81,13 @@ export interface ModelSwitchChatItem {
   timestamp?: number;
 }
 
+/** A page an agent showed with `html_render`, framed inline. */
+export interface HtmlRenderChatItem {
+  kind: "html-render";
+  render: HtmlRenderReference;
+  timestamp?: number;
+}
+
 export interface ThinkingBlockChatItem {
   kind: "thinking-block";
   text: string;
@@ -122,6 +130,7 @@ export type ChatItem =
   | SystemChatItem
   | CompactBoundaryChatItem
   | ModelSwitchChatItem
+  | HtmlRenderChatItem
   | ThinkingBlockChatItem
   | ActivityGroupChatItem
   | AgentCardChatItem
@@ -175,6 +184,13 @@ export interface ModelSwitchRow {
   timestamp?: number;
 }
 
+export interface HtmlRenderRow {
+  id: string;
+  kind: "html-render";
+  render: HtmlRenderReference;
+  timestamp?: number;
+}
+
 export interface ThinkingBlockRow {
   id: string;
   kind: "thinking-block";
@@ -224,6 +240,7 @@ export type RenderRow =
   | SystemRow
   | CompactBoundaryRow
   | ModelSwitchRow
+  | HtmlRenderRow
   | ThinkingBlockRow
   | AgentCardRow
   | AgentNoteRow

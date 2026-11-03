@@ -29,15 +29,24 @@ import {
   readSync,
   closeSync,
   mkdtempSync,
+  mkdirSync,
   realpathSync,
+  rmSync,
   watch as watchFs,
 } from "fs";
 import type { FSWatcher } from "fs";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { findProjectIcon } from "#core/favicon-scanner.js";
+import { HtmlRenderImageError, inlineLocalImages } from "#core/html-render-images.js";
+import {
+  HTML_RENDER_EVENT,
+  injectHtmlRenderBootstrap,
+  isHtmlRenderId,
+  type HtmlRenderReference,
+} from "#core/html-render.js";
 import type { ProviderSession } from "#core/provider.js";
 import {
   resolveQueryFn,
@@ -2293,7 +2302,68 @@ export class InstanceManager extends EventEmitter {
         this.sendOrchestrationMessage(callerId, chatId, text),
       waitForChatTurn: (callerId, chatId, timeoutMs, signal) =>
         this.waitForChatTurn(callerId, chatId, timeoutMs, signal),
+      publishHtmlRender: (callerId, page) => this.publishHtmlRender(callerId, page),
     };
+  }
+
+  // ===========================================================================
+  // Inline HTML pages (`html_render`)
+  // ===========================================================================
+
+  /** Pages live next to the DB, one directory per chat. */
+  private htmlRenderDir(instanceId: string): string {
+    return join(dirname(this.baseConfig.dbPath), "html-renders", instanceId);
+  }
+
+  /**
+   * Store a page an agent showed and put it in the chat. The page is a file
+   * (it can be large and is served on its own); the chat gets a `html_render`
+   * system event, persisted like a model-switch divider so it replays for
+   * every provider — Codex calls MCP tools from inside code-mode scripts, so
+   * its transcript has no tool call of its own to anchor a page to.
+   */
+  async publishHtmlRender(
+    instanceId: string,
+    page: { html: string; title: string; height: number },
+  ): Promise<HtmlRenderReference> {
+    if (!this.instances.has(instanceId)) throw new Error(`Unknown chat ${instanceId}`);
+    let html: string;
+    try {
+      html = injectHtmlRenderBootstrap(await inlineLocalImages(page.html));
+    } catch (error) {
+      if (error instanceof HtmlRenderImageError) {
+        throw new McpToolError("invalid_request", error.message);
+      }
+      throw error;
+    }
+    // Re-read: the chat may have been removed while images were read.
+    const instance = this.instances.get(instanceId);
+    if (!instance) throw new Error(`Unknown chat ${instanceId}`);
+    const render: HtmlRenderReference = {
+      id: randomUUID(),
+      title: page.title,
+      height: page.height,
+    };
+    const dir = this.htmlRenderDir(instanceId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${render.id}.html`), html, "utf8");
+    const message: SystemEventMessage = {
+      type: "system_event",
+      event: HTML_RENDER_EVENT,
+      instanceId,
+      payload: { ...render },
+    };
+    this.pushHistory(instance, message);
+    this.db.insertSessionEvent(instanceId, Date.now(), HTML_RENDER_EVENT, JSON.stringify(render));
+    this.emit("instance:system_event", instanceId, message);
+    return render;
+  }
+
+  /** Path of a stored page, or null when the ids are malformed or it is gone. */
+  getHtmlRenderPath(instanceId: string, renderId: string): string | null {
+    if (!isHtmlRenderId(renderId) || !/^[\w-]+$/.test(instanceId)) return null;
+    const path = join(this.htmlRenderDir(instanceId), `${renderId}.html`);
+    return existsSync(path) ? path : null;
   }
 
   private async listOrchestrationProviders(
@@ -4016,6 +4086,7 @@ export class InstanceManager extends EventEmitter {
       this.db.deleteByInstanceId(instance.info.id);
       this.db.deleteManagedByInstanceId(instance.info.id);
       this.deleteInstanceTranscriptFiles(instance);
+      rmSync(this.htmlRenderDir(instance.info.id), { recursive: true, force: true });
     } else {
       if (instance.sessionId) this.db.archive(instance.sessionId);
       this.db.archiveManaged(instance.info.id);

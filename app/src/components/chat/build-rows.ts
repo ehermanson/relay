@@ -7,6 +7,7 @@
  *  - Response dividers with elapsed time
  */
 
+import { getHtmlRenderHeight } from "@/lib/html-render-heights";
 import { INTERACTIVE_TOOLS } from "@shared/tools";
 import type {
   ChatItem,
@@ -196,6 +197,14 @@ export function buildRows(items: ChatItem[]): RenderRow[] {
             timestamp: item.timestamp,
           });
           break;
+        case "html-render":
+          rows.push({
+            id: `html-render-${item.render.id}`,
+            kind: "html-render",
+            render: item.render,
+            timestamp: item.timestamp,
+          });
+          break;
         case "thinking-block":
           rows.push({
             id: `thinking-${i}`,
@@ -247,6 +256,9 @@ export function estimateRowHeight(row: RenderRow, containerWidth?: number): numb
     case "compact-boundary":
     case "model-switch":
       return 48;
+    case "html-render":
+      // Frame plus its title bar.
+      return (getHtmlRenderHeight(row.render.id) ?? row.render.height) + 40;
     case "thinking-block":
       return Math.min(420, 60 + Math.ceil(row.text.length / 80) * 16);
     case "agent-card":

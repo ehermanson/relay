@@ -1269,3 +1269,24 @@ describe("useInstanceMessages file_stats", () => {
     ]);
   });
 });
+
+describe("html_render pages", () => {
+  const render = { id: "0f3a2c1e-1111-4222-8333-444455556666", title: "Chart", height: 240 };
+
+  it("replays a page between the text around it and drops malformed ones", () => {
+    const items = replayHistoryToItems([
+      { timestamp: 1, message: { type: "output", text: "Here it is.", isWaiting: false } },
+      {
+        timestamp: 2,
+        message: { type: "system_event", event: "html_render", payload: render },
+      },
+      { timestamp: 3, message: { type: "output", text: "Done.", isWaiting: true } },
+      {
+        timestamp: 4,
+        message: { type: "system_event", event: "html_render", payload: { id: "bad" } },
+      },
+    ] as HistoryEntry[]);
+    expect(items.map((item) => item.kind)).toEqual(["assistant", "html-render", "assistant"]);
+    expect(items[1]).toMatchObject({ kind: "html-render", render });
+  });
+});
