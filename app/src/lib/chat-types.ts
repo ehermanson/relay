@@ -6,6 +6,7 @@
  */
 
 import type { HtmlRenderReference } from "@shared/html-render";
+import type { UiView } from "@shared/ui-render";
 import type { ActivityMessage } from "@shared/types";
 import type { LargeUserRenderMode } from "@/lib/message-rendering";
 
@@ -88,6 +89,13 @@ export interface HtmlRenderChatItem {
   timestamp?: number;
 }
 
+/** A native view an agent showed with `ui_render`; updates replace `view` in place. */
+export interface UiRenderChatItem {
+  kind: "ui-render";
+  view: UiView;
+  timestamp?: number;
+}
+
 export interface ThinkingBlockChatItem {
   kind: "thinking-block";
   text: string;
@@ -131,6 +139,7 @@ export type ChatItem =
   | CompactBoundaryChatItem
   | ModelSwitchChatItem
   | HtmlRenderChatItem
+  | UiRenderChatItem
   | ThinkingBlockChatItem
   | ActivityGroupChatItem
   | AgentCardChatItem
@@ -191,6 +200,13 @@ export interface HtmlRenderRow {
   timestamp?: number;
 }
 
+export interface UiRenderRow {
+  id: string;
+  kind: "ui-render";
+  view: UiView;
+  timestamp?: number;
+}
+
 export interface ThinkingBlockRow {
   id: string;
   kind: "thinking-block";
@@ -241,6 +257,7 @@ export type RenderRow =
   | CompactBoundaryRow
   | ModelSwitchRow
   | HtmlRenderRow
+  | UiRenderRow
   | ThinkingBlockRow
   | AgentCardRow
   | AgentNoteRow

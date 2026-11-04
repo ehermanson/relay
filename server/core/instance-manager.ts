@@ -47,6 +47,15 @@ import {
   isHtmlRenderId,
   type HtmlRenderReference,
 } from "#core/html-render.js";
+import {
+  readUiView,
+  resolveUiResponse,
+  UI_RENDER_EVENT,
+  UI_RENDER_VERSION,
+  UiViewAnswerError,
+  type UiNode,
+  type UiView,
+} from "#core/ui-render.js";
 import type { ProviderSession } from "#core/provider.js";
 import {
   resolveQueryFn,
@@ -1654,6 +1663,8 @@ export class InstanceManager extends EventEmitter {
   >();
   /** `waitForChatTurn` callers; see `addChatTurnWaiter`. */
   private readonly chatTurnWaiters = new Set<(id: string) => void>();
+  /** `<chatId>:<viewId>` while an answer to that view is being sent. */
+  private readonly uiViewAnswersInFlight = new Set<string>();
   private readonly notifyChatTurnWaiters = (id: string): void => {
     for (const waiter of this.chatTurnWaiters) waiter(id);
   };
@@ -2303,6 +2314,7 @@ export class InstanceManager extends EventEmitter {
       waitForChatTurn: (callerId, chatId, timeoutMs, signal) =>
         this.waitForChatTurn(callerId, chatId, timeoutMs, signal),
       publishHtmlRender: (callerId, page) => this.publishHtmlRender(callerId, page),
+      publishUiView: (callerId, view) => this.publishUiView(callerId, view),
     };
   }
 
@@ -2357,6 +2369,127 @@ export class InstanceManager extends EventEmitter {
     this.db.insertSessionEvent(instanceId, Date.now(), HTML_RENDER_EVENT, JSON.stringify(render));
     this.emit("instance:system_event", instanceId, message);
     return render;
+  }
+
+  // ===========================================================================
+  // Agent views (`ui_render`)
+  // ===========================================================================
+
+  /**
+   * A view lives in one `ui_render` session event per chat. Updating it
+   * rewrites that row's payload in place, so it keeps its position in the
+   * chat and only its current state is stored.
+   */
+  private findUiViewRow(
+    instanceId: string,
+    viewId: string,
+  ): { rowId: number; view: UiView } | undefined {
+    for (const row of this.db.getSessionEvents(instanceId)) {
+      if (row.event !== UI_RENDER_EVENT || !row.payload_json) continue;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch {
+        continue;
+      }
+      const view = readUiView(payload);
+      if (view?.id === viewId) return { rowId: row.id, view };
+    }
+    return undefined;
+  }
+
+  /** Persist a view's new state, patch it into live history, and broadcast it. */
+  private storeUiView(instance: Instance, view: UiView, rowId?: number): void {
+    const json = JSON.stringify(view);
+    if (rowId !== undefined) this.db.updateSessionEventPayload(rowId, json);
+    else this.db.insertSessionEvent(instance.info.id, view.updatedAt, UI_RENDER_EVENT, json);
+    const message: SystemEventMessage = {
+      type: "system_event",
+      event: UI_RENDER_EVENT,
+      instanceId: instance.info.id,
+      payload: { ...view },
+    };
+    const index = instance.history.findIndex(
+      (entry) =>
+        entry.message.type === "system_event" &&
+        (entry.message as SystemEventMessage).event === UI_RENDER_EVENT &&
+        (entry.message as SystemEventMessage).payload?.id === view.id,
+    );
+    if (index !== -1) instance.history[index] = { ...instance.history[index], message };
+    else this.pushHistory(instance, message);
+    this.emit("instance:system_event", instance.info.id, message);
+  }
+
+  /**
+   * Show a view an agent described, or replace its view with the same id.
+   * An update replaces the whole spec and clears any earlier answer.
+   */
+  publishUiView(
+    instanceId: string,
+    input: { id?: string; title: string; root: UiNode },
+  ): { id: string; updated: boolean } {
+    const instance = this.instances.get(instanceId);
+    if (!instance) throw new Error(`Unknown chat ${instanceId}`);
+    const existing = input.id ? this.findUiViewRow(instanceId, input.id) : undefined;
+    const view: UiView = {
+      id: input.id ?? randomUUID(),
+      title: input.title,
+      version: UI_RENDER_VERSION,
+      root: input.root,
+      updatedAt: Date.now(),
+    };
+    this.storeUiView(instance, view, existing?.rowId);
+    return { id: view.id, updated: existing !== undefined };
+  }
+
+  /**
+   * The user answered a view: send the reply the view defines (never text
+   * from the client) as their own message, then record the answer so every
+   * device shows it. A click is the user's turn, so it may revive a done
+   * chat and queues behind a running turn like any send.
+   */
+  async answerUiView(
+    instanceId: string,
+    viewId: string,
+    actionId: string,
+    values?: unknown,
+  ): Promise<void> {
+    const instance = this.instances.get(instanceId);
+    if (!instance) throw new UiViewAnswerError("Chat not found.", 404);
+    const found = this.findUiViewRow(instanceId, viewId);
+    if (!found) throw new UiViewAnswerError("View not found.", 404);
+    const resolution = resolveUiResponse(found.view, actionId, values);
+    if (!resolution.ok) {
+      throw new UiViewAnswerError(resolution.message, found.view.response ? 409 : 400);
+    }
+    const key = `${instanceId}:${viewId}`;
+    if (this.uiViewAnswersInFlight.has(key)) {
+      throw new UiViewAnswerError("This view is already being answered.", 409);
+    }
+    this.uiViewAnswersInFlight.add(key);
+    try {
+      await this.sendMessage(instanceId, resolution.reply);
+      // The agent may have replaced the view meanwhile; never stamp this
+      // answer onto a newer spec.
+      const latest = this.findUiViewRow(instanceId, viewId);
+      const current = this.instances.get(instanceId);
+      if (!latest || !current || latest.view.updatedAt !== found.view.updatedAt) return;
+      this.storeUiView(
+        current,
+        {
+          ...latest.view,
+          response: {
+            actionId,
+            reply: resolution.reply,
+            at: Date.now(),
+            ...(resolution.values ? { values: resolution.values } : {}),
+          },
+        },
+        latest.rowId,
+      );
+    } finally {
+      this.uiViewAnswersInFlight.delete(key);
+    }
   }
 
   /** Path of a stored page, or null when the ids are malformed or it is gone. */

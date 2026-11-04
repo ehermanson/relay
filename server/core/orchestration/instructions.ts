@@ -38,6 +38,7 @@ export const RELAY_TOOL_NAMES = [
   "chat_send",
   "chat_wait",
   "html_render",
+  "ui_render",
 ] as const;
 
 /** Link form agents use to refer to a chat; the UI resolves it to the live title. */
@@ -61,7 +62,8 @@ You are running inside Relay, which hosts several agent chats side by side. The 
 
 ### Visuals
 
-- Answer data with a trend or comparison with a chart, and show any visual the user asks for (diagram, table, mockup) with \`html_render\`: one self-contained HTML page, shown inline above your reply. Never start a server or write a file just to show it. Asked for an image to post or use elsewhere: write a \`.png\` file instead.`;
+- Answer data with a trend or comparison with a chart, and show any visual the user asks for (diagram, table, mockup) with \`html_render\`: one self-contained HTML page, shown inline above your reply. Never start a server or write a file just to show it. Asked for an image to post or use elsewhere: write a \`.png\` file instead.
+- Show status you'll keep reporting (checklists, progress, test results), structured comparisons, and choices for the user with \`ui_render\`: Relay's own components, updated in place by reusing the view's id. A button or choice the user clicks arrives as their next message.`;
 
 /** Claude defers MCP tools behind ToolSearch; tell it how to load them. */
 export const RELAY_ORCHESTRATION_CLAUDE_NOTE = `If the Relay tools are not loaded yet, load them with ToolSearch \`select:${RELAY_TOOL_NAMES.map((tool) => `${RELAY_MCP_CLAUDE_TOOL_PREFIX}${tool}`).join(",")}\`.`;
@@ -79,4 +81,4 @@ export function withoutRelayMcpServer<T extends { name: string }>(
 
 /** Returned in the MCP `initialize` result; some clients surface it to the model. */
 export const RELAY_MCP_SERVER_INSTRUCTIONS =
-  "Relay cross-chat tools: read and message other chats, and delegate tasks to child chats on any provider. After an async delegate_task, end your turn; completion wakes you. Refer to chats by their relay://chat/<id> link. html_render shows a chart, diagram, or mockup inline in this chat. Ordinary coding needs none of these tools.";
+  "Relay cross-chat tools: read and message other chats, and delegate tasks to child chats on any provider. After an async delegate_task, end your turn; completion wakes you. Refer to chats by their relay://chat/<id> link. html_render shows a chart, diagram, or mockup inline in this chat; ui_render shows native status views, tables, and choices, updatable in place. Ordinary coding needs none of these tools.";

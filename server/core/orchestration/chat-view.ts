@@ -1,5 +1,12 @@
 import { isInternalInjectedUserText, stripInjectedWrapper } from "#core/internal-user-messages.js";
-import type { ActivityMessage, HistoryEntry, OutputMessage, UserMessage } from "#core/types.js";
+import type {
+  ActivityMessage,
+  HistoryEntry,
+  OutputMessage,
+  SystemEventMessage,
+  UserMessage,
+} from "#core/types.js";
+import { readUiView, summarizeUiView, UI_RENDER_EVENT } from "#core/ui-render.js";
 
 /**
  * A chat's conversation as an agent reads it through `chat_read`: bounded,
@@ -13,8 +20,11 @@ export type ChatViewMode = "messages" | "activity";
 
 export interface ChatViewItem {
   cursor: string;
-  /** `agent` = an agent-authored note in this chat (not a human turn). */
-  role: "user" | "assistant" | "agent" | "tool";
+  /**
+   * `agent` = an agent-authored note in this chat (not a human turn);
+   * `view` = a `ui_render` view, as text.
+   */
+  role: "user" | "assistant" | "agent" | "tool" | "view";
   text: string;
   truncated?: boolean;
   timestamp: number;
@@ -153,6 +163,16 @@ function toViewItem(entry: HistoryEntry, cursor: string, view: ChatViewMode): Ch
       const text = [activity.tool, label].filter(Boolean).join(": ");
       if (!text) return null;
       return withText({ cursor, role: "tool", timestamp: entry.timestamp }, text);
+    }
+    case "system_event": {
+      const event = message as SystemEventMessage;
+      if (event.event !== UI_RENDER_EVENT) return null;
+      const uiView = readUiView(event.payload);
+      if (!uiView) return null;
+      return withText(
+        { cursor, role: "view", timestamp: entry.timestamp },
+        summarizeUiView(uiView),
+      );
     }
     default:
       return null;

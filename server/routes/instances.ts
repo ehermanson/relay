@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Hono } from "hono";
 import { HTML_RENDER_CONTENT_SECURITY_POLICY } from "#core/html-render.js";
+import { isUiViewId, UiViewAnswerError } from "#core/ui-render.js";
 import {
   commitAll,
   getWorktreeStatus,
@@ -11,6 +12,7 @@ import {
 } from "#core/git.js";
 import {
   AsideUnavailableError,
+  ChatReadOnlyError,
   MaxProcessesError,
   ProviderUnavailableInAccountError,
 } from "#core/instance-manager.js";
@@ -96,6 +98,31 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Instance not found" }, 404);
     }
     return c.json(summary);
+  });
+
+  // The user answered an agent's `ui_render` view (a button or a choice).
+  app.post("/api/instances/:id/ui-views/:viewId/answer", async (c) => {
+    const viewId = c.req.param("viewId");
+    if (!isUiViewId(viewId)) return c.json({ error: "Invalid view" }, 400);
+    let body: { actionId?: unknown; values?: unknown };
+    try {
+      body = await readJsonBody<{ actionId?: unknown; values?: unknown }>(c);
+    } catch {
+      return c.json({ error: "Invalid answer" }, 400);
+    }
+    if (typeof body.actionId !== "string" || !body.actionId) {
+      return c.json({ error: "Invalid answer" }, 400);
+    }
+    try {
+      await instanceManager.answerUiView(c.req.param("id"), viewId, body.actionId, body.values);
+      return c.json({ success: true });
+    } catch (err) {
+      if (err instanceof UiViewAnswerError) return c.json({ error: err.message }, err.status);
+      if (err instanceof ChatReadOnlyError) {
+        return c.json({ error: err.message, code: err.code }, 409);
+      }
+      return c.json({ error: err instanceof Error ? err.message : "Failed to send" }, 500);
+    }
   });
 
   app.post("/api/instances/:id/pinned", async (c) => {

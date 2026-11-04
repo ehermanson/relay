@@ -18,6 +18,8 @@ import { classifyLargeUserText } from "@/lib/message-rendering";
 import { hasAnchorInItems, isMainStreamAgent } from "@/lib/agents";
 import { mergeAgentInfo } from "@shared/agent-info";
 import { HTML_RENDER_EVENT, readHtmlRenderReference } from "@shared/html-render";
+import { readUiView, UI_RENDER_EVENT } from "@shared/ui-render";
+import { upsertUiViewItem } from "@/lib/ui-render-layout";
 import { INTERACTIVE_TOOLS } from "@shared/tools";
 
 // Re-export for consumers
@@ -531,6 +533,9 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
         } else if (msg.event === HTML_RENDER_EVENT) {
           const render = readHtmlRenderReference(msg.payload);
           if (render) main.push({ kind: "html-render", render, timestamp: entry.timestamp });
+        } else if (msg.event === UI_RENDER_EVENT) {
+          const view = readUiView(msg.payload);
+          if (view) main.push({ kind: "ui-render", view, timestamp: entry.timestamp });
         }
         break;
       }
@@ -1171,6 +1176,12 @@ function coreReducer(state: State, action: Action): State {
           ...state,
           items: [...state.items, { kind: "html-render", render, timestamp: Date.now() }],
         };
+      }
+      if (action.message.event === UI_RENDER_EVENT) {
+        const view = readUiView(action.message.payload);
+        if (!view) return state;
+        // Like a page: never ends the turn. An update replaces the view in place.
+        return { ...state, items: upsertUiViewItem(state.items, view, Date.now()) };
       }
       if (action.message.event !== "compact_boundary") return state;
       const items = [...state.items];

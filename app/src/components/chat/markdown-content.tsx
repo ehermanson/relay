@@ -378,7 +378,7 @@ function MentionChip({ children }: { children: React.ReactNode }) {
 // Compact pill for links rendered as chips (known services, file links). Solid
 // raised surface + hairline shadow so it lifts off both the agent prose and the
 // user bubble; `!` beats the `.markdown-content a` accent color/underline.
-const LINK_CHIP_CLASS =
+export const LINK_CHIP_CLASS =
   "inline-flex max-w-full items-center gap-1 rounded-full border border-border/70 bg-surface-raised py-0 pl-1.5 pr-2 align-middle text-[0.8125rem] font-medium leading-[1.125rem] !text-text shadow-(--shadow-surface) transition-colors hover:border-border hover:bg-surface-hover hover:!no-underline";
 
 function textOf(node: React.ReactNode): string {

@@ -30,6 +30,14 @@ import {
   type HtmlRenderReference,
 } from "#core/html-render.js";
 import {
+  isUiViewId,
+  UI_RENDER_MAX_TITLE_LENGTH,
+  UI_RENDER_TOOL_DESCRIPTION,
+  UiSpecError,
+  validateUiRoot,
+  type UiNode,
+} from "#core/ui-render.js";
+import {
   DEFAULT_ACCOUNT_ID,
   type DelegatedTaskInfo,
   type HistoryEntry,
@@ -115,6 +123,14 @@ export interface OrchestrationHost {
     callerId: string,
     page: { html: string; title: string; height: number },
   ): Promise<HtmlRenderReference>;
+  /**
+   * Show a view in the caller's chat, or replace the caller's view with the
+   * same id in place. The root is already validated.
+   */
+  publishUiView(
+    callerId: string,
+    view: { id?: string; title: string; root: UiNode },
+  ): { id: string; updated: boolean };
 }
 
 /**
@@ -642,6 +658,69 @@ const htmlRender: Tool = {
   },
 };
 
+const uiRender: Tool = {
+  name: "ui_render",
+  description: UI_RENDER_TOOL_DESCRIPTION,
+  inputSchema: {
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        pattern: "^[A-Za-z0-9_.:-]{1,64}$",
+        description:
+          "Optional. Reuse the id of a view you showed earlier to update it in place; a new id creates a view.",
+      },
+      title: {
+        type: "string",
+        maxLength: UI_RENDER_MAX_TITLE_LENGTH,
+        description: "Short title shown with the view.",
+      },
+      root: {
+        type: "object",
+        description: "The root node, usually a stack. See the node catalogue in the description.",
+      },
+    },
+    required: ["title", "root"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Show view",
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  handler(args, ctx) {
+    const caller = requireCaller(ctx);
+    const title = optionalString(args, "title");
+    if (!title) throw new McpToolError("invalid_request", "title is required.");
+    const id = args.id;
+    if (id !== undefined && !isUiViewId(id)) {
+      throw new McpToolError("invalid_request", "id must be 1-64 letters, digits, _ . : or -.");
+    }
+    let root: UiNode;
+    try {
+      root = validateUiRoot(args.root);
+    } catch (error) {
+      if (error instanceof UiSpecError) throw new McpToolError("invalid_request", error.message);
+      throw error;
+    }
+    const result = ctx.host.publishUiView(caller.id, {
+      ...(id ? { id } : {}),
+      title: title.slice(0, UI_RENDER_MAX_TITLE_LENGTH),
+      root,
+    });
+    return {
+      shown: true,
+      id: result.id,
+      updated: result.updated,
+      next: result.updated
+        ? "Updated in place. Don't restate the view."
+        : `Shown to the user above your reply. Don't restate it. Pass id "${result.id}" to update it later.`,
+    };
+  },
+};
+
 export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   relayCapabilities,
   delegateTask,
@@ -652,6 +731,7 @@ export const RELAY_ORCHESTRATION_TOOLS: ReadonlyArray<Tool> = [
   chatSend,
   chatWait,
   htmlRender,
+  uiRender,
 ];
 
 /** Inline result size for tool replies other than `task_status`. */

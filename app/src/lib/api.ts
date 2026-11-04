@@ -1178,3 +1178,24 @@ export async function markSpinOffSent(
   if (!res.ok) throw new Error("Failed to mark spin-off as sent");
   return res.json();
 }
+
+/** Answer an agent's `ui_render` view; the server sends the view's reply as the user's message. */
+export async function answerUiView(
+  instanceId: string,
+  viewId: string,
+  actionId: string,
+  values?: string[],
+): Promise<void> {
+  const res = await fetch(
+    `/api/instances/${encodeURIComponent(instanceId)}/ui-views/${encodeURIComponent(viewId)}/answer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actionId, ...(values ? { values } : {}) }),
+    },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: "Couldn't send" }));
+    throw new ApiError(data.error || "Couldn't send", res.status);
+  }
+}

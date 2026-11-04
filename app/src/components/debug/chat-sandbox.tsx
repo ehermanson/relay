@@ -57,6 +57,7 @@ import { toggleAnswerSelection } from "@/lib/utils";
 import { findRequestAgentId } from "@/lib/agents";
 import { AgentsPanel } from "@/components/chat/agents-panel";
 import { AGENT_SCENES } from "@/components/debug/agent-sandbox-fixtures";
+import { UI_RENDER_SCENES } from "@/components/debug/ui-render-sandbox-fixtures";
 import { DelegationTabs } from "@/components/chat/delegation-tabs";
 import type { DelegationTab } from "@/lib/delegation";
 import type {
@@ -1403,6 +1404,25 @@ export function ChatSandbox() {
                   <button
                     key={scene.label}
                     onClick={() => setItems(scene.build())}
+                    className="rounded-md border border-border/50 px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-surface-hover"
+                  >
+                    <div className="text-[0.75rem] font-medium text-text-bright">{scene.label}</div>
+                    <div className="mt-0.5 text-[0.6875rem] text-muted">{scene.description}</div>
+                  </button>
+                ))}
+              </div>
+            </Section>
+
+            {/* Agent views (ui_render) */}
+            <Section title="Agent views (ui_render)">
+              <p className="mb-2 text-[0.6875rem] text-muted">
+                Native views agents show with ui_render. Answers stay local here.
+              </p>
+              <div className="flex flex-col gap-1">
+                {UI_RENDER_SCENES.map((scene) => (
+                  <button
+                    key={scene.label}
+                    onClick={() => setItems(scene.items())}
                     className="rounded-md border border-border/50 px-2.5 py-2 text-left transition-colors hover:border-border hover:bg-surface-hover"
                   >
                     <div className="text-[0.75rem] font-medium text-text-bright">{scene.label}</div>

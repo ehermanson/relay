@@ -634,6 +634,7 @@ export class SessionDB {
   private stmtInsertSessionEvent!: StatementSync;
   private stmtGetSessionEvents!: StatementSync;
   private stmtDeleteSessionEvents!: StatementSync;
+  private stmtUpdateSessionEventPayload!: StatementSync;
   private stmtUpdateAllowedTools!: StatementSync;
   private stmtUpdateWorkingDirectory!: StatementSync;
   private stmtUpdateSessionModel!: StatementSync;
@@ -1716,6 +1717,10 @@ ${buildSearchIndexSchemaSql()},
       "DELETE FROM session_events WHERE instance_id = ?",
     );
 
+    this.stmtUpdateSessionEventPayload = this.db.prepare(
+      "UPDATE session_events SET payload_json = ? WHERE id = ?",
+    );
+
     this.stmtUpdateAllowedTools = this.db.prepare(
       "UPDATE sessions SET allowed_tools = ? WHERE session_id = ?",
     );
@@ -2282,6 +2287,11 @@ ${buildSearchIndexSchemaSql()},
     payloadJson: string | null,
   ): void {
     this.stmtInsertSessionEvent.run(instanceId, timestamp, event, payloadJson);
+  }
+
+  /** Replace one event's payload in place; it keeps its timestamp (and position). */
+  updateSessionEventPayload(rowId: number, payloadJson: string | null): void {
+    this.stmtUpdateSessionEventPayload.run(payloadJson, rowId);
   }
 
   getSessionEvents(instanceId: string): SessionEventRow[] {
