@@ -18,6 +18,8 @@ interface InputToolbarProps {
   showAttachButton?: boolean;
   overflowSections?: OverflowSection[];
   onCancel: () => void;
+  /** When provided, shows a "Stop task" button alongside the full cancel. */
+  onStopCurrentTask?: () => void;
   onAttach: () => void;
   onSend: () => void;
   sendLabel?: string;
@@ -36,6 +38,7 @@ export function InputToolbar({
   showAttachButton = true,
   overflowSections,
   onCancel,
+  onStopCurrentTask,
   onAttach,
   onSend,
   sendLabel,
@@ -188,12 +191,31 @@ export function InputToolbar({
                 stopTooltip=""
               />
             )}
+            {onStopCurrentTask && (
+              <Tooltip content={isMobile ? "Stop task" : "Stop task"}>
+                <button
+                  type="button"
+                  onClick={onStopCurrentTask}
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-error/40 bg-error/10 px-3 text-[0.75rem] font-medium text-error hover:bg-error/20 max-[768px]:h-10"
+                >
+                  Stop task
+                </button>
+              </Tooltip>
+            )}
             <ActionButton
               isStop={true}
               onClick={onCancel}
               onStopClick={onCancel}
               disabled={false}
-              stopTooltip={isMobile ? "Cancel" : "Cancel (Esc)"}
+              stopTooltip={
+                onStopCurrentTask
+                  ? isMobile
+                    ? "Stop all"
+                    : "Stop all (Esc)"
+                  : isMobile
+                    ? "Cancel"
+                    : "Cancel (Esc)"
+              }
             />
           </>
         ) : (

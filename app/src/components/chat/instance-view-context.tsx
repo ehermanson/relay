@@ -135,6 +135,8 @@ export type InstanceViewContextValue = {
     handleAnswerUserInput: (requestId: string, answers: Record<string, UserInputAnswer>) => void;
     handleTakeover: () => void;
     handleCancel: () => void;
+    /** Abort only the foreground task, leaving background agents running. */
+    handleStopCurrentTask: () => void;
     /** Interrupt the turn and send this queued message now (the rest stay queued). */
     handleInterruptAndSend: (queuedId: string) => void;
     handleEditQueued: (row: UserChatItem) => void;

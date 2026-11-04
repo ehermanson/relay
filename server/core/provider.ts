@@ -76,6 +76,12 @@ export interface ProviderSession extends EventEmitter {
   /** Interrupt the current turn (SIGINT for CLI, query.interrupt() for SDK). */
   interrupt(): void;
 
+  /**
+   * Abort only the currently-running foreground task, leaving background agents
+   * alive. No-op when the provider does not support per-task stop.
+   */
+  stopCurrentTask?(): void;
+
   /** Kill/close the session and release all resources. */
   close(): void | Promise<void>;
 

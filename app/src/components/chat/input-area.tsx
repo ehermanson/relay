@@ -61,6 +61,8 @@ interface InputAreaProps {
     text?: string,
   ) => void;
   onCancel: () => void;
+  /** Abort only the foreground task, leaving background agents alive. */
+  onStopCurrentTask?: () => void;
   onSwitchProvider?: (
     provider: ProviderKind,
     carryContext: boolean,
@@ -201,6 +203,7 @@ export function InputArea({
   onQueue,
   onAnswerUserInput,
   onCancel,
+  onStopCurrentTask,
   onSwitchProvider,
   isProcessing,
   isConnected,
@@ -1226,6 +1229,9 @@ export function InputArea({
                   }
                   isProcessing={isInSpecialMode ? false : isProcessing}
                   onCancel={onCancel}
+                  onStopCurrentTask={
+                    effectiveCapabilities.perTaskStop ? onStopCurrentTask : undefined
+                  }
                   onAttach={() => fileInputRef.current?.click()}
                   onSend={
                     hasPendingPrompt
