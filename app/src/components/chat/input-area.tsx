@@ -52,6 +52,23 @@ import {
   RuntimeModePicker,
 } from "@/components/chat/input-area/provider-model-picker";
 
+const EFFORT_ORDER: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+function filterReasoningEffortLevels(
+  levels:
+    | { effort: ReasoningEffort; label: string; description: string; isDefault?: boolean }[]
+    | undefined,
+  maxEffortLevel: ReasoningEffort | undefined,
+) {
+  if (!levels || !maxEffortLevel) return levels;
+  const cap = EFFORT_ORDER.indexOf(maxEffortLevel);
+  if (cap < 0) return levels;
+  return levels.filter((l) => {
+    const idx = EFFORT_ORDER.indexOf(l.effort);
+    return idx < 0 || idx <= cap;
+  });
+}
+
 interface InputAreaProps {
   onSend: (text: string, images?: string[], internal?: boolean, attachments?: string[]) => boolean;
   onQueue: (text: string, attachments: OutboxAttachment[]) => Promise<void>;
@@ -464,6 +481,10 @@ export function InputArea({
   const supportsFastMode = effectiveCapabilities.supportsFastMode;
   const runtimeModes = effectiveCapabilities.runtimeModes;
   const effectiveRuntimeMode: ProviderRuntimeMode = runtimeMode ?? "approval-required";
+  const reasoningEffortLevels = filterReasoningEffortLevels(
+    effectiveCapabilities.reasoningEffortLevels,
+    effectiveCapabilities.maxEffortLevel,
+  );
   const visibleProviders =
     availableProviders.length > 0
       ? availableProviders.some((entry) => entry.provider === displayedProvider)
@@ -700,7 +721,7 @@ export function InputArea({
     slashMenuDismissed,
     preferredModel: displayedPreferredModel,
     modelLabel,
-    reasoningEffortLevels: effectiveCapabilities.reasoningEffortLevels,
+    reasoningEffortLevels: reasoningEffortLevels,
     supportsModelSelection: composerSupportsModelSelection,
     supportsReasoningEffort,
     currentReasoningEffort: modelOptions?.reasoningEffort,
@@ -939,12 +960,12 @@ export function InputArea({
         }}
       />
     ) : null,
-    supportsReasoningEffort && effectiveCapabilities.reasoningEffortLevels ? (
+    supportsReasoningEffort && reasoningEffortLevels ? (
       <ReasoningEffortPicker
         key="effort-picker"
         isProcessing={isProcessing}
         reasoningEffort={modelOptions?.reasoningEffort}
-        levels={effectiveCapabilities.reasoningEffortLevels}
+        levels={reasoningEffortLevels}
         onSelectEffort={setReasoningEffort}
       />
     ) : null,
@@ -969,12 +990,12 @@ export function InputArea({
     ) : null,
   ];
   const reviewToolbarControls = [
-    supportsReasoningEffort && effectiveCapabilities.reasoningEffortLevels ? (
+    supportsReasoningEffort && reasoningEffortLevels ? (
       <ReasoningEffortPicker
         key="effort-picker"
         isProcessing={isProcessing}
         reasoningEffort={modelOptions?.reasoningEffort}
-        levels={effectiveCapabilities.reasoningEffortLevels}
+        levels={reasoningEffortLevels}
         onSelectEffort={setReasoningEffort}
       />
     ) : null,
@@ -991,7 +1012,7 @@ export function InputArea({
   ].filter(Boolean);
 
   const overflowSections: OverflowSection[] = [
-    ...(supportsReasoningEffort && effectiveCapabilities.reasoningEffortLevels
+    ...(supportsReasoningEffort && reasoningEffortLevels
       ? [
           {
             label: "Effort",
@@ -1001,7 +1022,7 @@ export function InputArea({
                 selected: !modelOptions?.reasoningEffort,
                 onSelect: () => setReasoningEffort(null),
               },
-              ...effectiveCapabilities.reasoningEffortLevels.map((level) => ({
+              ...reasoningEffortLevels.map((level) => ({
                 label: level.label,
                 selected: modelOptions?.reasoningEffort === level.effort,
                 onSelect: () => setReasoningEffort(level.effort),
@@ -1050,7 +1071,7 @@ export function InputArea({
       : []),
   ];
   const reviewOverflowSections: OverflowSection[] = [
-    ...(supportsReasoningEffort && effectiveCapabilities.reasoningEffortLevels
+    ...(supportsReasoningEffort && reasoningEffortLevels
       ? [
           {
             label: "Effort",
@@ -1060,7 +1081,7 @@ export function InputArea({
                 selected: !modelOptions?.reasoningEffort,
                 onSelect: () => setReasoningEffort(null),
               },
-              ...effectiveCapabilities.reasoningEffortLevels.map((level) => ({
+              ...reasoningEffortLevels.map((level) => ({
                 label: level.label,
                 selected: modelOptions?.reasoningEffort === level.effort,
                 onSelect: () => setReasoningEffort(level.effort),
