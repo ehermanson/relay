@@ -40,7 +40,11 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input, Select } from "../components/ui/input";
 import { MarkdownEditor } from "../components/ui/markdown-editor";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { RateLimitBar, flattenRateLimitWindows } from "@/components/ui/rate-limit-bar";
+import {
+  RateLimitBar,
+  SpendLimitBar,
+  flattenRateLimitWindows,
+} from "@/components/ui/rate-limit-bar";
 import {
   SettingsSection,
   SettingsSectionBoundary,
@@ -1540,14 +1544,17 @@ function ProviderDefaultsRow({
               </div>
             )}
           </div>
-          {runtimeState?.account?.rateLimits?.length ? (
+          {runtimeState?.account?.rateLimits?.length || runtimeState?.account?.spendLimit ? (
             <div className="mt-3 space-y-2">
               <div className="text-[0.6875rem] text-muted">Rate Limits</div>
-              {flattenRateLimitWindows(runtimeState.account.rateLimits).map(
+              {flattenRateLimitWindows(runtimeState.account.rateLimits ?? []).map(
                 ({ window, key, qualifier }) => (
                   <RateLimitBar key={key} window={window} size="md" qualifier={qualifier} />
                 ),
               )}
+              {runtimeState.account.spendLimit ? (
+                <SpendLimitBar spendLimit={runtimeState.account.spendLimit} size="md" />
+              ) : null}
             </div>
           ) : null}
         </div>

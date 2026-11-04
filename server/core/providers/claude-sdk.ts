@@ -598,18 +598,6 @@ function buildRateLimitsFromWindows(
   });
 }
 
-/**
- * Probe the SDK's experimental get_usage control request and normalize the
- * plan rate-limit windows. Returns null when the SDK is too old, plan limits
- * don't apply (API key / Bedrock / Vertex), or the response is unusable —
- * the shape is experimental, so everything is validated defensively.
- */
-async function probeUsageRateLimits(
-  handle: QueryHandle,
-): Promise<Map<string, RateLimitWindowData> | null> {
-  return windowsFromUsageSnapshot(await readUsageSnapshot(handle));
-}
-
 /** The raw experimental get_usage snapshot, or null when the SDK lacks the method. */
 async function readUsageSnapshot(handle: QueryHandle): Promise<SdkUsageSnapshot | null> {
   const getUsage = handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
@@ -655,6 +643,29 @@ function windowsFromUsageSnapshot(
   }
 
   return windows.size ? windows : null;
+}
+
+/**
+ * Extract the monthly spend-limit from the experimental get_usage snapshot.
+ * Returns null when extra_usage is absent, disabled, or missing required fields.
+ */
+function extraUsageFromSnapshot(
+  snapshot: SdkUsageSnapshot | null,
+): import("#core/types.js").SpendLimit | null {
+  const limits = snapshot?.rate_limits;
+  if (!limits || typeof limits !== "object") return null;
+  const extra = (limits as Record<string, unknown>).extra_usage;
+  if (!extra || typeof extra !== "object") return null;
+  const e = extra as Record<string, unknown>;
+  if (e.is_enabled === false) return null;
+  const usedCents = typeof e.used_credits === "number" ? e.used_credits : null;
+  if (usedCents === null) return null;
+  return {
+    usedCents,
+    limitCents: typeof e.monthly_limit === "number" ? e.monthly_limit : null,
+    utilization: typeof e.utilization === "number" ? e.utilization : null,
+    currency: typeof e.currency === "string" && e.currency ? e.currency : "USD",
+  };
 }
 
 /**
@@ -2506,6 +2517,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
    * for `allowed_warning` or `rejected`.
    */
   private rateLimitWindows = new Map<string, RateLimitWindowData>();
+  private _spendLimit: import("#core/types.js").SpendLimit | null = null;
 
   /**
    * Handle `rate_limit_event` from the Claude SDK stream. Converts the
@@ -2559,7 +2571,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         continue;
       }
       const utilization = data.utilization ?? existing.utilization;
-      // utilization is a 0-1 fraction here (probeUsageRateLimits normalizes
+      // utilization is a 0-1 fraction here (windowsFromUsageSnapshot normalizes
       // the snapshot's 0-100 values on ingest).
       const status =
         existing.status === "rejected" && typeof utilization === "number" && utilization < 1
@@ -2586,12 +2598,13 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     if (this._stopped || this._usageProbeInflight) return;
     if (Date.now() - this._lastUsageProbeAt < USAGE_PROBE_MIN_INTERVAL_MS) return;
     this._usageProbeInflight = true;
-    void probeUsageRateLimits(this.query)
-      .then((windows) => {
+    void readUsageSnapshot(this.query)
+      .then((snapshot) => {
         this._lastUsageProbeAt = Date.now();
-        if (!windows) return;
-        this.seedUsageWindows(windows);
-        this.emitRateLimitsStatus();
+        const windows = windowsFromUsageSnapshot(snapshot);
+        if (windows) this.seedUsageWindows(windows);
+        this._spendLimit = extraUsageFromSnapshot(snapshot);
+        if (windows || this._spendLimit !== null) this.emitRateLimitsStatus();
       })
       .catch((err) => {
         this.logger.debug(`[SdkSession] get_usage snapshot unavailable: ${err}`);
@@ -2601,21 +2614,23 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       });
   }
 
-  /** Emit the accumulated rate-limit windows as a provider_status event. */
+  /** Emit the accumulated rate-limit windows and spend limit as a provider_status event. */
   private emitRateLimitsStatus(): void {
     const rateLimits = this.buildRateLimitsSnapshot();
-    if (!rateLimits.length) return;
+    if (!rateLimits.length && this._spendLimit === null) return;
 
     // Keep this account's snapshot fresh so the boot-time fallback in
     // instance-manager reflects the latest data.
-    discoveryEntry(this.configDir).rateLimits = rateLimits;
+    if (rateLimits.length) discoveryEntry(this.configDir).rateLimits = rateLimits;
+
+    const account: import("#core/types.js").ProviderAccountStatus = {};
+    if (rateLimits.length) account.rateLimits = rateLimits;
+    if (this._spendLimit !== null) account.spendLimit = this._spendLimit;
 
     this.emit("systemEvent", {
       type: "system_event",
       event: "provider_status",
-      payload: {
-        account: { rateLimits },
-      },
+      payload: { account },
     } as SystemEventMessage);
   }
 
@@ -2632,6 +2647,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   getRateLimitSnapshot(): import("#core/types.js").ProviderRateLimitStatus[] | undefined {
     const snapshot = this.buildRateLimitsSnapshot();
     return snapshot.length ? snapshot : undefined;
+  }
+
+  getSpendLimitSnapshot(): import("#core/types.js").SpendLimit | null {
+    return this._spendLimit;
   }
 
   // ===========================================================================
