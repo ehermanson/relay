@@ -146,6 +146,22 @@ describe("MCP protocol", () => {
     }
   });
 
+  it("keeps only the visual tools out of Claude's deferred list", async () => {
+    const res = await handleMcpPayload({ jsonrpc: "2.0", id: 1, method: "tools/list" }, server, {});
+    const loaded = res.result.tools
+      .filter((tool) => tool._meta?.["anthropic/alwaysLoad"] === true)
+      .map((tool) => tool.name);
+    assert.deepEqual(loaded, ["html_render", "ui_render"]);
+  });
+
+  it("keeps the guidance under Codex's developer-instruction limit", () => {
+    assert.ok(RELAY_ORCHESTRATION_INSTRUCTIONS.length < 4096);
+    assert.ok(
+      RELAY_ORCHESTRATION_INSTRUCTIONS.indexOf("### Visuals") <
+        RELAY_ORCHESTRATION_INSTRUCTIONS.indexOf("### Other chats"),
+    );
+  });
+
   it("answers notifications with nothing and rejects garbage and unknown methods", async () => {
     assert.equal(
       await handleMcpPayload({ jsonrpc: "2.0", method: "notifications/initialized" }, server, {}),

@@ -614,6 +614,7 @@ const htmlRender: Tool = {
     required: ["html", "title"],
     additionalProperties: false,
   },
+  alwaysLoad: true,
   annotations: {
     title: "Show HTML page",
     readOnlyHint: false,
@@ -683,6 +684,7 @@ const uiRender: Tool = {
     required: ["title", "root"],
     additionalProperties: false,
   },
+  alwaysLoad: true,
   annotations: {
     title: "Show view",
     readOnlyHint: false,

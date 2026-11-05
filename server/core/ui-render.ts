@@ -876,7 +876,7 @@ export function summarizeUiView(view: UiView): string {
 // ── Tool guidance ───────────────────────────────────────────────────
 
 export const UI_RENDER_TOOL_DESCRIPTION = [
-  "Show a native Relay view inline in this chat, above your reply: status boards, checklists, comparisons, tables, small charts, and buttons or choices the user can answer.",
+  "Show a native Relay view inline in this chat, above your reply: status boards, checklists, comparisons, tables, small charts, and buttons or choices the user can answer. Prefer it to your built-in question tool when seeing data would help the user decide.",
   "Pass `id` to update a view you showed earlier in place (it keeps its position; use it for progress you report repeatedly). Views belong to this chat.",
   "Use markdown for prose and small tables; html_render for custom visuals, diagrams, and anything this catalogue can't express.",
   "Nodes (`type`):",

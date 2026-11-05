@@ -37,6 +37,12 @@ export interface McpToolDefinition<Ctx> {
   inputSchema: Record<string, unknown>;
   annotations?: McpToolAnnotations;
   /**
+   * Keep the full definition in Claude's prompt instead of deferring it behind
+   * ToolSearch, for tools an agent should reach for unprompted. It costs prompt
+   * space on every turn. Other clients ignore the flag.
+   */
+  alwaysLoad?: boolean;
+  /**
    * Returns the structured result. Throw `McpToolError` for expected,
    * model-visible failures; anything else is reported as an internal error.
    */
@@ -129,6 +135,7 @@ export async function handleMcpMessage<Ctx>(
             description: tool.description,
             inputSchema: tool.inputSchema,
             ...(tool.annotations ? { annotations: tool.annotations } : {}),
+            ...(tool.alwaysLoad ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
           })),
         });
       case "tools/call":

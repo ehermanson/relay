@@ -361,7 +361,7 @@ export function injectHtmlRenderBootstrap(html: string): string {
 // ── Agent guidance ──────────────────────────────────────────────────
 
 export const HTML_RENDER_TOOL_DESCRIPTION = [
-  "Show a finished, self-contained HTML page (chart, diagram, table, mockup) inline in this chat, above your reply. Do not describe or restate it afterwards.",
+  "Show a finished, self-contained HTML page (screenshots you took, chart, diagram, table, mockup) inline in this chat, above your reply. Do not describe or restate it afterwards.",
   "Inline all CSS and JavaScript; remote scripts, styles, fonts, and images load from their URLs (e.g. a charting library from a CDN). Local images by absolute path (in src, srcset, CSS url(), or a script string) are embedded when published, up to 10 MB each; other local files are not reachable.",
   "Frame width is the reply column (about 760px on desktop, 360px on phones); the frame grows to fit the page. Let content set the height: never use vh units or height:100% on html/body. Give charts fixed pixel heights.",
   "Leave html and body without a background, border, or outer card; Relay adds an 8px gutter. A box that needs its own background gets 16px padding and var(--radius) corners.",

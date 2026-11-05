@@ -48,9 +48,22 @@ export function relayChatLink(instanceId: string): string {
 
 export const RELAY_ORCHESTRATION_INSTRUCTIONS = `## Relay orchestration
 
-You are running inside Relay, which hosts several agent chats side by side. The \`${RELAY_MCP_SERVER_NAME}\` MCP tools let you read and message other chats in this project and delegate tasks to child chats.
+You are running inside Relay, which shows this chat in a rich UI, often on a phone, and hosts several agent chats side by side. The \`${RELAY_MCP_SERVER_NAME}\` MCP tools show visuals inline in this chat, read and message other chats in this project, and delegate tasks to child chats.
 
-- Ordinary coding tasks need no Relay tools.
+### Visuals
+
+Before you send a reply, ask whether showing would beat telling. It usually does when:
+
+- **You took screenshots.** Show them with \`html_render\` (it embeds local image paths; use tabs for several) instead of only describing them. The user can't see what you looked at.
+- **You have results to report.** Show before/after comparisons, test or benchmark results, and data with a trend as a chart or view, not prose.
+- **The work takes a while.** Show status you'll keep reporting (checklists, progress) with \`ui_render\`, updated in place by reusing the view's id.
+- **The user has to choose.** When seeing something would help them decide (screenshots, a comparison, numbers), show it next to the options: a \`ui_render\` \`actions\` or \`choice\`, or \`html_render\` above your question. Then end your turn; a click arrives as their next message. Keep your built-in question tool for plain questions that need no visuals.
+
+\`ui_render\` is Relay's own components; \`html_render\` is one self-contained HTML page for anything else, and for any diagram, table, or mockup the user asks for. Skip both when a short reply says it all. Never start a server or write a file just to show something. Asked for an image to post or use elsewhere: write a \`.png\` file instead.
+
+### Other chats
+
+- Routine coding needs no delegation or messaging.
 - Prefer your own built-in subagents for work on your own provider that finishes this turn. Use \`delegate_task\` to run a task on another provider or model, for background work that outlives this turn, or when the user asks for a Relay delegate.
 - Call \`relay_capabilities\` once before your first delegation. If the provider or model you need is unavailable, say so; never silently fall back to another one.
 - A child sees only its \`task\`, so write a complete, self-contained brief.
@@ -58,12 +71,7 @@ You are running inside Relay, which hosts several agent chats side by side. The 
 - \`chat_list\` lists the project's chats; \`chat_read\` reads one chat's conversation. Given a chat link or id, read it before you answer about it.
 - \`chat_send\` messages another chat (a follow-up for a child, or a chat the user pointed you to); then \`chat_wait\` returns its reply. Message other chats only when the user or your task calls for it, and never answer a chat that is waiting on its user. Messaging a finished delegate reopens its task; its reply comes back as a task update unless you \`chat_wait\` for it.
 - Refer to a chat by its \`link\` (\`relay://chat/<id>\`), verbatim — never by title or bare id.
-- If you are a delegated child, do the work yourself. Start no delegates unless your task says to.
-
-### Visuals
-
-- Answer data with a trend or comparison with a chart, and show any visual the user asks for (diagram, table, mockup) with \`html_render\`: one self-contained HTML page, shown inline above your reply. Never start a server or write a file just to show it. Asked for an image to post or use elsewhere: write a \`.png\` file instead.
-- Show status you'll keep reporting (checklists, progress, test results), structured comparisons, and choices for the user with \`ui_render\`: Relay's own components, updated in place by reusing the view's id. A button or choice the user clicks arrives as their next message.`;
+- If you are a delegated child, do the work yourself. Start no delegates unless your task says to.`;
 
 /** Claude defers MCP tools behind ToolSearch; tell it how to load them. */
 export const RELAY_ORCHESTRATION_CLAUDE_NOTE = `If the Relay tools are not loaded yet, load them with ToolSearch \`select:${RELAY_TOOL_NAMES.map((tool) => `${RELAY_MCP_CLAUDE_TOOL_PREFIX}${tool}`).join(",")}\`.`;
@@ -81,4 +89,4 @@ export function withoutRelayMcpServer<T extends { name: string }>(
 
 /** Returned in the MCP `initialize` result; some clients surface it to the model. */
 export const RELAY_MCP_SERVER_INSTRUCTIONS =
-  "Relay cross-chat tools: read and message other chats, and delegate tasks to child chats on any provider. After an async delegate_task, end your turn; completion wakes you. Refer to chats by their relay://chat/<id> link. html_render shows a chart, diagram, or mockup inline in this chat; ui_render shows native status views, tables, and choices, updatable in place. Ordinary coding needs none of these tools.";
+  "Relay tools. html_render shows screenshots, charts, diagrams, or mockups inline in this chat; ui_render shows native status views, tables, and choices, updatable in place. Use them when showing beats telling. Also: read and message other chats, and delegate tasks to child chats on any provider. After an async delegate_task, end your turn; completion wakes you. Refer to chats by their relay://chat/<id> link.";
