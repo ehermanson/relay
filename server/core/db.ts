@@ -857,6 +857,10 @@ export class SessionDB {
         ended_at INTEGER,
         delivered_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS turn_baselines (
+        instance_id TEXT PRIMARY KEY,
+        snapshot_json TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_delegated_tasks_parent ON delegated_tasks(parent_instance_id);
       CREATE INDEX IF NOT EXISTS idx_delegated_tasks_child ON delegated_tasks(child_instance_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_delegated_tasks_request
@@ -2270,6 +2274,7 @@ ${buildSearchIndexSchemaSql()},
   deleteManagedByInstanceId(instanceId: string): void {
     this.stmtDeleteManagedByInstanceId.run(instanceId);
     this.stmtDeleteSessionEvents.run(instanceId);
+    this.deleteTurnBaseline(instanceId);
     this.syncSearchIndexForInstance(instanceId);
     if (!this.getByInstanceId(instanceId)) {
       this.stmtDeleteSearchContent.run(instanceId);
@@ -2292,6 +2297,29 @@ ${buildSearchIndexSchemaSql()},
   /** Replace one event's payload in place; it keeps its timestamp (and position). */
   updateSessionEventPayload(rowId: number, payloadJson: string | null): void {
     this.stmtUpdateSessionEventPayload.run(payloadJson, rowId);
+  }
+
+  /** The running turn's worktree baseline; kept here so a restart can reconcile it. */
+  saveTurnBaseline(instanceId: string, snapshotJson: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO turn_baselines (instance_id, snapshot_json) VALUES (?, ?)
+         ON CONFLICT(instance_id) DO UPDATE SET snapshot_json = excluded.snapshot_json`,
+      )
+      .run(instanceId, snapshotJson);
+  }
+
+  deleteTurnBaseline(instanceId: string): void {
+    this.db.prepare("DELETE FROM turn_baselines WHERE instance_id = ?").run(instanceId);
+  }
+
+  getTurnBaselines(): Array<{ instance_id: string; snapshot_json: string }> {
+    return asRows<{ instance_id: string; snapshot_json: string }>(
+      this.db.prepare("SELECT instance_id, snapshot_json FROM turn_baselines").all() as Record<
+        string,
+        unknown
+      >[],
+    );
   }
 
   getSessionEvents(instanceId: string): SessionEventRow[] {
@@ -2891,6 +2919,7 @@ ${buildSearchIndexSchemaSql()},
     this.db.exec("DELETE FROM sessions");
     this.db.exec("DELETE FROM managed_sessions");
     this.db.exec("DELETE FROM session_events");
+    this.db.exec("DELETE FROM turn_baselines");
     this.db.exec("DELETE FROM delegated_tasks");
   }
 

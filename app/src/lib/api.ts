@@ -757,7 +757,16 @@ export async function fetchOpenTargets(targetPath: string): Promise<NativeOpenTa
   return res.json();
 }
 
-export async function fetchInstanceDiff(instanceId: string, filePath?: string): Promise<string> {
+export interface InstanceDiff {
+  diff: string;
+  /** The repo root the diff's paths are relative to, in each spelling a chat's paths can use. */
+  roots: string[];
+}
+
+export async function fetchInstanceDiff(
+  instanceId: string,
+  filePath?: string,
+): Promise<InstanceDiff> {
   const params = new URLSearchParams();
   if (filePath) params.set("path", filePath);
   const qs = params.toString();
@@ -768,7 +777,7 @@ export async function fetchInstanceDiff(instanceId: string, filePath?: string): 
     throw new Error(data.error || "Failed to fetch diff");
   }
   const data = await res.json();
-  return data.diff;
+  return { diff: data.diff, roots: data.roots ?? [] };
 }
 
 export async function gitPushInstance(

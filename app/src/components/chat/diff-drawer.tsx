@@ -5,6 +5,7 @@ import { ChevronRight, WrapText, X } from "lucide-react";
 import type { FileChange } from "@shared/types";
 import { useTheme } from "@/stores/theme-store";
 import { chatDiffQueryOptions } from "@/lib/chat-query-options";
+import { toDiffPath } from "@/lib/diff-paths";
 import { useRepoStatus } from "@/hooks/use-repo-status";
 import { Button } from "../ui/button";
 import { FileIcon } from "../ui/file-icon";
@@ -83,7 +84,7 @@ export function DiffDrawer({
   // would retain this render scope — including a potentially huge `rawDiff` —
   // in the QueryCache even while the query is disabled.
   const {
-    data: queriedDiff = null,
+    data: queried = null,
     isLoading: loading,
     error: queryError,
     refetch,
@@ -96,7 +97,8 @@ export function DiffDrawer({
   useRepoStatus(usesQuery ? { kind: "instance", instanceId: instanceId! } : null, {
     invalidate: [["instanceDiff", instanceId]],
   });
-  const diff = rawDiff ?? queriedDiff;
+  const diff = rawDiff ?? queried?.diff ?? null;
+  const diffRoots = queried?.roots;
   const error = rawError ?? (queryError ? (queryError as Error).message : null);
   const retry = onRetry ?? (usesQuery ? () => void refetch() : undefined);
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified");
@@ -110,15 +112,13 @@ export function DiffDrawer({
 
   const knownRelPaths = useMemo(() => {
     if (!knownFiles || !workingDirectory) return null;
-    const set = new Set<string>();
-    for (const file of knownFiles) {
-      const rel = file.path.startsWith(workingDirectory)
-        ? file.path.slice(workingDirectory.length).replace(/^\//, "")
-        : file.path;
-      set.add(rel);
-    }
-    return set;
-  }, [knownFiles, workingDirectory]);
+    return new Set(knownFiles.map((file) => toDiffPath(file.path, workingDirectory, diffRoots)));
+  }, [knownFiles, workingDirectory, diffRoots]);
+  // The Files panel hands over paths relative to the chat's working directory.
+  const scrollTarget =
+    scrollToFile && workingDirectory
+      ? toDiffPath(scrollToFile, workingDirectory, diffRoots)
+      : scrollToFile;
 
   const { tracked, other } = useMemo(() => {
     const trackedFiles: FilePatch[] = [];
@@ -167,24 +167,24 @@ export function DiffDrawer({
   }, []);
 
   useEffect(() => {
-    if (!scrollToFile || allFileDiffs.length === 0 || !contentRef.current) return;
+    if (!scrollTarget || allFileDiffs.length === 0 || !contentRef.current) return;
     setCollapsedPaths((prev) => {
-      if (!prev.has(scrollToFile)) return prev;
+      if (!prev.has(scrollTarget)) return prev;
       const next = new Set(prev);
-      next.delete(scrollToFile);
+      next.delete(scrollTarget);
       return next;
     });
-    if (other.some((file) => file.path === scrollToFile)) {
+    if (other.some((file) => file.path === scrollTarget)) {
       setOtherExpanded(true);
     }
     const timer = setTimeout(() => {
       const element = contentRef.current?.querySelector(
-        `[data-file-path="${CSS.escape(scrollToFile)}"]`,
+        `[data-file-path="${CSS.escape(scrollTarget)}"]`,
       );
       element?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 150);
     return () => clearTimeout(timer);
-  }, [scrollToFile, allFileDiffs, other]);
+  }, [scrollTarget, allFileDiffs, other]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

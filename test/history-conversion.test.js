@@ -2,7 +2,7 @@
 import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
@@ -146,6 +146,49 @@ describe("History Conversion", () => {
     assert.ok(texts.includes("Second message after compact"));
     assert.equal(boundary?.message.type, "system_event");
     assert.equal(boundary?.message.event, "compact_boundary");
+  });
+
+  it("keeps files edited before a compaction boundary", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-compacted-files-"));
+    try {
+      const cwd = "/repo";
+      const edit = (id, name, file) => ({
+        type: "assistant",
+        cwd,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id, name, input: { file_path: file } }],
+        },
+      });
+      const path = join(dir, "compacted.jsonl");
+      writeFileSync(
+        path,
+        [
+          edit("t1", "Edit", "/repo/before.ts"),
+          edit("t2", "Write", "/repo/created.ts"),
+          edit("t3", "Edit", "/repo/both.ts"),
+          edit("t4", "Edit", "/elsewhere/outside.ts"),
+          { type: "system", subtype: "compact_boundary", timestamp: "2026-01-01T00:01:00.000Z" },
+          edit("t5", "Edit", "/repo/both.ts"),
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n"),
+      );
+      const { files } = manager["parseJsonl"](path);
+      assert.deepEqual(
+        Array.from(files.values())
+          .map((file) => [file.path, file.type, file.editCount])
+          .sort(),
+        [
+          ["/repo/before.ts", "edited", 1],
+          ["/repo/both.ts", "edited", 2],
+          ["/repo/created.ts", "added", 1],
+        ],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("converts thinking, tool_use, and tool_result blocks to activity messages", () => {

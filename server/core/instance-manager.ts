@@ -35,7 +35,7 @@ import {
   watch as watchFs,
 } from "fs";
 import type { FSWatcher } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { homedir, tmpdir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -280,7 +280,10 @@ import { KeyedTrailingDebouncer } from "#core/keyed-debouncer.js";
 import { invalidateRepoStatus } from "#core/repo-status-service.js";
 import {
   captureWorktreeSnapshot,
+  detectEnteredWorktreeChanges,
   detectTurnWorktreeChanges,
+  parseWorktreeSnapshot,
+  serializeWorktreeSnapshot,
   type DetectedFileChange,
   type WorktreeSnapshot,
 } from "#core/worktree-changes.js";
@@ -4896,6 +4899,22 @@ export class InstanceManager extends EventEmitter {
     return moved && existsSync(moved) ? moved : this.runnableCwd(instance);
   }
 
+  /**
+   * The repo root the paths in `getInstanceDiff` are relative to, in every
+   * spelling a chat's file paths can use: as the chat knows it (tool paths) and
+   * canonical (git-detected paths). They differ under a symlink.
+   */
+  getInstanceDiffRoots(id: string): string[] {
+    const dir = this.getGitDirectory(id);
+    const root = dir ? getRepoRoot(dir) : null;
+    if (!dir || !root) return [];
+    try {
+      return Array.from(new Set([resolve(dir, relative(realpathSync(dir), root)), root]));
+    } catch {
+      return [root];
+    }
+  }
+
   async getInstanceDiff(id: string, filePath?: string): Promise<string | null> {
     const instance = this.instances.get(id);
     if (!instance) return null;
@@ -5028,10 +5047,7 @@ export class InstanceManager extends EventEmitter {
       // source chat's (or someone else's) work, never the aside's.
       instance.turnWorktreeBaseline = null;
     } else if (instance.turnWorktreeBaseline === undefined) {
-      instance.turnWorktreeBaseline = await captureWorktreeSnapshot(
-        instance.actualCwd || instance.info.workingDirectory,
-        { timeoutMs: TURN_BASELINE_TIMEOUT_MS },
-      );
+      await this.captureTurnBaseline(instance);
     }
     // A wake reports its tasks as they are now, not as they were when it was
     // built or queued: a child may have reopened (or ended again) since.
@@ -6354,6 +6370,60 @@ export class InstanceManager extends EventEmitter {
     });
   }
 
+  /**
+   * Where the session is working right now, read from its transcript. Fresher
+   * than `gitInfo.directory`, which only updates on the branch refresh.
+   */
+  private resolveSessionGitDirectory(session: {
+    cwd: string;
+    provider: ProviderKind;
+    external: boolean;
+    jsonlPath?: string;
+    sessionId?: string;
+    configDir?: string;
+  }): { gitDir: string; relocatedJsonlPath?: string } {
+    // A managed transcript can move mid-session (Claude relocates it into
+    // the worktree's project dir on EnterWorktree/ExitWorktree).
+    let jsonlPath = session.jsonlPath;
+    let relocatedJsonlPath: string | undefined;
+    if (!session.external && session.sessionId && (!jsonlPath || !existsSync(jsonlPath))) {
+      const resolved = this.resolveManagedTranscriptPath(session.provider, {
+        sessionId: session.sessionId,
+        transcriptPath: jsonlPath,
+        workingDirectory: session.cwd,
+        configDir: session.configDir,
+      });
+      if (resolved && resolved !== jsonlPath && existsSync(resolved)) {
+        jsonlPath = resolved;
+        relocatedJsonlPath = resolved;
+      }
+    }
+    // The agent may have switched into a worktree without changing the cwd
+    // Relay spawned it with — its branch is that worktree's, not the spawn cwd's.
+    const sessionCwd = jsonlPath
+      ? readSessionWorkingDirectoryForProvider(session.provider, jsonlPath)
+      : null;
+    return {
+      gitDir: sessionCwd && existsSync(sessionCwd) ? sessionCwd : session.cwd,
+      relocatedJsonlPath,
+    };
+  }
+
+  /** `resolveSessionGitDirectory` for a chat. Filesystem reads only, safe in the mutation queue. */
+  private currentGitDirectory(instance: Instance): string {
+    return this.resolveSessionGitDirectory({
+      cwd: this.runnableCwd(instance),
+      provider: instance.info.provider,
+      external: Boolean(instance.info.external),
+      jsonlPath: instance.externalState?.jsonlPath ?? instance.jsonlPath,
+      sessionId:
+        instance.providerBinding?.providerSessionId ??
+        instance.sessionId ??
+        instance.info.sessionId,
+      configDir: instance.info.configDir,
+    }).gitDir;
+  }
+
   private async refreshGitBranchStateAsync(id: string, _instance: Instance): Promise<void> {
     const prep = await this.enqueueInstanceMutation(id, (live) => {
       if (live.refreshingGitBranch) return null;
@@ -6373,28 +6443,7 @@ export class InstanceManager extends EventEmitter {
     if (!prep) return;
 
     try {
-      // A managed transcript can move mid-session (Claude relocates it into
-      // the worktree's project dir on EnterWorktree/ExitWorktree).
-      let jsonlPath = prep.jsonlPath;
-      let relocatedJsonlPath: string | undefined;
-      if (!prep.external && prep.sessionId && (!jsonlPath || !existsSync(jsonlPath))) {
-        const resolved = this.resolveManagedTranscriptPath(prep.provider, {
-          sessionId: prep.sessionId,
-          transcriptPath: jsonlPath,
-          workingDirectory: prep.cwd,
-          configDir: prep.configDir,
-        });
-        if (resolved && resolved !== jsonlPath && existsSync(resolved)) {
-          jsonlPath = resolved;
-          relocatedJsonlPath = resolved;
-        }
-      }
-      // The agent may have switched into a worktree without changing the cwd
-      // Relay spawned it with — its branch is that worktree's, not the spawn cwd's.
-      const sessionCwd = jsonlPath
-        ? readSessionWorkingDirectoryForProvider(prep.provider, jsonlPath)
-        : null;
-      const gitDir = sessionCwd && existsSync(sessionCwd) ? sessionCwd : prep.cwd;
+      const { gitDir, relocatedJsonlPath } = this.resolveSessionGitDirectory(prep);
       // Filesystem-only HEAD read — this runs every watcher tick, so it must
       // never spawn git.
       const headInfo = readGitHeadInfo(gitDir);
@@ -8550,6 +8599,8 @@ export class InstanceManager extends EventEmitter {
       pendingTools?: Map<string, string>;
       pendingTaskCreates?: Map<string, { subject: string; activeForm?: string }>;
       tasks?: Map<string, TaskItem>;
+      files?: Map<string, FileChange>;
+      cwd?: string;
       transcriptPath?: string;
       agents?: ReadonlyMap<string, AgentInfo>;
     },
@@ -8726,6 +8777,8 @@ export class InstanceManager extends EventEmitter {
     ctx?: {
       stats?: SessionStats;
       pendingTools?: Map<string, string>;
+      files?: Map<string, FileChange>;
+      cwd?: string;
     },
   ): HistoryEntry[] {
     const results: HistoryEntry[] = [];
@@ -8763,10 +8816,12 @@ export class InstanceManager extends EventEmitter {
 
       // Preserve delegation lifecycle across the compaction boundary: register
       // the spawning tool_use so its result resolves as an agent, and announce
-      // the agent (same shape as the full parse). Other tool_uses stay elided.
+      // the agent (same shape as the full parse). Other tool_uses stay elided,
+      // but a file edited before compaction is still a file the chat changed.
       for (const block of content) {
         if (block.type !== "tool_use" || !block.id || !block.name) continue;
         if (ctx?.pendingTools) ctx.pendingTools.set(block.id, block.name);
+        if (ctx) this.trackTranscriptFileEdit(block, ctx);
         if (isAgentDelegationTool(block.name)) {
           results.push({
             timestamp,
@@ -8800,6 +8855,30 @@ export class InstanceManager extends EventEmitter {
   }
 
   /** Handle a single tool_use block within an assistant entry. */
+  /** Fold an Edit/Write/NotebookEdit tool_use into the parse's file set. */
+  private trackTranscriptFileEdit(
+    block: { name?: string; input?: unknown },
+    ctx: { files?: Map<string, FileChange>; cwd?: string },
+  ): boolean {
+    if (!ctx.files || !block.name || !FILE_WRITE_TOOLS.has(block.name)) return false;
+    const input = block.input as Record<string, unknown> | undefined;
+    const filePath = (input?.file_path || input?.path || input?.notebook_path) as
+      | string
+      | undefined;
+    if (!filePath || (ctx.cwd && !isPathWithinWorkspace(ctx.cwd, filePath))) return false;
+    const existing = ctx.files.get(filePath);
+    if (existing) {
+      existing.editCount++;
+    } else {
+      ctx.files.set(filePath, {
+        path: filePath,
+        editCount: 1,
+        type: block.name === "Write" ? "added" : "edited",
+      });
+    }
+    return true;
+  }
+
   private convertToolUseBlock(
     block: {
       name?: string;
@@ -8884,33 +8963,16 @@ export class InstanceManager extends EventEmitter {
       }
       // TaskList and TaskGet — skip entirely (no activity emitted)
     } else {
-      // Track file changes for Edit/Write/NotebookEdit
-      if (ctx?.files && block.name && FILE_WRITE_TOOLS.has(block.name)) {
-        const input = block.input as Record<string, unknown> | undefined;
-        const filePath = (input?.file_path || input?.path || input?.notebook_path) as
-          | string
-          | undefined;
-        if (filePath && (!ctx.cwd || isPathWithinWorkspace(ctx.cwd, filePath))) {
-          const existing = ctx.files.get(filePath);
-          if (existing) {
-            existing.editCount++;
-          } else {
-            ctx.files.set(filePath, {
-              path: filePath,
-              editCount: 1,
-              type: block.name === "Write" ? "added" : "edited",
-            });
-          }
-          results.push({
-            timestamp,
-            message: {
-              type: "activity",
-              activity: "file_list",
-              description: "Files changed",
-              files: Array.from(ctx.files.values()).map((f) => ({ ...f })),
-            } as ActivityMessage,
-          });
-        }
+      if (ctx?.files && this.trackTranscriptFileEdit(block, ctx)) {
+        results.push({
+          timestamp,
+          message: {
+            type: "activity",
+            activity: "file_list",
+            description: "Files changed",
+            files: Array.from(ctx.files.values()).map((f) => ({ ...f })),
+          } as ActivityMessage,
+        });
       }
 
       results.push({
@@ -10250,6 +10312,9 @@ export class InstanceManager extends EventEmitter {
       if (!inst.info.customTitle) this.doRefreshTitle(inst);
     }
 
+    // Before auto-continue: a resumed turn keeps the baseline it started with.
+    this.restoreTurnBaselines();
+
     // Auto-continue instances that were mid-turn when the server shut down
     this.autoContinueAfterRestart();
 
@@ -10257,6 +10322,7 @@ export class InstanceManager extends EventEmitter {
     this.taskRecoveryTimer = setTimeout(() => {
       this.taskRecoveryTimer = null;
       if (this.shuttingDown) return;
+      this.recoverTurnBaselines();
       try {
         this.recoverDelegatedTasks();
       } catch (err) {
@@ -10540,6 +10606,7 @@ export class InstanceManager extends EventEmitter {
             this.offerOwedTaskWakes(id);
           }
         } else {
+          await this.trackSelfStartedTurn(live);
           this.setStatus(live, "processing");
         }
 
@@ -10627,6 +10694,7 @@ export class InstanceManager extends EventEmitter {
         this.emitPendingStateIfChanged(live, pendingStateBefore);
         this.pushHistory(live, message);
         live.info.lastActivityAt = Date.now();
+        await this.trackSelfStartedTurn(live);
         this.setStatus(live, "processing");
         this.dbSave(live);
         this.emit("instance:activity", id, message);
@@ -11706,7 +11774,7 @@ export class InstanceManager extends EventEmitter {
   private async refreshFileStats(id: string): Promise<void> {
     const instance = this.instances.get(id);
     if (!instance?.files || instance.files.size === 0 || this.shuttingDown) return;
-    const diffCwd = instance.actualCwd || instance.info.workingDirectory;
+    const diffCwd = this.currentGitDirectory(instance);
     const snapshot = new Map<string, FileChange>();
     for (const [path, file] of instance.files) snapshot.set(path, { ...file });
     const origBranch = instance.originalDirectory
@@ -11768,25 +11836,124 @@ export class InstanceManager extends EventEmitter {
   }
 
   /**
-   * Turn end: attribute files the turn changed per git (Bash edits, scripts,
-   * formatters, commits — anything the edit-tool tracking can't see). Diffs
-   * the dispatch-time baseline against a fresh snapshot outside the mutation
-   * queue, then applies inside it. Chained per chat so reconciles never
-   * overlap. Managed chats only: external chats never get a baseline.
+   * Turn start: snapshot where the chat is working. Stored as well as held, so
+   * a server restart mid-turn can still reconcile (`recoverTurnBaselines`).
    */
-  private reconcileTurnWorktree(instance: Instance): Promise<void> {
+  private async captureTurnBaseline(instance: Instance): Promise<void> {
+    const snapshot = await captureWorktreeSnapshot(this.currentGitDirectory(instance), {
+      timeoutMs: TURN_BASELINE_TIMEOUT_MS,
+      onFailure: (reason) =>
+        this.baseConfig.logger.warn(
+          `[InstanceManager] No worktree baseline for ${instance.info.id}; git attribution skipped this turn: ${reason}`,
+        ),
+    });
+    instance.turnWorktreeBaseline = snapshot;
+    try {
+      if (snapshot) {
+        this.db.saveTurnBaseline(instance.info.id, serializeWorktreeSnapshot(snapshot));
+      } else {
+        this.db.deleteTurnBaseline(instance.info.id);
+      }
+    } catch (err) {
+      this.baseConfig.logger.warn(`[InstanceManager] Failed to persist turn baseline: ${err}`);
+    }
+  }
+
+  /** Take the running turn's baseline for reconciling; it no longer needs recovering. */
+  private takeTurnBaseline(instance: Instance): WorktreeSnapshot | null | undefined {
     const baseline = instance.turnWorktreeBaseline;
     instance.turnWorktreeBaseline = undefined;
-    if (!baseline || this.shuttingDown) return Promise.resolve();
+    try {
+      this.db.deleteTurnBaseline(instance.info.id);
+    } catch (err) {
+      this.baseConfig.logger.warn(`[InstanceManager] Failed to clear turn baseline: ${err}`);
+    }
+    return baseline;
+  }
+
+  /**
+   * A provider can start a turn on its own (Claude wakes itself when a
+   * background task finishes), so no dispatch took a baseline for it.
+   */
+  private async trackSelfStartedTurn(live: Instance): Promise<void> {
+    if (live.info.status !== "idle" || live.turnWorktreeBaseline !== undefined) return;
+    if (live.info.aside) return;
+    await this.captureTurnBaseline(live);
+  }
+
+  /** Load baselines of turns a previous server left unfinished, before anything can dispatch. */
+  private restoreTurnBaselines(): void {
+    let rows: Array<{ instance_id: string; snapshot_json: string }>;
+    try {
+      rows = this.db.getTurnBaselines();
+    } catch (err) {
+      this.baseConfig.logger.warn(`[InstanceManager] Failed to read turn baselines: ${err}`);
+      return;
+    }
+    for (const row of rows) {
+      const instance = this.instances.get(row.instance_id);
+      const baseline = parseWorktreeSnapshot(row.snapshot_json);
+      if (instance && baseline) {
+        instance.turnWorktreeBaseline = baseline;
+      } else {
+        this.db.deleteTurnBaseline(row.instance_id);
+      }
+    }
+  }
+
+  /** Reconcile restored turns that nothing resumed; a resumed one ends the normal way. */
+  private recoverTurnBaselines(): void {
+    for (const instance of this.instances.values()) {
+      if (instance.turnWorktreeBaseline && !instance.process) {
+        void this.reconcileTurnWorktree(instance);
+      }
+    }
+  }
+
+  /**
+   * What the turn changed: the checkout it started in, plus the worktree the
+   * chat moved into mid-turn if it did. Moving back to the spawn checkout adds
+   * nothing, because no baseline separates its existing dirt from the turn's.
+   * `end` is the start checkout's snapshot while the chat is still there.
+   */
+  private async detectTurnFileChanges(
+    instance: Instance,
+    baseline: WorktreeSnapshot,
+    opts?: { timeoutMs?: number },
+  ): Promise<{ detected: DetectedFileChange[]; end: WorktreeSnapshot | null }> {
+    const detected: DetectedFileChange[] = [];
+    const after = await captureWorktreeSnapshot(baseline.root, opts);
+    if (after) {
+      detected.push(...(await detectTurnWorktreeChanges(baseline.root, baseline, after)));
+    }
+    const dir = this.currentGitDirectory(instance);
+    const root = getRepoRoot(dir);
+    if (root === baseline.root) return { detected, end: after };
+    if (root && root !== getRepoRoot(this.runnableCwd(instance))) {
+      const entered = await captureWorktreeSnapshot(dir, opts);
+      if (entered) detected.push(...(await detectEnteredWorktreeChanges(dir, baseline, entered)));
+    }
+    return { detected, end: null };
+  }
+
+  /**
+   * Turn end: attribute files the turn changed per git (Bash edits, scripts,
+   * formatters, commits — anything the edit-tool tracking can't see). Diffs
+   * the turn-start baseline against a fresh snapshot outside the mutation
+   * queue, then applies inside it. Chained per chat so reconciles never
+   * overlap. Managed chats only: external chats never get a baseline. Left
+   * alone during shutdown, so the stored baseline is reconciled on restart.
+   */
+  private reconcileTurnWorktree(instance: Instance): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
+    const baseline = this.takeTurnBaseline(instance);
+    if (!baseline) return Promise.resolve();
     const id = instance.info.id;
-    const dir = instance.actualCwd || instance.info.workingDirectory;
     const run = (instance.worktreeReconcile ?? Promise.resolve())
       .then(async () => {
         if (this.shuttingDown) return;
-        const after = await captureWorktreeSnapshot(dir);
-        if (!after || this.shuttingDown) return;
-        const detected = await detectTurnWorktreeChanges(dir, baseline, after);
-        if (detected.length === 0) return;
+        const { detected } = await this.detectTurnFileChanges(instance, baseline);
+        if (detected.length === 0 || this.shuttingDown) return;
         await this.enqueueInstanceMutation(id, (live) => {
           if (this.shuttingDown) return;
           this.applyDetectedFileChanges(id, live, detected);
@@ -11805,19 +11972,24 @@ export class InstanceManager extends EventEmitter {
    * end snapshot becomes the next turn's baseline (one git status, not two).
    */
   private async reconcileTurnWorktreeLocked(id: string, live: Instance): Promise<void> {
-    const baseline = live.turnWorktreeBaseline;
-    live.turnWorktreeBaseline = undefined;
-    if (!baseline || this.shuttingDown) return;
-    const dir = live.actualCwd || live.info.workingDirectory;
-    const after = await captureWorktreeSnapshot(dir, { timeoutMs: TURN_BASELINE_TIMEOUT_MS });
-    if (after) {
-      const detected = await detectTurnWorktreeChanges(dir, baseline, after);
-      if (detected.length > 0 && !this.shuttingDown) {
-        this.applyDetectedFileChanges(id, live, detected);
+    if (this.shuttingDown) return;
+    const baseline = this.takeTurnBaseline(live);
+    if (!baseline) return;
+    const { detected, end } = await this.detectTurnFileChanges(live, baseline, {
+      timeoutMs: TURN_BASELINE_TIMEOUT_MS,
+    });
+    if (detected.length > 0 && !this.shuttingDown) {
+      this.applyDetectedFileChanges(id, live, detected);
+    }
+    if (end) {
+      live.turnWorktreeBaseline = end;
+      try {
+        this.db.saveTurnBaseline(id, serializeWorktreeSnapshot(end));
+      } catch (err) {
+        this.baseConfig.logger.warn(`[InstanceManager] Failed to persist turn baseline: ${err}`);
       }
     }
-    // null → the next dispatch tries its own baseline.
-    live.turnWorktreeBaseline = after ?? undefined;
+    // Otherwise the next dispatch takes its own baseline.
   }
 
   /**

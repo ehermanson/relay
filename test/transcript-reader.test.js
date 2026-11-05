@@ -168,6 +168,11 @@ test("Claude replay uses only the last valid compact boundary for state rebuildi
     result.history.some((e) => e.message.type === "user" && e.message.text === "original request"),
   );
   assert.ok(result.history.some((e) => e.message.type === "output" && e.message.text === "middle"));
-  assert.equal(result.files.has("/tmp/relay-stream-project/old.txt"), false);
+  // Tool detail before the last boundary is elided; the files it changed are not.
+  const toolUseIds = result.history
+    .filter((e) => e.message.type === "activity" && e.message.activity === "tool_use")
+    .map((e) => e.message.toolUseId);
+  assert.deepEqual(toolUseIds, ["new"]);
+  assert.equal(result.files.has("/tmp/relay-stream-project/old.txt"), true);
   assert.equal(result.files.has("/tmp/relay-stream-project/new.txt"), true);
 });

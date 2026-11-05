@@ -273,11 +273,12 @@ export function registerInstanceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
   });
 
   app.get("/api/instances/:id/diff", async (c) => {
-    const diff = await instanceManager.getInstanceDiff(c.req.param("id"), c.req.query("path"));
+    const id = c.req.param("id");
+    const diff = await instanceManager.getInstanceDiff(id, c.req.query("path"));
     if (diff === null) {
       return c.json({ error: "Instance not found or not a git repo" }, 404);
     }
-    return c.json({ diff });
+    return c.json({ diff, roots: instanceManager.getInstanceDiffRoots(id) });
   });
 
   app.post("/api/instances/:id/git/commit", async (c) => {
