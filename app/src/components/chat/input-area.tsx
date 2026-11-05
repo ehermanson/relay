@@ -1211,6 +1211,7 @@ export function InputArea({
                 }
                 handleComposerKeyDown(event);
               }}
+              enterContinuesLists={!isInSpecialMode}
               onPaste={handlePaste}
               composerMenu={isInSpecialMode ? null : composerMenu}
               toolbar={

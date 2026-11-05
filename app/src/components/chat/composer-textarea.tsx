@@ -1,11 +1,17 @@
 import {
   forwardRef,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
 } from "react";
+import {
+  applyComposerFormat,
+  composerFormatFromKey,
+  continueComposerList,
+} from "@/lib/composer-markdown";
 import type { ComposerEditorHandle, ComposerEditorProps } from "./composer-editor";
 
 /**
@@ -15,7 +21,8 @@ import type { ComposerEditorHandle, ComposerEditorProps } from "./composer-edito
  * change (mention insert, draft restore, reset after send) is echoed back
  * through `onChange` exactly once, because `useComposerState` clears its
  * stale-echo guard only when the editor reports the value it was given.
- * Mentions and slash commands stay plain text here — no chips.
+ * Mentions and slash commands stay plain text here — no chips. Markdown has no
+ * live styling either, but keeps its shortcuts for hardware keyboards.
  */
 export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   (
@@ -29,6 +36,7 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
       selectionOffset,
       onKeyDown,
       onPaste,
+      enterContinuesLists = false,
     },
     ref,
   ) => {
@@ -107,6 +115,34 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
       onChangeRef.current(el.value, el.selectionStart ?? el.value.length);
     };
 
+    const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      const el = event.currentTarget;
+      const { value: text, selectionStart: start, selectionEnd: end } = el;
+      const format = composerFormatFromKey(event);
+      let edit = format ? applyComposerFormat({ value: text, start, end }, format) : null;
+      const plainEnter = !event.shiftKey;
+      if (
+        !format &&
+        event.key === "Enter" &&
+        !event.nativeEvent.isComposing &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (enterContinuesLists || !plainEnter) &&
+        start === end
+      ) {
+        edit = continueComposerList(text, start, { listsOnly: plainEnter });
+      }
+      if (!edit) {
+        onKeyDown?.(event);
+        return;
+      }
+      event.preventDefault();
+      el.value = edit.value;
+      el.setSelectionRange(edit.start, edit.end);
+      report(el);
+    };
+
     return (
       <textarea
         ref={textareaRef}
@@ -138,7 +174,7 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
             event.currentTarget.setSelectionRange(clamped, clamped);
           }
         }}
-        onKeyDown={onKeyDown}
+        onKeyDown={handleKeyDown}
         onPaste={onPaste}
       />
     );

@@ -40,8 +40,14 @@ import {
   useMemo,
   useRef,
 } from "react";
+import type { ComposerTextEdit } from "@/lib/composer-markdown";
 import { splitPromptIntoComposerSegments } from "@/lib/composer-mentions";
 import { basenameOfPath, getFileIconUrl } from "@/lib/file-icons";
+import {
+  COMPOSER_TEXT_THEME,
+  ComposerBlockMarkerNode,
+  ComposerMarkdownPlugin,
+} from "./composer-markdown-plugin";
 
 export interface ComposerEditorHandle {
   focus: () => void;
@@ -58,6 +64,8 @@ export interface ComposerEditorProps {
   selectionOffset?: number | null;
   onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
   onPaste?: (event: ClipboardEvent<HTMLElement>) => void;
+  /** Enter starts the next list item instead of sending. Off where Enter means something else. */
+  enterContinuesLists?: boolean;
 }
 
 type SerializedComposerMentionNode = Spread<
@@ -448,6 +456,33 @@ function $setSelectionAtOffset(offset: number): void {
   $setSelection(selection);
 }
 
+function $readComposerEdit(): ComposerTextEdit | null {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) return null;
+  const anchor = getSelectionOffsetFromPoint(selection.anchor);
+  const focus = getSelectionOffsetFromPoint(selection.focus);
+  return {
+    value: $getRoot().getTextContent(),
+    start: Math.min(anchor, focus),
+    end: Math.max(anchor, focus),
+  };
+}
+
+function $writeComposerEdit({ value, start, end }: ComposerTextEdit): void {
+  $setComposerText(value);
+  const root = $getRoot();
+  const anchor = findPointAtOffset(root, { value: start });
+  const focus = findPointAtOffset(root, { value: end });
+  if (!anchor || !focus) {
+    root.selectEnd();
+    return;
+  }
+  const selection = $createRangeSelection();
+  selection.anchor.set(anchor.key, anchor.offset, anchor.type);
+  selection.focus.set(focus.key, focus.offset, focus.type);
+  $setSelection(selection);
+}
+
 function ComposerSyncPlugin({
   editorRef,
   value,
@@ -529,6 +564,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       selectionOffset,
       onKeyDown,
       onPaste,
+      enterContinuesLists = false,
     },
     ref,
   ) => {
@@ -546,7 +582,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         onError: (error) => {
           throw error;
         },
-        nodes: [ComposerMentionNode, ComposerSlashNode],
+        nodes: [ComposerMentionNode, ComposerSlashNode, ComposerBlockMarkerNode],
+        theme: { text: COMPOSER_TEXT_THEME },
       }),
       [],
     );
@@ -601,6 +638,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         </div>
         <OnChangePlugin onChange={handleChange} ignoreHistoryMergeTagChange />
         <HistoryPlugin />
+        <ComposerMarkdownPlugin
+          $readEdit={$readComposerEdit}
+          $writeEdit={$writeComposerEdit}
+          enterContinuesLists={enterContinuesLists}
+        />
         {disabled ? <DisabledStatePlugin /> : null}
       </LexicalComposer>
     );
