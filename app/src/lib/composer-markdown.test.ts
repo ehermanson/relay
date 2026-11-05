@@ -277,19 +277,11 @@ describe("continueComposerList", () => {
   it("ends the list on an empty item", () => {
     expect(next("- a\n- |")).toBe("- a\n|");
     expect(next("1. |")).toBe("|");
+    expect(next("> a\n> |")).toBe("> a\n|");
   });
 
   it("ignores list-like lines inside a code fence", () => {
     expect(next("```\n- a|\n```")).toBeNull();
-  });
-
-  it("can leave quotes out", () => {
-    const { value, start } = edit("> a|");
-    expect(continueComposerList(value, start, { listsOnly: true })).toBeNull();
-    const list = edit("- a|");
-    expect(continueComposerList(list.value, list.start, { listsOnly: true })?.value).toBe(
-      "- a\n- ",
-    );
   });
 
   it("leaves other lines to an ordinary line break", () => {

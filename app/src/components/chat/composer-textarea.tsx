@@ -36,7 +36,7 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
       selectionOffset,
       onKeyDown,
       onPaste,
-      enterContinuesLists = false,
+      enterContinuesBlocks = false,
     },
     ref,
   ) => {
@@ -128,10 +128,10 @@ export const ComposerTextarea = forwardRef<ComposerEditorHandle, ComposerEditorP
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey &&
-        (enterContinuesLists || !plainEnter) &&
+        (enterContinuesBlocks || !plainEnter) &&
         start === end
       ) {
-        edit = continueComposerList(text, start, { listsOnly: plainEnter });
+        edit = continueComposerList(text, start);
       }
       if (!edit) {
         onKeyDown?.(event);

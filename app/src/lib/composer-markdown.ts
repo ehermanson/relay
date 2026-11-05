@@ -322,15 +322,11 @@ export function applyComposerFormat(
 const CONTINUED_LINE_RE = /^(\s*)(?:([-*+] )(\[[ xX]\] )?|(\d{1,9})([.)]) |> )/;
 
 /**
- * Enter inside a list, or Shift+Enter inside a list or quote: start the next
- * item, or end the list when the current item is empty. Null means the key keeps
- * its usual meaning. Goes by the parser, so a `- ` inside a code fence isn't a list.
+ * Enter inside a list or quote: start the next item, or end the block when the
+ * current item is empty. Null means the key keeps its usual meaning. Goes by the
+ * parser, so a `- ` inside a code fence isn't a list.
  */
-export function continueComposerList(
-  value: string,
-  caret: number,
-  { listsOnly = false }: { listsOnly?: boolean } = {},
-): ComposerTextEdit | null {
+export function continueComposerList(value: string, caret: number): ComposerTextEdit | null {
   const lineStart = value.lastIndexOf("\n", caret - 1) + 1;
   const nextBreak = value.indexOf("\n", caret);
   const lineEnd = nextBreak === -1 ? value.length : nextBreak;
@@ -338,12 +334,12 @@ export function continueComposerList(
   const match = CONTINUED_LINE_RE.exec(line);
   if (!match || caret < lineStart + match[0].length) return null;
 
-  const prefixMarks = listsOnly
-    ? MARK_BULLET | MARK_LIST_NUMBER
-    : MARK_BULLET | MARK_LIST_NUMBER | MARK_QUOTE_MARKER;
   const lineEndOfPrefix = lineStart + match[0].length;
   const isPrefix = parseComposerMarkdown(value).some(
-    (span) => span.marks & prefixMarks && span.start >= lineStart && span.end <= lineEndOfPrefix,
+    (span) =>
+      span.marks & (MARK_BULLET | MARK_LIST_NUMBER | MARK_QUOTE_MARKER) &&
+      span.start >= lineStart &&
+      span.end <= lineEndOfPrefix,
   );
   if (!isPrefix) return null;
 

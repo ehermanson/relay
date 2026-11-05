@@ -18,7 +18,7 @@ interface ComposerPanelProps {
   onSelectionApplied: () => void;
   onChange: (value: string, selectionOffset: number) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
-  enterContinuesLists: boolean;
+  enterContinuesBlocks: boolean;
   onPaste: (event: React.ClipboardEvent) => void;
   composerMenu: ReactNode;
   toolbar: ReactNode;
@@ -38,7 +38,7 @@ export function ComposerPanel({
   onSelectionApplied,
   onChange,
   onKeyDown,
-  enterContinuesLists,
+  enterContinuesBlocks,
   onPaste,
   composerMenu,
   toolbar,
@@ -73,7 +73,7 @@ export function ComposerPanel({
             onSelectionApplied={onSelectionApplied}
             onChange={onChange}
             onKeyDown={onKeyDown}
-            enterContinuesLists={enterContinuesLists}
+            enterContinuesBlocks={enterContinuesBlocks}
             onPaste={onPaste}
             className={
               compact

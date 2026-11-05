@@ -225,15 +225,15 @@ function $decorateComposer(root: RootNode): void {
 export function ComposerMarkdownPlugin({
   $readEdit,
   $writeEdit,
-  enterContinuesLists,
+  enterContinuesBlocks,
 }: {
   $readEdit: () => ComposerTextEdit | null;
   $writeEdit: (edit: ComposerTextEdit) => void;
-  enterContinuesLists: boolean;
+  enterContinuesBlocks: boolean;
 }) {
   const [editor] = useLexicalComposerContext();
-  const enterContinuesListsRef = useRef(enterContinuesLists);
-  enterContinuesListsRef.current = enterContinuesLists;
+  const enterContinuesBlocksRef = useRef(enterContinuesBlocks);
+  enterContinuesBlocksRef.current = enterContinuesBlocks;
 
   useEffect(() => {
     return mergeRegister(
@@ -251,16 +251,16 @@ export function ComposerMarkdownPlugin({
         },
         COMMAND_PRIORITY_HIGH,
       ),
-      // Everywhere else Enter sends, and ⌘/Ctrl+Enter sends even inside a list.
+      // Everywhere else Enter sends, and ⌘/Ctrl+Enter sends even inside a list or quote.
       editor.registerCommand(
         KEY_ENTER_COMMAND,
         (event) => {
           if (!event || event.metaKey || event.ctrlKey || event.altKey) return false;
           const plainEnter = !event.shiftKey;
-          if (plainEnter && !enterContinuesListsRef.current) return false;
+          if (plainEnter && !enterContinuesBlocksRef.current) return false;
           const edit = $readEdit();
           if (!edit || edit.start !== edit.end) return false;
-          const next = continueComposerList(edit.value, edit.start, { listsOnly: plainEnter });
+          const next = continueComposerList(edit.value, edit.start);
           if (!next) return false;
           event.preventDefault();
           // This runs on the editor root, ahead of the composer's React handler,

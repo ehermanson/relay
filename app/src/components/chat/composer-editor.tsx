@@ -64,8 +64,8 @@ export interface ComposerEditorProps {
   selectionOffset?: number | null;
   onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
   onPaste?: (event: ClipboardEvent<HTMLElement>) => void;
-  /** Enter starts the next list item instead of sending. Off where Enter means something else. */
-  enterContinuesLists?: boolean;
+  /** Enter starts the next list item or quote line instead of sending. Off where Enter means something else. */
+  enterContinuesBlocks?: boolean;
 }
 
 type SerializedComposerMentionNode = Spread<
@@ -564,7 +564,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       selectionOffset,
       onKeyDown,
       onPaste,
-      enterContinuesLists = false,
+      enterContinuesBlocks = false,
     },
     ref,
   ) => {
@@ -641,7 +641,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         <ComposerMarkdownPlugin
           $readEdit={$readComposerEdit}
           $writeEdit={$writeComposerEdit}
-          enterContinuesLists={enterContinuesLists}
+          enterContinuesBlocks={enterContinuesBlocks}
         />
         {disabled ? <DisabledStatePlugin /> : null}
       </LexicalComposer>
