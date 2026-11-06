@@ -1,15 +1,15 @@
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import {
-  $applyNodeReplacement,
-  $createTextNode,
   $getEditor,
-  $getSelection,
+  $getRoot,
   $isElementNode,
-  $isRangeSelection,
+  $isLineBreakNode,
   $isTextNode,
+  BLUR_COMMAND,
   COMMAND_PRIORITY_HIGH,
+  COMMAND_PRIORITY_LOW,
   type EditorConfig,
-  type ElementNode,
+  FOCUS_COMMAND,
   IS_BOLD,
   IS_CODE,
   IS_ITALIC,
@@ -17,11 +17,14 @@ import {
   KEY_BACKSPACE_COMMAND,
   KEY_DOWN_COMMAND,
   KEY_ENTER_COMMAND,
+  type LexicalEditor,
+  type LexicalNode,
   mergeRegister,
+  ParagraphNode,
   RootNode,
-  type SerializedTextNode,
+  type SerializedParagraphNode,
   type Spread,
-  TextNode,
+  type TextNode,
 } from "lexical";
 import { useEffect, useRef } from "react";
 import {
@@ -34,6 +37,7 @@ import {
   MARK_BULLET,
   MARK_CODE,
   MARK_CODE_BLOCK,
+  MARK_HIDDEN,
   MARK_ITALIC,
   MARK_LIST_NUMBER,
   MARK_QUOTE,
@@ -51,82 +55,69 @@ export const COMPOSER_TEXT_THEME = {
   code: "rounded bg-surface-hover px-1 py-px font-mono text-[0.9em]",
 };
 
-type SerializedComposerBlockMarkerNode = Spread<
-  { marker: string; type: "composer-block-marker"; version: 1 },
-  SerializedTextNode
->;
-
-// The prefix text stays in place but invisible, with the glyph drawn over it. It
-// has to be real, editable text: a contentEditable=false token at the end of a
-// line leaves the caret in front of it, so typing after a fresh bullet landed
-// before the marker.
-const HIDDEN_MARKER_CLASS = "relative text-transparent [caret-color:var(--color-text)]";
-const BULLET_MARKER_CLASS =
-  "before:absolute before:left-0 before:text-text/70 before:content-['•']";
-const QUOTE_MARKER_CLASS =
-  "before:absolute before:inset-y-[0.1em] before:left-[0.1em] before:w-[3px] before:rounded-full before:bg-muted/50 before:content-['']";
+type SerializedComposerLineNode = Spread<{ line: string }, SerializedParagraphNode>;
 
 /**
- * A bullet (`- `) or quote (`> `) prefix drawn as a glyph. Its text is still the
- * literal prefix, so the composer's value doesn't change.
+ * One line of the prompt. Each line is its own block so that CSS can give it what
+ * only a block can have: a hanging indent, spacing, one bar down a whole quote.
+ * `data-composer-line` carries its kind and position (see index.css).
  */
-export class ComposerBlockMarkerNode extends TextNode {
+export class ComposerLineNode extends ParagraphNode {
+  __line = "";
+
   static override getType(): string {
-    return "composer-block-marker";
+    return "composer-line";
   }
 
-  static override clone(node: ComposerBlockMarkerNode): ComposerBlockMarkerNode {
-    return new ComposerBlockMarkerNode(node.__text, node.__key);
+  static override clone(node: ComposerLineNode): ComposerLineNode {
+    return new ComposerLineNode(node.__key);
   }
 
-  static override importJSON(
-    serializedNode: SerializedComposerBlockMarkerNode,
-  ): ComposerBlockMarkerNode {
-    return new ComposerBlockMarkerNode(serializedNode.marker);
+  static override importJSON(serializedNode: SerializedComposerLineNode): ComposerLineNode {
+    return new ComposerLineNode().updateFromJSON(serializedNode);
   }
 
-  override exportJSON(): SerializedComposerBlockMarkerNode {
-    return {
-      ...super.exportJSON(),
-      marker: this.__text,
-      type: "composer-block-marker",
-      version: 1,
-    };
+  override afterCloneFrom(prevNode: this): void {
+    super.afterCloneFrom(prevNode);
+    this.__line = prevNode.__line;
+  }
+
+  override exportJSON(): SerializedComposerLineNode {
+    return { ...super.exportJSON(), line: this.__line, type: "composer-line" };
   }
 
   override createDOM(config: EditorConfig): HTMLElement {
     const dom = super.createDOM(config);
-    const glyph = this.__text.startsWith(">") ? QUOTE_MARKER_CLASS : BULLET_MARKER_CLASS;
-    dom.className = `${HIDDEN_MARKER_CLASS} ${glyph}`;
+    dom.dataset.composerLine = this.__line;
     return dom;
   }
 
-  // Keeps typed text out of the marker, in a plain node beside it.
-  override canInsertTextBefore(): false {
-    return false;
+  override updateDOM(prevNode: this, dom: HTMLElement, config: EditorConfig): boolean {
+    if (prevNode.__line !== this.__line) dom.dataset.composerLine = this.__line;
+    return super.updateDOM(prevNode, dom, config);
   }
 
-  override canInsertTextAfter(): false {
-    return false;
+  setLine(line: string): void {
+    if (this.__line !== line) this.getWritable().__line = line;
   }
 }
 
-function $isComposerBlockMarkerNode(node: unknown): node is ComposerBlockMarkerNode {
-  return node instanceof ComposerBlockMarkerNode;
-}
+/** All paragraphs are lines, including the ones Lexical creates itself. */
+export const COMPOSER_LINE_NODES = [
+  ComposerLineNode,
+  {
+    replace: ParagraphNode,
+    with: () => new ComposerLineNode(),
+    withKlass: ComposerLineNode,
+  },
+];
 
-/** `node.replace` moves the caret to the end of the new node; keep it where it was. */
-function $swapTextNode(node: TextNode, next: TextNode): void {
-  const selection = $getSelection();
-  const key = node.getKey();
-  const points = $isRangeSelection(selection)
-    ? [selection.anchor, selection.focus].filter((point) => point.key === key)
-    : [];
-  const offsets = points.map((point) => point.offset);
-  node.replace(next);
-  points.forEach((point, index) => {
-    point.set(next.getKey(), offsets[index] ?? 0, "text");
-  });
+/** The composer's value: lines are blocks, which `getTextContent()` would double-space. */
+export function $readComposerValue(): string {
+  return $getRoot()
+    .getChildren()
+    .map((block) => block.getTextContent())
+    .join("\n");
 }
 
 function textFormatFor(marks: number): number {
@@ -138,22 +129,27 @@ function textFormatFor(marks: number): number {
   return format;
 }
 
-function textStyleFor(marks: number): string {
+const HIDDEN_MARKS = MARK_BULLET | MARK_QUOTE_MARKER | MARK_HIDDEN;
+const HIDDEN_STYLE = "color: transparent;";
+
+function textStyleFor(marks: number, length: number): string {
+  // Stays in the text, so the caret and the value are untouched, but takes up no
+  // room: a monospace `ch` is exactly one character, and pulling back by that
+  // much lands what follows where the markup began. (font-size: 0 would be
+  // simpler, but the caret takes its height from the text it sits in, and would
+  // vanish right after a closing backtick or a new bullet.)
+  // Pulled back like that it lies over the text before it, so clicks pass through.
+  if (marks & HIDDEN_MARKS) {
+    return `${HIDDEN_STYLE} caret-color: var(--color-text); font-family: var(--font-mono); margin-left: -${length}ch; pointer-events: none;`;
+  }
+  // Right-aligned into the line's indent, like a native list number.
+  if (marks & MARK_LIST_NUMBER) {
+    return "display: inline-flex; justify-content: flex-end; width: 1.5em; margin-left: -1.5em; white-space: pre; color: var(--color-muted);";
+  }
   if (marks & MARK_SYNTAX) return "opacity: 0.45;";
   if (marks & MARK_CODE_BLOCK) return "font-family: var(--font-mono); font-size: 0.9em;";
-  if (marks & MARK_LIST_NUMBER) return "color: var(--color-muted);";
   if (marks & MARK_QUOTE) return "opacity: 0.75;";
   return "";
-}
-
-const BLOCK_MARKER_MARKS = MARK_BULLET | MARK_QUOTE_MARKER;
-
-function isWholeBlockMarker(
-  span: ComposerMarkdownSpan | undefined,
-  start: number,
-  end: number,
-): boolean {
-  return !!span && !!(span.marks & BLOCK_MARKER_MARKS) && span.start === start && span.end === end;
 }
 
 function $styleTextNode(node: TextNode, start: number, spans: ComposerMarkdownSpan[]): void {
@@ -171,54 +167,105 @@ function $styleTextNode(node: TextNode, start: number, spans: ComposerMarkdownSp
 
   let partStart = start;
   for (const part of parts) {
-    const partEnd = partStart + part.getTextContentSize();
-    const span = overlapping.find((item) => item.start <= partStart && item.end >= partEnd);
-    if (isWholeBlockMarker(span, partStart, partEnd)) {
-      $swapTextNode(
-        part,
-        $applyNodeReplacement(new ComposerBlockMarkerNode(part.getTextContent())),
-      );
-    } else {
-      // A block marker split across nodes styles as plain text; the nodes merge
-      // and the next pass picks it up whole.
-      const marks = span && !(span.marks & BLOCK_MARKER_MARKS) ? span.marks : 0;
-      const format = textFormatFor(marks);
-      const style = textStyleFor(marks);
-      if (part.getFormat() !== format) part.setFormat(format);
-      if (part.getStyle() !== style) part.setStyle(style);
-    }
+    const length = part.getTextContentSize();
+    const partEnd = partStart + length;
+    const marks = overlapping.find((item) => item.start <= partStart && item.end >= partEnd)?.marks;
+    const format = textFormatFor(marks ?? 0);
+    const style = textStyleFor(marks ?? 0, length);
+    if (part.getFormat() !== format) part.setFormat(format);
+    if (part.getStyle() !== style) part.setStyle(style);
     partStart = partEnd;
   }
 }
 
-function $decorateBlock(block: ElementNode): void {
-  const spans = parseComposerMarkdown(block.getTextContent());
-  let offset = 0;
-  for (const child of block.getChildren()) {
-    const start = offset;
-    offset += child.getTextContentSize();
-    if ($isComposerBlockMarkerNode(child)) {
-      const span = spans.find((item) => item.start === start);
-      if (!isWholeBlockMarker(span, start, offset)) {
-        $swapTextNode(child, $createTextNode(child.getTextContent()));
-      }
-    } else if ($isTextNode(child) && child.isSimpleText()) {
-      $styleTextNode(child, start, spans);
-    }
-  }
+function lineKindOf(start: number, end: number, spans: ComposerMarkdownSpan[]): string {
+  const prefix = spans.find((span) => span.start >= start && span.end <= end);
+  if (!prefix) return "";
+  if (prefix.marks & MARK_BULLET) return "bullet";
+  if (prefix.marks & MARK_LIST_NUMBER) return "number";
+  if (prefix.marks & MARK_QUOTE_MARKER) return "quote";
+  return "";
+}
+
+/** What CSS needs to know about a line: its kind, and where it sits in its block. */
+function lineAttribute(kinds: string[], lengths: number[], index: number): string {
+  const kind = kinds[index];
+  if (!kind) return "";
+  const tokens = [kind];
+  const before = index - 1;
+  const after = index + 1;
+  if (kinds[before] !== kind) tokens.push("first");
+  if (kinds[after] !== kind) tokens.push("last");
+  // A blank line already separates the block, so only text needs the margin.
+  if (kinds[before] !== kind && (lengths[before] ?? 0) > 0) tokens.push("gap-above");
+  if (kinds[after] !== kind && (lengths[after] ?? 0) > 0) tokens.push("gap-below");
+  return tokens.join(" ");
+}
+
+function hasLineBreak(block: LexicalNode): boolean {
+  return $isElementNode(block) && block.getChildren().some($isLineBreakNode);
 }
 
 /**
- * Runs after every change. It only sets formats and swaps prefixes for tokens of
- * the same text, so `getTextContent()`, which is the composer's value, is never
- * affected. It must stay idempotent: every write dirties the tree and re-runs it.
+ * Runs after every change. It only sets formats and line attributes, so the
+ * composer's value is never affected. It must stay idempotent: every write
+ * dirties the tree and re-runs it.
  */
 function $decorateComposer(root: RootNode): void {
-  // Replacing nodes under an active IME composition would cancel it; composition
-  // end dirties the text, which runs this again.
-  if ($getEditor().isComposing()) return;
-  for (const child of root.getChildren()) {
-    if ($isElementNode(child)) $decorateBlock(child);
+  const spans = parseComposerMarkdown($readComposerValue());
+  const blocks = root.getChildren();
+  const lengths = blocks.map((block) => block.getTextContentSize());
+
+  const starts: number[] = [];
+  let offset = 0;
+  for (const length of lengths) {
+    starts.push(offset);
+    offset += length + 1;
+  }
+  const kinds = lengths.map((length, index) => {
+    const start = starts[index] ?? 0;
+    return lineKindOf(start, start + length, spans);
+  });
+
+  blocks.forEach((block, index) => {
+    if (!$isElementNode(block)) return;
+    if (block instanceof ComposerLineNode) block.setLine(lineAttribute(kinds, lengths, index));
+    let childStart = starts[index] ?? 0;
+    for (const child of block.getChildren()) {
+      if ($isTextNode(child) && child.isSimpleText()) $styleTextNode(child, childStart, spans);
+      childStart += child.getTextContentSize();
+    }
+  });
+}
+
+function editorHasFocus(editor: LexicalEditor): boolean {
+  const root = editor.getRootElement();
+  return !!root && root.contains(document.activeElement);
+}
+
+/**
+ * Show the markers around the caret. A reveal changes how they look and nothing
+ * else, so it's an attribute on the DOM, set after each commit, not editor state:
+ * state would mean an update on every caret move, which undo, onChange and an
+ * unfocused editor all have to be protected from (it crashed undo when tried).
+ */
+function $revealMarkers(editor: LexicalEditor, $readEdit: () => ComposerTextEdit | null): void {
+  const selection = editorHasFocus(editor) ? $readEdit() : null;
+  const spans = parseComposerMarkdown($readComposerValue(), selection);
+  let offset = 0;
+  for (const block of $getRoot().getChildren()) {
+    if ($isElementNode(block)) {
+      for (const child of block.getChildren()) {
+        if ($isTextNode(child) && child.getStyle().startsWith(HIDDEN_STYLE)) {
+          const start = offset;
+          const marks = spans.find((span) => span.start <= start && span.end > start)?.marks ?? 0;
+          const dom = editor.getElementByKey(child.getKey());
+          dom?.toggleAttribute("data-composer-reveal", !!(marks & MARK_SYNTAX));
+        }
+        offset += child.getTextContentSize();
+      }
+    }
+    offset += 1;
   }
 }
 
@@ -236,8 +283,61 @@ export function ComposerMarkdownPlugin({
   enterContinuesBlocksRef.current = enterContinuesBlocks;
 
   useEffect(() => {
+    let pointerHeld = false;
+    const reveal = () => {
+      if (!pointerHeld) $revealMarkers(editor, $readEdit);
+    };
+    const holdReveal = () => {
+      pointerHeld = true;
+    };
+    const releaseReveal = () => {
+      pointerHeld = false;
+      editor.getEditorState().read(reveal);
+    };
+    document.addEventListener("pointerup", releaseReveal);
+    document.addEventListener("pointercancel", releaseReveal);
+
     return mergeRegister(
-      editor.registerNodeTransform(RootNode, $decorateComposer),
+      editor.registerNodeTransform(RootNode, (root) => {
+        // Replacing nodes under an active IME composition would cancel it;
+        // composition end dirties the text, which runs this again.
+        if ($getEditor().isComposing()) return;
+        // Enter and paste insert line breaks, which become lines here.
+        if (root.getChildren().some(hasLineBreak)) {
+          const edit = $readEdit();
+          if (edit) $writeEdit(edit);
+        }
+        $decorateComposer(root);
+      }),
+      editor.registerUpdateListener(({ editorState }) => {
+        editorState.read(reveal);
+      }),
+      editor.registerCommand(
+        FOCUS_COMMAND,
+        () => {
+          reveal();
+          return false;
+        },
+        COMMAND_PRIORITY_LOW,
+      ),
+      editor.registerCommand(
+        BLUR_COMMAND,
+        () => {
+          reveal();
+          return false;
+        },
+        COMMAND_PRIORITY_LOW,
+      ),
+      // Markers appearing under a press move the text out from under a drag, which
+      // lost or skewed the selection. They wait for the release.
+      editor.registerRootListener((root, prevRoot) => {
+        prevRoot?.removeEventListener("pointerdown", holdReveal);
+        root?.addEventListener("pointerdown", holdReveal);
+      }),
+      () => {
+        document.removeEventListener("pointerup", releaseReveal);
+        document.removeEventListener("pointercancel", releaseReveal);
+      },
       editor.registerCommand(
         KEY_DOWN_COMMAND,
         (event) => {

@@ -636,6 +636,57 @@ body *::-webkit-scrollbar-thumb:hover {
   margin: 0.2em 0;
 }
 
+/* An inline marker at the caret. Overrides the hidden style set on the text. */
+[data-composer-reveal] {
+  color: inherit !important;
+  font-family: inherit !important;
+  margin-left: 0 !important;
+  opacity: 0.45;
+  pointer-events: auto !important;
+}
+
+/* Composer lines match what they become in the sent message. */
+[data-composer-line~="bullet"],
+[data-composer-line~="number"] {
+  position: relative;
+  padding-left: 1.5em;
+}
+[data-composer-line~="bullet"]::before {
+  content: "";
+  position: absolute;
+  left: 0.5em;
+  top: calc(0.5lh - 0.16em);
+  width: 0.32em;
+  height: 0.32em;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+}
+[data-composer-line~="bullet"]:not([data-composer-line~="first"]),
+[data-composer-line~="number"]:not([data-composer-line~="first"]) {
+  margin-top: 0.2em;
+}
+[data-composer-line~="gap-above"] {
+  margin-top: 0.5em;
+}
+[data-composer-line~="gap-below"] {
+  margin-bottom: 0.5em;
+}
+[data-composer-line~="quote"] {
+  padding-left: 1em;
+  padding-right: 1em;
+  border-left: 2px solid var(--color-claude);
+  background: var(--color-blockquote-bg);
+}
+[data-composer-line~="quote"][data-composer-line~="first"] {
+  padding-top: 0.5em;
+  border-top-right-radius: 6px;
+}
+[data-composer-line~="quote"][data-composer-line~="last"] {
+  padding-bottom: 0.5em;
+  border-bottom-right-radius: 6px;
+}
+
 .markdown-content code {
   font-family: var(--font-mono);
   font-size: 0.8em;

@@ -4,6 +4,7 @@ import {
   MARK_BULLET,
   MARK_CODE,
   MARK_CODE_BLOCK,
+  MARK_HIDDEN,
   MARK_ITALIC,
   MARK_LIST_NUMBER,
   MARK_QUOTE,
@@ -46,16 +47,20 @@ function format(marked: string, kind: ComposerFormat): string {
 describe("parseComposerMarkdown", () => {
   it("marks inline emphasis and its markers", () => {
     expect(parsed("a **b** c")).toEqual([
-      ["**", MARK_SYNTAX],
+      ["**", MARK_HIDDEN],
       ["b", MARK_BOLD],
-      ["**", MARK_SYNTAX],
+      ["**", MARK_HIDDEN],
     ]);
     expect(parsed("*i*")[1]).toEqual(["i", MARK_ITALIC]);
     expect(parsed("_i_")[1]).toEqual(["i", MARK_ITALIC]);
     expect(parsed("__b__")[1]).toEqual(["b", MARK_BOLD]);
     expect(parsed("***x***")[1]).toEqual(["x", MARK_BOLD | MARK_ITALIC]);
     expect(parsed("~~x~~")[1]).toEqual(["x", MARK_STRIKETHROUGH]);
-    expect(parsed("`x`")[1]).toEqual(["x", MARK_CODE]);
+    expect(parsed("`x`")).toEqual([
+      ["`", MARK_HIDDEN],
+      ["x", MARK_CODE],
+      ["`", MARK_HIDDEN],
+    ]);
   });
 
   it("nests italic inside bold", () => {
@@ -99,9 +104,9 @@ describe("parseComposerMarkdown", () => {
   it("styles inline markdown inside a list item", () => {
     expect(parsed("- **a**")).toEqual([
       ["- ", MARK_BULLET],
-      ["**", MARK_SYNTAX],
+      ["**", MARK_HIDDEN],
       ["a", MARK_BOLD],
-      ["**", MARK_SYNTAX],
+      ["**", MARK_HIDDEN],
     ]);
   });
 
@@ -113,6 +118,49 @@ describe("parseComposerMarkdown", () => {
       ["- ", MARK_BULLET],
     ]);
     expect(parsed("```\n- a")[1]).toEqual(["- a", MARK_CODE_BLOCK]);
+  });
+
+  describe("revealing markers around the selection", () => {
+    /** The marker text left visible for a caret at `|`. */
+    const revealed = (marked: string) => {
+      const { value, start, end } = edit(marked);
+      return parseComposerMarkdown(value, { start, end })
+        .filter((span) => span.marks & MARK_SYNTAX)
+        .map((span) => value.slice(span.start, span.end));
+    };
+
+    it("hides markers with no selection", () => {
+      expect(parseComposerMarkdown("**a**").some((span) => span.marks & MARK_SYNTAX)).toBe(false);
+    });
+
+    it("shows them with the caret inside or touching", () => {
+      expect(revealed("**a|b**")).toEqual(["**", "**"]);
+      expect(revealed("|**a**")).toEqual(["**", "**"]);
+      expect(revealed("**a**|")).toEqual(["**", "**"]);
+      expect(revealed("`a|`")).toEqual(["`", "`"]);
+    });
+
+    it("hides them again once the caret moves on", () => {
+      expect(revealed("**a** |")).toEqual([]);
+      expect(revealed("| **a**")).toEqual([]);
+    });
+
+    it("reveals only the piece the caret is on", () => {
+      expect(revealed("**a|** and *b*")).toEqual(["**", "**"]);
+      expect(revealed("**a** and *b|*")).toEqual(["*", "*"]);
+    });
+
+    it("reveals everything a selection touches", () => {
+      expect(revealed("**a[** and *]b*")).toEqual(["**", "**", "*", "*"]);
+    });
+
+    it("reveals both levels when nested", () => {
+      expect(revealed("**a *b|* c**")).toEqual(["**", "*", "*", "**"]);
+    });
+
+    it("leaves block syntax alone", () => {
+      expect(parsed("# a")[0]).toEqual(["# ", MARK_SYNTAX]);
+    });
   });
 
   it("gives offsets into the whole text", () => {

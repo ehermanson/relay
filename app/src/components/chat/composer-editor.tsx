@@ -8,7 +8,6 @@ import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
 import {
   $applyNodeReplacement,
-  $createLineBreakNode,
   $createParagraphNode,
   $createRangeSelection,
   $createTextNode,
@@ -17,6 +16,7 @@ import {
   $isElementNode,
   $isLineBreakNode,
   $isRangeSelection,
+  $isRootNode,
   $isTextNode,
   $setSelection,
   SKIP_DOM_SELECTION_TAG,
@@ -44,8 +44,9 @@ import type { ComposerTextEdit } from "@/lib/composer-markdown";
 import { splitPromptIntoComposerSegments } from "@/lib/composer-mentions";
 import { basenameOfPath, getFileIconUrl } from "@/lib/file-icons";
 import {
+  $readComposerValue,
+  COMPOSER_LINE_NODES,
   COMPOSER_TEXT_THEME,
-  ComposerBlockMarkerNode,
   ComposerMarkdownPlugin,
 } from "./composer-markdown-plugin";
 
@@ -322,37 +323,27 @@ function renderMentionChip(container: HTMLElement, pathValue: string): void {
   container.append(icon, label);
 }
 
-function appendTextWithBreaks(paragraph: LexicalNode, text: string): void {
-  if (!$isElementNode(paragraph)) return;
-  const lines = text.split("\n");
-  lines.forEach((line, index) => {
-    if (line) {
-      paragraph.append($createTextNode(line));
-    }
-    if (index < lines.length - 1) {
-      paragraph.append($createLineBreakNode());
-    }
-  });
-}
-
 function $setComposerText(value: string): void {
   const root = $getRoot();
   root.clear();
-  const paragraph = $createParagraphNode();
+  let line = $createParagraphNode();
+  root.append(line);
   for (const segment of splitPromptIntoComposerSegments(value)) {
     if (segment.kind === "slash") {
-      paragraph.append($createComposerSlashNode(segment.command));
+      line.append($createComposerSlashNode(segment.command));
       continue;
     }
     if (segment.kind === "mention") {
-      paragraph.append($createComposerMentionNode(segment.path));
+      line.append($createComposerMentionNode(segment.path));
       continue;
     }
-    appendTextWithBreaks(paragraph, segment.text);
-  }
-  root.append(paragraph);
-  if (root.getChildrenSize() === 0) {
-    root.append($createParagraphNode());
+    segment.text.split("\n").forEach((text, index) => {
+      if (index > 0) {
+        line = $createParagraphNode();
+        root.append(line);
+      }
+      if (text) line.append($createTextNode(text));
+    });
   }
 }
 
@@ -379,6 +370,8 @@ function getSelectionOffsetFromPoint(point: PointType): number {
       const sibling = siblings[i];
       if (sibling) offset += getNodeTextLength(sibling);
     }
+    // Each line before this one ends in a newline.
+    if ($isRootNode(parent)) offset += index;
     current = parent;
   }
 
@@ -394,6 +387,7 @@ function getSelectionOffsetFromPoint(point: PointType): number {
       const child = children[i];
       if (child) offset += getNodeTextLength(child);
     }
+    if ($isRootNode(node)) offset += point.offset;
   }
   return offset;
 }
@@ -443,9 +437,19 @@ function findPointAtOffset(
   return null;
 }
 
+function $findPointInComposer(offset: number): ReturnType<typeof findPointAtOffset> {
+  const remaining = { value: offset };
+  for (const line of $getRoot().getChildren()) {
+    const length = getNodeTextLength(line);
+    if (remaining.value <= length) return findPointAtOffset(line, remaining);
+    remaining.value -= length + 1;
+  }
+  return null;
+}
+
 function $setSelectionAtOffset(offset: number): void {
   const root = $getRoot();
-  const point = findPointAtOffset(root, { value: offset });
+  const point = $findPointInComposer(offset);
   if (!point) {
     root.selectEnd();
     return;
@@ -462,7 +466,7 @@ function $readComposerEdit(): ComposerTextEdit | null {
   const anchor = getSelectionOffsetFromPoint(selection.anchor);
   const focus = getSelectionOffsetFromPoint(selection.focus);
   return {
-    value: $getRoot().getTextContent(),
+    value: $readComposerValue(),
     start: Math.min(anchor, focus),
     end: Math.max(anchor, focus),
   };
@@ -471,8 +475,8 @@ function $readComposerEdit(): ComposerTextEdit | null {
 function $writeComposerEdit({ value, start, end }: ComposerTextEdit): void {
   $setComposerText(value);
   const root = $getRoot();
-  const anchor = findPointAtOffset(root, { value: start });
-  const focus = findPointAtOffset(root, { value: end });
+  const anchor = $findPointInComposer(start);
+  const focus = $findPointInComposer(end);
   if (!anchor || !focus) {
     root.selectEnd();
     return;
@@ -520,7 +524,7 @@ function SyncEffect({
     if (!editor) return;
 
     editor.update(() => {
-      const currentValue = $getRoot().getTextContent();
+      const currentValue = $readComposerValue();
       if (currentValue !== value) {
         $setComposerText(value);
       }
@@ -582,7 +586,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         onError: (error) => {
           throw error;
         },
-        nodes: [ComposerMentionNode, ComposerSlashNode, ComposerBlockMarkerNode],
+        nodes: [ComposerMentionNode, ComposerSlashNode, ...COMPOSER_LINE_NODES],
         theme: { text: COMPOSER_TEXT_THEME },
       }),
       [],
@@ -590,7 +594,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     const handleChange = (editorState: EditorState) => {
       editorState.read(() => {
-        const nextValue = $getRoot().getTextContent();
+        const nextValue = $readComposerValue();
         const selection = $getSelection();
         const offset = $isRangeSelection(selection)
           ? getSelectionOffsetFromPoint(selection.anchor)

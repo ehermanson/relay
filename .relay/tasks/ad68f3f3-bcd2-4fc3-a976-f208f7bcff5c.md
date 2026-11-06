@@ -11,7 +11,7 @@ tags:
 parent: null
 blockedBy: []
 createdAt: "2026-11-05T12:44:22.746Z"
-updatedAt: "2026-11-05T13:41:32.947Z"
-closedAt: "2026-11-05T13:41:32.947Z"
+updatedAt: "2026-11-05T23:00:49.448Z"
+closedAt: "2026-11-05T23:00:49.448Z"
 ---
 Live markdown rendering in the Lexical composer (bold, italic, inline code, bullets, numbered lists, block quotes) plus formatting shortcuts and list continuation on Shift+Enter. The composer value stays the literal markdown string, so drafts, outbox, menus and sent prompts are byte-exact: rendering is decoration only. Native textarea gets the shortcuts and continuation but no rendering.

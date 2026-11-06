@@ -11,18 +11,26 @@ export const MARK_STRIKETHROUGH = 1 << 2;
 export const MARK_CODE = 1 << 3;
 export const MARK_CODE_BLOCK = 1 << 4;
 export const MARK_QUOTE = 1 << 5;
-/** Markup that stays visible but recedes: `**`, backticks, `#`, code fences. */
+/** Markup that stays visible but recedes: `#`, code fences, inline markers being edited. */
 export const MARK_SYNTAX = 1 << 6;
 export const MARK_LIST_NUMBER = 1 << 7;
 /** `- ` / `* ` / `+ `, shown as a bullet. */
 export const MARK_BULLET = 1 << 8;
-/** `> `, shown as a quote bar. */
+/** `> `, hidden: the line itself shows the quote. */
 export const MARK_QUOTE_MARKER = 1 << 9;
+/** Inline markers (`**`, `*`, `~~`, backticks) away from the caret: they take up no space. */
+export const MARK_HIDDEN = 1 << 10;
 
 export interface ComposerMarkdownSpan {
   start: number;
   end: number;
   marks: number;
+}
+
+/** A selection, as offsets into the text. */
+export interface ComposerTextRange {
+  start: number;
+  end: number;
 }
 
 export type ComposerFormat = "bold" | "italic" | "code" | "bullet" | "number" | "quote";
@@ -67,12 +75,22 @@ function paint(marks: Uint16Array, start: number, end: number, flag: number): vo
 
 function isClaimed(marks: Uint16Array, start: number, end: number): boolean {
   for (let i = start; i < end; i += 1) {
-    if ((marks[i] ?? 0) & (MARK_CODE | MARK_SYNTAX)) return true;
+    if ((marks[i] ?? 0) & (MARK_CODE | MARK_SYNTAX | MARK_HIDDEN)) return true;
   }
   return false;
 }
 
-function paintInline(text: string, from: number, to: number, marks: Uint16Array): void {
+interface InlineMarkers extends ComposerTextRange {
+  size: number;
+}
+
+function paintInline(
+  text: string,
+  from: number,
+  to: number,
+  marks: Uint16Array,
+  markers: InlineMarkers[],
+): void {
   if (to - from > MAX_PARSED_LINE_LENGTH) return;
   const line = text.slice(from, to);
 
@@ -80,9 +98,10 @@ function paintInline(text: string, from: number, to: number, marks: Uint16Array)
     const start = from + match.index;
     const end = start + match[0].length;
     const size = match[1]?.length ?? 1;
-    paint(marks, start, start + size, MARK_SYNTAX);
-    paint(marks, end - size, end, MARK_SYNTAX);
+    paint(marks, start, start + size, MARK_HIDDEN);
+    paint(marks, end - size, end, MARK_HIDDEN);
     paint(marks, start + size, end - size, MARK_CODE);
+    markers.push({ start, end, size });
   }
 
   for (const { re, size, marks: flag } of INLINE_RULES) {
@@ -91,17 +110,41 @@ function paintInline(text: string, from: number, to: number, marks: Uint16Array)
       const end = start + match[0].length;
       // Only the markers need to be free; emphasis can contain code or nest.
       if (isClaimed(marks, start, start + size) || isClaimed(marks, end - size, end)) continue;
-      paint(marks, start, start + size, MARK_SYNTAX);
-      paint(marks, end - size, end, MARK_SYNTAX);
+      paint(marks, start, start + size, MARK_HIDDEN);
+      paint(marks, end - size, end, MARK_HIDDEN);
       paint(marks, start + size, end - size, flag);
+      markers.push({ start, end, size });
     }
   }
 }
 
-/** Describe how to display `text`. Ranges are offsets into `text`; plain text has no span. */
-export function parseComposerMarkdown(text: string): ComposerMarkdownSpan[] {
+/** Show the markers of the piece of text `selection` is in or touching. */
+function revealMarkers(
+  marks: Uint16Array,
+  markers: InlineMarkers[],
+  selection: ComposerTextRange,
+): void {
+  for (const { start, end, size } of markers) {
+    if (selection.start > end || selection.end < start) continue;
+    for (const from of [start, end - size]) {
+      for (let i = from; i < from + size; i += 1) {
+        marks[i] = ((marks[i] ?? 0) & ~MARK_HIDDEN) | MARK_SYNTAX;
+      }
+    }
+  }
+}
+
+/**
+ * Describe how to display `text`. Ranges are offsets into `text`; plain text has
+ * no span. Pass the selection to reveal the inline markers around it.
+ */
+export function parseComposerMarkdown(
+  text: string,
+  selection?: ComposerTextRange | null,
+): ComposerMarkdownSpan[] {
   if (!text || text.length > MAX_PARSED_TEXT_LENGTH) return [];
   const marks = new Uint16Array(text.length);
+  const markers: InlineMarkers[] = [];
   let fence: string | null = null;
   let from = 0;
 
@@ -141,10 +184,12 @@ export function parseComposerMarkdown(text: string): ComposerMarkdownSpan[] {
         paint(marks, from, bodyStart, MARK_SYNTAX);
         paint(marks, bodyStart, to, MARK_BOLD);
       }
-      paintInline(text, bodyStart, to, marks);
+      paintInline(text, bodyStart, to, marks, markers);
     }
     from = to + 1;
   }
+
+  if (selection) revealMarkers(marks, markers, selection);
 
   const spans: ComposerMarkdownSpan[] = [];
   for (let i = 0; i < marks.length; ) {
