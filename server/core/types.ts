@@ -641,6 +641,13 @@ export interface SessionStats {
   }[];
   /** Reasoning/thinking output tokens (Codex/OpenAI models). */
   reasoningTokens?: number;
+  /**
+   * Which price table the most recent request was priced at: 'list' (Claude Code's
+   * built-in public rates), 'managed' (org-configured custom rates), or 'unknown'
+   * (no matching pricing row). Last-write-wins across models per turn.
+   * Absent until the first priced request completes; treat absent/'list' the same.
+   */
+  costBasis?: "list" | "managed" | "unknown";
 }
 
 export interface LastMessagePreview {

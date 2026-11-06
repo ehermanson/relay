@@ -2282,6 +2282,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             canonicalModel?: string;
             /** API provider that served this model (SDK >= 0.3.218). */
             provider?: string;
+            /** Which price table was used: 'list', 'managed', or 'unknown' (SDK >= 0.3.246). */
+            costBasis?: "list" | "managed" | "unknown";
           }
         >
       | undefined;
@@ -2296,6 +2298,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         this._stats.outputTokens += usage.outputTokens || 0;
         this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
         this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
+        // costBasis: last-write-wins across models for this turn result.
+        if (usage.costBasis) this._stats.costBasis = usage.costBasis;
       }
       this.emit("stats", { ...this._stats });
     }

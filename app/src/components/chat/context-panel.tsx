@@ -320,6 +320,20 @@ function InstanceContext({
               value={formatTokens(reasoning)}
             />
           )}
+          {safeStats.costBasis === "managed" && (
+            <StatRow
+              label="Pricing"
+              help="This session is billed at your organization's custom managed rates, not Claude Code's standard public list prices."
+              value="Custom (managed)"
+            />
+          )}
+          {safeStats.costBasis === "unknown" && (
+            <StatRow
+              label="Pricing"
+              help="No matching pricing row was found for this model. Cost estimates may be inaccurate."
+              value="Unknown"
+            />
+          )}
           <StatRow
             label="Cache Tokens (read/write)"
             help="Prompt-cache tokens reused from earlier work or written for future reuse. Read tokens may also be counted in input."
