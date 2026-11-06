@@ -403,6 +403,11 @@ export interface ProviderCapabilities {
     isDefault?: boolean;
   }[];
   /**
+   * Operator-configured maximum reasoning effort level (from managed settings).
+   * When present, the UI hides effort options above this cap.
+   */
+  maxEffortLevel?: ReasoningEffort;
+  /**
    * Runtime modes this provider exposes, with labels/descriptions for the UI.
    * Omitted modes are not selectable. Providers that omit this field render no
    * runtime-mode picker. The default mode is `"approval-required"`.
@@ -1335,6 +1340,17 @@ export interface AgentInfo {
   name?: string;
   /** Provider role/type (Claude `subagent_type`, Codex `agentRole`). */
   role?: string;
+  /**
+   * Whether the subagent is running in the background (non-blocking). False or absent = foreground
+   * (the spawning tool call blocks on it). Can flip to true via a task_updated patch.
+   * Set only for local_agent and local_bash tasks (SDK >= 0.3.238).
+   */
+  isBackgrounded?: boolean;
+  /**
+   * Nesting depth of a spawned subagent: 1 for a direct child of the root agent, N+1 for a child
+   * of a depth-N agent. Absent for non-local_agent tasks or SDKs before 0.3.238.
+   */
+  spawnDepth?: number;
   /** Short human description of the assignment (Claude `description`). */
   description?: string;
   /** Full assignment prompt when available. */
