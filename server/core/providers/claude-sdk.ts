@@ -180,6 +180,11 @@ interface QueryHandle extends AsyncIterable<SDKMessageBase> {
   /** Interrupt the running turn. Pass `cancel_queued: true` when the CLI
    *  advertises `interrupt_cancel_queued_v1` to also cancel queued messages. */
   interrupt(opts?: { cancel_queued?: boolean }): Promise<void>;
+  /**
+   * Abort only the foreground task, leaving background agents alive.
+   * Present when the SDK session was started with `perTaskStopAffordance: true`.
+   */
+  stopCurrentTask?(): Promise<void>;
   setPermissionMode(
     mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto",
   ): Promise<void>;
@@ -239,6 +244,12 @@ interface SDKOptions {
    * arrive, so nested transcripts would have no prose.
    */
   forwardSubagentText?: boolean;
+  /**
+   * When true, the per-task stop affordance is enabled: a targeted interrupt
+   * stops only the currently-running foreground task while background agents
+   * continue. SDK >= 0.3.246.
+   */
+  perTaskStopAffordance?: boolean;
   canUseTool?: CanUseTool;
   env?: Record<string, string | undefined>;
   allowedTools?: string[];
@@ -1270,6 +1281,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       effort: toSdkEffort(options.reasoningEffort),
       includePartialMessages: true,
       forwardSubagentText: true,
+      perTaskStopAffordance: true,
       env: buildClaudeSpawnEnv(options.configDir ?? resolveClaudeConfigDir()) as Record<
         string,
         string | undefined
@@ -1468,6 +1480,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       .catch((err) => {
         this.logger.debug(`[SdkSession] Interrupt error (expected): ${err}`);
       });
+  }
+
+  stopCurrentTask(): void {
+    if (this._stopped) return;
+    if (!this.query.stopCurrentTask) return;
+    this.logger.info("[SdkSession] Stopping current task...");
+    this.query.stopCurrentTask().catch((err) => {
+      this.logger.debug(`[SdkSession] stopCurrentTask error (expected): ${err}`);
+    });
   }
 
   close(): void {

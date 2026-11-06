@@ -5330,6 +5330,18 @@ export class InstanceManager extends EventEmitter {
   }
 
   /**
+   * Abort only the currently-running foreground task, leaving background agents
+   * alive. No-op when the provider does not support per-task stop.
+   */
+  async stopCurrentTask(id: string): Promise<void> {
+    await this.enqueueInstanceMutation(id, (instance) => {
+      if (instance.info.external) throw new Error("Cannot stop task on external instances");
+      if (!instance.process) throw new Error("Instance is not running");
+      instance.process.stopCurrentTask?.();
+    });
+  }
+
+  /**
    * Interrupt the current agent turn so queued messages are delivered sooner.
    * The queued messages will be drained by the normal output/exit handler
    * once the process responds to the interrupt.

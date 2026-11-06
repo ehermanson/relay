@@ -776,6 +776,7 @@ export function InstanceViewContent() {
               onQueue={handleQueueWithContext}
               onAnswerUserInput={actions.handleAnswerUserInput}
               onCancel={actions.handleCancel}
+              onStopCurrentTask={actions.handleStopCurrentTask}
               onSwitchProvider={actions.handleSwitchProvider}
               isProcessing={shared.isActive}
               isConnected={shared.isConnected}
