@@ -19,7 +19,7 @@ import type {
 } from "@shared/types";
 import { StatusDot } from "../ui/status-dot";
 import { ProviderLogo } from "../ui/provider-logo";
-import { RateLimitBar, flattenRateLimitWindows } from "../ui/rate-limit-bar";
+import { RateLimitBar, SpendLimitBar, flattenRateLimitWindows } from "../ui/rate-limit-bar";
 import { McpServerList } from "./mcp-server-list";
 
 // =============================================================================
@@ -383,6 +383,7 @@ function ProviderStatusBlock({
     globalState?.account?.email ||
     globalState?.account?.plan ||
     globalState?.account?.rateLimits?.length ||
+    globalState?.account?.spendLimit ||
     globalState?.mcpServers?.length ||
     providerStatus?.mcpServers?.length ||
     providerStatus?.notices?.length ||
@@ -444,14 +445,17 @@ function ProviderStatusBlock({
         </span>
       ) : null}
 
-      {/* Rate limit bars */}
-      {globalState?.account?.rateLimits?.length ? (
+      {/* Rate limit bars + monthly spend limit */}
+      {globalState?.account?.rateLimits?.length || globalState?.account?.spendLimit ? (
         <div className="flex flex-col gap-2 mt-0.5">
-          {flattenRateLimitWindows(globalState.account.rateLimits).map(
+          {flattenRateLimitWindows(globalState.account.rateLimits ?? []).map(
             ({ window, key, qualifier }) => (
               <RateLimitBar key={key} window={window} size="sm" qualifier={qualifier} />
             ),
           )}
+          {globalState.account.spendLimit ? (
+            <SpendLimitBar spendLimit={globalState.account.spendLimit} size="sm" />
+          ) : null}
         </div>
       ) : null}
 
