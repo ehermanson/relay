@@ -787,6 +787,19 @@ export function createWebSocketServer(
             break;
           }
 
+          case "instance_stop_task": {
+            try {
+              await instanceManager.stopCurrentTask(message.instanceId);
+            } catch (err) {
+              sendMessage(ws, {
+                type: "error",
+                message: err instanceof Error ? err.message : "Failed to stop task",
+                instanceId: message.instanceId,
+              });
+            }
+            break;
+          }
+
           case "instance_interrupt_and_send": {
             try {
               await instanceManager.interruptAndSend(

@@ -375,6 +375,11 @@ export function InstanceView({
     send({ type: "instance_cancel", instanceId: id });
   };
 
+  const handleStopCurrentTask = () => {
+    if (!id || !isActive) return;
+    send({ type: "instance_stop_task", instanceId: id });
+  };
+
   const handleInterruptAndSend = (queuedId: string) => {
     if (!id || !isActive) return;
     send({ type: "instance_interrupt_and_send", instanceId: id, queuedId });
@@ -951,6 +956,7 @@ export function InstanceView({
       handleAnswerUserInput,
       handleTakeover,
       handleCancel,
+      handleStopCurrentTask,
       handleInterruptAndSend,
       handleEditQueued,
       handleRemoveQueued,

@@ -418,6 +418,14 @@ export interface ProviderCapabilities {
    */
   interruptCancelQueued?: boolean;
   /**
+   * When true, the provider supports a finer-grained interrupt that aborts only
+   * the currently-running foreground task while leaving background agents alive.
+   * Corresponds to the SDK's `perTaskStopAffordance` session option (SDK >=
+   * 0.3.246). When this is set the UI should offer a "Stop task" button alongside
+   * the existing "Stop all" cancel affordance.
+   */
+  perTaskStop?: boolean;
+  /**
    * Advisory describing whether the provider's installed CLI is current with
    * the latest published version. Populated asynchronously by the version
    * probe; absent or `status: "unknown"` means the probe hasn't completed
@@ -891,6 +899,11 @@ export interface InstanceCancelPayload {
   instanceId: string;
 }
 
+export interface InstanceStopTaskPayload {
+  type: "instance_stop_task";
+  instanceId: string;
+}
+
 export interface InstanceInterruptAndSendPayload {
   type: "instance_interrupt_and_send";
   instanceId: string;
@@ -1029,6 +1042,7 @@ export type ClientMessage =
   | UnsubscribePayload
   | InstanceMessagePayload
   | InstanceCancelPayload
+  | InstanceStopTaskPayload
   | InstanceInterruptAndSendPayload
   | RemoveQueuedMessagePayload
   | ReorderQueuedMessagesPayload
