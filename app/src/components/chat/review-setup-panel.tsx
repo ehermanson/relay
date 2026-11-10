@@ -13,6 +13,23 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useAvailableProviders } from "@/hooks/use-available-providers";
 import { useProviderModels } from "@/hooks/use-provider-models";
 
+const EFFORT_ORDER: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+function filterReasoningEffortLevels(
+  levels:
+    | { effort: ReasoningEffort; label: string; description: string; isDefault?: boolean }[]
+    | undefined,
+  maxEffortLevel: ReasoningEffort | undefined,
+) {
+  if (!levels || !maxEffortLevel) return levels;
+  const cap = EFFORT_ORDER.indexOf(maxEffortLevel);
+  if (cap < 0) return levels;
+  return levels.filter((l) => {
+    const idx = EFFORT_ORDER.indexOf(l.effort);
+    return idx < 0 || idx <= cap;
+  });
+}
+
 function OptionTag({
   label,
   selected,
@@ -83,7 +100,9 @@ export function ReviewSetupPanel({
     defaultModel,
   } = useProviderModels(provider);
   const defaultModelId = defaultModel?.id;
-  const effortLevels = capabilities.reasoningEffortLevels ?? [];
+  const effortLevels =
+    filterReasoningEffortLevels(capabilities.reasoningEffortLevels, capabilities.maxEffortLevel) ??
+    [];
   const sessionFilesUnavailable = sourceFileCount === 0;
 
   useEffect(() => {
