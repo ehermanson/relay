@@ -2052,6 +2052,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         }
         if (typeof msg.prompt === "string" && msg.prompt) patch.assignment = msg.prompt;
         if (msg.skip_transcript === true) patch.statusDetail = "background";
+        if (typeof msg.is_backgrounded === "boolean") patch.isBackgrounded = msg.is_backgrounded;
+        if (typeof msg.spawn_depth === "number") patch.spawnDepth = msg.spawn_depth;
         break;
       }
       case "task_progress": {
@@ -2087,7 +2089,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
           patch.statusDetail = rawPatch.error;
         }
         if (typeof rawPatch.end_time === "number") patch.endedAt = rawPatch.end_time;
-        if (rawPatch.is_backgrounded === true) patch.lastActivity = "Running in background";
+        if (typeof rawPatch.is_backgrounded === "boolean") {
+          patch.isBackgrounded = rawPatch.is_backgrounded;
+          if (rawPatch.is_backgrounded) patch.lastActivity = "Running in background";
+        }
         break;
       }
     }
