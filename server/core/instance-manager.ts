@@ -64,6 +64,7 @@ import {
   getSdkDiscoveredAccountInfo,
   getSdkDiscoveredModels,
   getSdkDiscoveredRateLimits,
+  readMcpResourceLinks,
 } from "#core/providers/claude-sdk.js";
 import type { ClaudeSdkSession } from "#core/providers/claude-sdk.js";
 import {
@@ -8189,7 +8190,7 @@ export class InstanceManager extends EventEmitter {
    * Shared between user-message and assistant-message tool_result handling.
    */
   private handleToolResultBlock(
-    block: { tool_use_id?: string; is_error?: boolean; content?: string },
+    block: { tool_use_id?: string; is_error?: boolean; content?: string; resourceLinks?: unknown },
     timestamp: number,
     ctx: {
       pendingTools?: Map<string, string>;
@@ -8269,6 +8270,7 @@ export class InstanceManager extends EventEmitter {
           });
         }
       }
+      const resourceLinks = readMcpResourceLinks(block.resourceLinks);
       results.push({
         timestamp,
         message: buildToolResultActivity(
@@ -8277,6 +8279,7 @@ export class InstanceManager extends EventEmitter {
           blockContent,
           toolResultMeta,
           block.tool_use_id,
+          resourceLinks,
         ),
       });
     }
@@ -8301,6 +8304,11 @@ export class InstanceManager extends EventEmitter {
       parentToolUseID?: string;
       /** Queued-command attachments carry coordinator notes in child transcripts. */
       attachment?: Record<string, unknown>;
+      /** On `system` `task_notification` entries (SDK task lifecycle). */
+      status?: string;
+      tool_use_id?: string;
+      summary?: string;
+      resource_links?: unknown[];
       message?: {
         role?: string;
         model?: string;
@@ -8364,6 +8372,36 @@ export class InstanceManager extends EventEmitter {
           raw: entry,
         },
       ];
+    }
+    // mcp_task background task completion: emit a tool_result activity with
+    // resource links so the UI can render them. Non-agent (agentKey would be
+    // undefined for mcp_task), so we handle before the agent-task notification path.
+    if (
+      entry.type === "system" &&
+      entry.subtype === "task_notification" &&
+      entry.status === "completed" &&
+      entry.tool_use_id &&
+      Array.isArray(entry.resource_links) &&
+      entry.resource_links.length > 0
+    ) {
+      const resourceLinks = readMcpResourceLinks(entry.resource_links);
+      if (resourceLinks) {
+        const toolName = ctx?.pendingTools?.get(entry.tool_use_id as string);
+        const summary = typeof entry.summary === "string" ? entry.summary : "";
+        return [
+          {
+            timestamp,
+            message: buildToolResultActivity(
+              false,
+              toolName,
+              summary,
+              undefined,
+              entry.tool_use_id as string,
+              resourceLinks,
+            ),
+          },
+        ];
+      }
     }
     if (entry.type === "user" && entry.message?.content) {
       return this.convertUserEntry(entry, timestamp, ctx);

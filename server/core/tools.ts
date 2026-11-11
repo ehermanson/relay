@@ -5,7 +5,7 @@
  * to generate human-readable descriptions of Claude tool usage.
  */
 
-import type { ActivityMessage, TaskItem } from "#core/types.js";
+import type { ActivityMessage, McpResourceLink, TaskItem } from "#core/types.js";
 
 // =============================================================================
 // Shared tool sets
@@ -161,6 +161,7 @@ export function buildToolResultActivity(
   content: string,
   toolResultMeta?: { nonExecutionKind?: string; userFeedback?: string },
   toolUseId?: string,
+  resourceLinks?: McpResourceLink[],
 ): ActivityMessage {
   const denied = isError && isPermissionDenial(content);
   const deniedTool = denied ? toolName || "Unknown" : undefined;
@@ -182,6 +183,7 @@ export function buildToolResultActivity(
     permissionDenied: deniedTool,
     resolution: resolution ?? undefined,
     ...(toolResultMeta ? { toolResultMeta } : {}),
+    ...(resourceLinks?.length ? { resourceLinks } : {}),
   };
 }
 
