@@ -1239,6 +1239,16 @@ export interface EditToolInput {
   movePath?: string;
 }
 
+/** A structured resource reference from an MCP tool result (SDK >= 0.3.257). */
+export interface McpResourceLink {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+}
+
 export interface ActivityMessage {
   type: "activity";
   activity: "tool_use" | "tool_result" | "thinking" | "task_list" | "file_list";
@@ -1273,6 +1283,11 @@ export interface ActivityMessage {
    * child agent with this Relay agent key and belongs in its nested transcript.
    */
   agentId?: string;
+  /**
+   * Structured resource references from an MCP tool result (SDK >= 0.3.257).
+   * Present on tool_result activities when the MCP server included resource links.
+   */
+  resourceLinks?: McpResourceLink[];
   /** Raw SDK/provider message for debug display. */
   raw?: unknown;
 }

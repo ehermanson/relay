@@ -29,6 +29,7 @@ import type {
   ExitMessage,
   ActivityMessage,
   EditToolInput,
+  McpResourceLink,
   TaskItem,
   FileChange,
   SessionStats,
@@ -2014,6 +2015,35 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     const toolUseId =
       typeof msg.tool_use_id === "string" && msg.tool_use_id ? msg.tool_use_id : undefined;
     const agentKey = this.resolveTaskAgentKey(msg);
+
+    // For completed mcp_task notifications with resource links, emit a tool_result
+    // activity patching the pending tool call so the UI shows the resource links.
+    // These are not agent tasks (agentKey is undefined), so handle before the guard.
+    if (
+      !agentKey &&
+      subtype === "task_notification" &&
+      toolUseId &&
+      msg.status === "completed" &&
+      Array.isArray(msg.resource_links) &&
+      msg.resource_links.length > 0
+    ) {
+      const resourceLinks = readMcpResourceLinks(msg.resource_links);
+      if (resourceLinks) {
+        const toolName = this.pendingTools.get(toolUseId);
+        const summary = typeof msg.summary === "string" ? msg.summary : "";
+        const activity = buildToolResultActivity(
+          false,
+          toolName,
+          summary,
+          undefined,
+          toolUseId,
+          resourceLinks,
+        );
+        this.emit("activity", activity);
+      }
+      return;
+    }
+
     if (!agentKey) return;
 
     if (subtype === "task_notification") {
@@ -2885,7 +2915,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // For non-task tools, emit a tool_result activity
     const meta = this.pendingToolResultMeta.get(toolUseId);
     this.pendingToolResultMeta.delete(toolUseId);
-    const activity = buildToolResultActivity(isError, toolName, content, meta, toolUseId);
+    const resourceLinks = readMcpResourceLinks(block.resourceLinks);
+    const activity = buildToolResultActivity(
+      isError,
+      toolName,
+      content,
+      meta,
+      toolUseId,
+      resourceLinks,
+    );
     if (agentKey) activity.agentId = agentKey;
     this.emit("activity", activity);
   }
@@ -3078,4 +3116,26 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       this.timeoutHandle = null;
     }
   }
+}
+
+/**
+ * Parse a raw `resource_links` / `resourceLinks` array from an SDK message
+ * into typed `McpResourceLink[]`. Returns `undefined` if there are no valid links.
+ */
+export function readMcpResourceLinks(raw: unknown): McpResourceLink[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const links: McpResourceLink[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.uri !== "string" || !r.uri) continue;
+    if (typeof r.name !== "string") continue;
+    const link: McpResourceLink = { uri: r.uri, name: r.name };
+    if (typeof r.title === "string") link.title = r.title;
+    if (typeof r.description === "string") link.description = r.description;
+    if (typeof r.mimeType === "string") link.mimeType = r.mimeType;
+    if (typeof r.size === "number") link.size = r.size;
+    links.push(link);
+  }
+  return links.length ? links : undefined;
 }
