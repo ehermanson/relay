@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChevronRight, Brain, ShieldAlert, CircleX, CircleCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { EditToolInput, UserInputAnswer } from "@shared/types";
+import type { EditToolInput, McpResourceLink, UserInputAnswer } from "@shared/types";
 import type { ActivityKind, Resolution, ResultStatus } from "@/lib/chat-types";
 import { getToolIcon } from "@/lib/tool-icons";
 import { FileIcon } from "@/components/ui/file-icon";
@@ -35,6 +35,8 @@ interface ActivityEntryProps {
   resultDetail?: string;
   /** SDK-reported reason a tool was not executed (denied, interrupted, cancelled). */
   toolResultMeta?: { nonExecutionKind?: string; userFeedback?: string };
+  /** MCP resource links from the tool result (SDK >= 0.3.257). */
+  resourceLinks?: McpResourceLink[];
 }
 
 /** Tools where we show a file-type icon instead of the generic tool icon. */
@@ -158,6 +160,7 @@ export function ActivityEntry({
   resultStatus,
   resultDetail,
   toolResultMeta,
+  resourceLinks,
 }: ActivityEntryProps) {
   const hasRichContent = !!tool && (!!input || !!detail || !!resultDetail);
   const isPermDenied = !!permissionDenied;
@@ -290,6 +293,57 @@ export function ActivityEntry({
           </motion.div>
         )}
       </AnimatePresence>
+      {resourceLinks && resourceLinks.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1 pl-[18px] pr-2 pb-1">
+          {resourceLinks.map((link, i) => (
+            <ResourceLinkChip key={i} link={link} />
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+function ResourceLinkChip({ link }: { link: McpResourceLink }) {
+  const isUrl = link.uri.startsWith("http://") || link.uri.startsWith("https://");
+  const isFile =
+    link.uri.startsWith("file://") ||
+    link.uri.startsWith("/") ||
+    link.uri.startsWith("./") ||
+    link.uri.startsWith("../");
+  const label = link.title || link.name;
+  const title = link.description ? `${label}: ${link.description}` : label;
+
+  if (isUrl) {
+    return (
+      <a
+        href={link.uri}
+        target="_blank"
+        rel="noreferrer"
+        title={title}
+        className="inline-flex items-center gap-1 rounded bg-muted/10 px-1.5 py-0.5 text-[0.625rem] text-muted/80 transition-colors hover:bg-muted/15 hover:text-text-bright"
+      >
+        {label}
+      </a>
+    );
+  }
+  if (isFile) {
+    const displayPath = link.uri.startsWith("file://") ? link.uri.slice(7) : link.uri;
+    return (
+      <span
+        title={title}
+        className="inline-flex items-center gap-1 rounded bg-muted/10 px-1.5 py-0.5 text-[0.625rem] text-muted/80"
+      >
+        {displayPath}
+      </span>
+    );
+  }
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-1 rounded bg-muted/10 px-1.5 py-0.5 text-[0.625rem] text-muted/80"
+    >
+      {label}
+    </span>
   );
 }

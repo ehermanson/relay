@@ -136,6 +136,7 @@ export type {
   ExitMessage,
   ErrorMessage,
   ActivityMessage,
+  McpResourceLink,
   InstanceListMessage,
   InstanceCreatedMessage,
   InstanceRemovedMessage,
