@@ -461,6 +461,31 @@ export interface ProviderCapabilities {
   accountLoginHowTo?: AccountLoginHowTo;
 }
 
+/** Lifecycle of a Workstream. `done` hides it from the sidebar; nothing else changes. */
+export type WorkstreamStatus = "active" | "paused" | "done";
+
+/**
+ * A long-lived, account-scoped grouping of chats: a folder in the sidebar and
+ * a chip on each member chat. Spans projects and has no git semantics. See
+ * `plans/workstreams.md`.
+ */
+export interface Workstream {
+  id: string;
+  /** Owning account (`DEFAULT_ACCOUNT_ID` for the default account). */
+  accountId: string;
+  name: string;
+  status: WorkstreamStatus;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `GET /api/workstreams`: the account's workstreams plus chat membership. */
+export interface WorkstreamsSnapshot {
+  workstreams: Workstream[];
+  /** Chat (instance) id → workstream id. A chat belongs to at most one. */
+  members: Record<string, string>;
+}
+
 /** Id of the implicit account backed by the server's own provider dirs. */
 export const DEFAULT_ACCOUNT_ID = "default";
 

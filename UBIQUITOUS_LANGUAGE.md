@@ -23,6 +23,7 @@
 | **MCP server**       | A Provider-reported Model Context Protocol integration that exposes tools to a **Chat**.   | Plugin, app                    |
 | **MCP availability** | Whether the active **Provider** reports an MCP server as loaded for a particular **Chat**. | Configured, installed          |
 | **Delegated task**   | Work one **Chat** hands to a child **Chat** through Relay orchestration.                   | Subagent, space                |
+| **Workstream**       | A long-lived, account-scoped group of **Chats** for one effort, across **Projects**.       | Epic, folder, tag, space       |
 | **Read-only chat**   | A **Chat** whose recorded working directory no longer exists; readable, never resumed.     | Archived chat, closed chat     |
 
 ## Planning and tasking
@@ -45,6 +46,7 @@
 - A **Transcript** belongs to exactly one **Chat**
 - A **Project** can contain zero or more **Tasks**
 - A **Delegated task** runs in a child **Chat** that shares its parent's **Checkout**
+- A **Workstream** groups **Chats** of one **Account** across **Projects**; a **Chat** belongs to at most one
 
 ## Flagged ambiguities
 

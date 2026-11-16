@@ -45,6 +45,7 @@ import { registerWorkspaceRoutes } from "#server/routes/workspace.js";
 import { registerRepoStatusRoutes } from "#server/routes/repo-status.js";
 import { registerSpinOffRoutes } from "#server/routes/spin-offs.js";
 import { registerSystemUpdateRoutes } from "#server/routes/system-update.js";
+import { registerWorkstreamRoutes } from "#server/routes/workstreams.js";
 import type { AppEnv, HttpDeps } from "#server/route-types.js";
 import { UpdateManager, type UpdateService } from "#server/update-manager.js";
 
@@ -310,6 +311,7 @@ export function createRequestHandler(
   registerSearchRoutes(app, deps);
   registerSettingsRoutes(app, deps);
   registerSystemUpdateRoutes(app, deps);
+  registerWorkstreamRoutes(app, deps);
   registerMcpRoutes(app, deps);
   registerUiRoutes(app, deps);
 

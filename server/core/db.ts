@@ -20,11 +20,25 @@ import {
   type DelegatedTaskInfo,
   type DelegatedTaskStatus,
   type ProviderKind,
+  type Workstream,
+  type WorkstreamStatus,
 } from "#core/types.js";
 
 const CURRENT_SCHEMA_VERSION = 26;
 type SQLiteBindValue = string | number | bigint | null | NodeJS.ArrayBufferView;
 type SQLiteBindParams = Record<string, SQLiteBindValue>;
+
+function rowToWorkstream(row: Record<string, unknown>): Workstream {
+  const status = row.status;
+  return {
+    id: String(row.id),
+    accountId: String(row.account_id),
+    name: String(row.name),
+    status: status === "paused" || status === "done" ? status : "active",
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
 
 function asBindParams<T extends object>(value: T): SQLiteBindParams {
   return value as unknown as SQLiteBindParams;
@@ -874,6 +888,130 @@ export class SessionDB {
     if (!taskColumns.some((column) => column.name === "first_ended_at")) {
       this.db.exec("ALTER TABLE delegated_tasks ADD COLUMN first_ended_at INTEGER");
     }
+
+    // Workstreams: long-lived chat groupings (added without a schema-version
+    // bump). Membership is its own table so a chat could belong to several
+    // later; one-per-chat is enforced in `setChatWorkstream`, not here.
+    // Membership rows are never cascaded from the session tables: `sessions`
+    // is a rebuildable index, and a rebuild must not drop a chat's workstream.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS workstreams (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        folder_path TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workstream_members (
+        workstream_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        joined_at INTEGER NOT NULL,
+        removed_at INTEGER,
+        PRIMARY KEY (workstream_id, instance_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workstream_members_instance
+        ON workstream_members(instance_id);
+    `);
+  }
+
+  listWorkstreams(accountId: string): Workstream[] {
+    const rows = this.db
+      .prepare("SELECT * FROM workstreams WHERE account_id = ? ORDER BY created_at ASC, id ASC")
+      .all(accountId) as Record<string, unknown>[];
+    return rows.map(rowToWorkstream);
+  }
+
+  getWorkstream(id: string): Workstream | null {
+    const row = this.db.prepare("SELECT * FROM workstreams WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? rowToWorkstream(row) : null;
+  }
+
+  insertWorkstream(workstream: Workstream): void {
+    this.db
+      .prepare(
+        `INSERT INTO workstreams (id, account_id, name, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        workstream.id,
+        workstream.accountId,
+        workstream.name,
+        workstream.status,
+        workstream.createdAt,
+        workstream.updatedAt,
+      );
+  }
+
+  updateWorkstream(
+    id: string,
+    patch: { name?: string; status?: WorkstreamStatus },
+    now: number,
+  ): Workstream | null {
+    const current = this.getWorkstream(id);
+    if (!current) return null;
+    this.db
+      .prepare("UPDATE workstreams SET name = ?, status = ?, updated_at = ? WHERE id = ?")
+      .run(patch.name ?? current.name, patch.status ?? current.status, now, id);
+    return this.getWorkstream(id);
+  }
+
+  /** Delete a workstream and its membership rows. Chats themselves are untouched. */
+  deleteWorkstream(id: string): boolean {
+    return this.withTransaction(() => {
+      this.db.prepare("DELETE FROM workstream_members WHERE workstream_id = ?").run(id);
+      const result = this.db.prepare("DELETE FROM workstreams WHERE id = ?").run(id);
+      return Number(result.changes) > 0;
+    });
+  }
+
+  /**
+   * Put a chat in one workstream, or in none with `null`. A chat belongs to at
+   * most one: its other memberships are marked removed (kept, so a later
+   * automatic source never re-links a chat the user took out).
+   */
+  setChatWorkstream(
+    instanceId: string,
+    workstreamId: string | null,
+    source: string,
+    now: number,
+  ): void {
+    this.withTransaction(() => {
+      this.db
+        .prepare(
+          `UPDATE workstream_members SET removed_at = ?
+           WHERE instance_id = ? AND removed_at IS NULL AND workstream_id IS NOT ?`,
+        )
+        .run(now, instanceId, workstreamId);
+      if (!workstreamId) return;
+      this.db
+        .prepare(
+          `INSERT INTO workstream_members (workstream_id, instance_id, source, joined_at, removed_at)
+           VALUES (?, ?, ?, ?, NULL)
+           ON CONFLICT(workstream_id, instance_id)
+           DO UPDATE SET source = excluded.source, joined_at = excluded.joined_at, removed_at = NULL`,
+        )
+        .run(workstreamId, instanceId, source, now);
+    });
+  }
+
+  /** Chat id → workstream id for every current member of the account's workstreams. */
+  listWorkstreamMembers(accountId: string): Record<string, string> {
+    const rows = this.db
+      .prepare(
+        `SELECT m.instance_id AS instance_id, m.workstream_id AS workstream_id
+         FROM workstream_members m JOIN workstreams w ON w.id = m.workstream_id
+         WHERE w.account_id = ? AND m.removed_at IS NULL`,
+      )
+      .all(accountId) as Array<{ instance_id: string; workstream_id: string }>;
+    const members: Record<string, string> = {};
+    for (const row of rows) members[row.instance_id] = row.workstream_id;
+    return members;
   }
 
   insertDelegatedTask(task: DelegatedTaskRecord): void {

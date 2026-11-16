@@ -47,5 +47,5 @@ export function useInboxNavigationModel(
     [projectEntries, enabled],
   );
 
-  return { ...controller, active, done, projectOptions };
+  return { ...controller, allEntries, active, done, projectOptions };
 }

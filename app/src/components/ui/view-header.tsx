@@ -95,6 +95,8 @@ interface MobileViewHeaderProps {
   actions?: ReactNode;
   /** Dialogs or other siblings rendered at the end of the header. */
   children?: ReactNode;
+  /** Extra items for the subtitle line, after the branch. */
+  meta?: ReactNode;
 }
 
 export function MobileViewHeader({
@@ -102,6 +104,7 @@ export function MobileViewHeader({
   projectId,
   projectLabel,
   gitBranch,
+  meta,
   actions,
   children,
 }: MobileViewHeaderProps) {
@@ -123,6 +126,7 @@ export function MobileViewHeader({
               </span>
             </>
           )}
+          {meta}
         </div>
       </div>
       {actions}

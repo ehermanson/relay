@@ -12,6 +12,7 @@ import { getInstanceProjectRouteId } from "@/lib/project-route";
 import { formatTimeAgo, getChatBranch, getChatSortTimestamp } from "@/lib/utils";
 import { useUnreadStore, selectHasUnread } from "@/stores/unread-store";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
+import { ChatWorkstreamLine } from "@/components/workstreams/workstream-chip";
 import type { InstanceInfo } from "@shared/types";
 
 interface SidebarItemProps {
@@ -151,6 +152,7 @@ export function SidebarItem({
             <span className="truncate">{getChatBranch(instance)}</span>
           </div>
         )}
+        {!editing && <ChatWorkstreamLine instanceId={instance.id} />}
         {!editing && isChild && parentInstance && (
           <Tooltip content={`Continued from "${parentInstance.name}"`} side="bottom">
             <button

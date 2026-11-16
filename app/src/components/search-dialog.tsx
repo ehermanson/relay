@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WorkstreamDot, WorkstreamLabel } from "@/components/workstreams/workstream-chip";
+import { useSidebarLayout } from "@/hooks/use-global-settings";
+import { useWorkstreams } from "@/hooks/use-workstreams";
+import { useWorkstreamUiStore } from "@/stores/workstream-ui-store";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, FolderOpen, GitBranch, Globe, MessageSquare } from "lucide-react";
@@ -49,6 +53,9 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const { projectId: routeProjectId } = useParams({ strict: false }) as { projectId?: string };
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const { workstreams, workstreamFor } = useWorkstreams();
+  const revealWorkstream = useWorkstreamUiStore((state) => state.reveal);
+  const hasWorkstreamFolders = useSidebarLayout() === "inbox";
 
   // Reset state when dialog opens — always back to global scope
   useEffect(() => {
@@ -143,7 +150,15 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
           .filter((p) => !filterProjectId || p.id === filterProjectId)
           .filter((p) => p.name.toLowerCase().includes(localQuery))
           .slice(0, 3);
-  const hasLocalMatches = projectMatches.length > 0;
+  // Workstreams match the same way. Selecting one opens its sidebar folder,
+  // so they are offered only where folders exist (the Inbox layout).
+  const workstreamMatches =
+    localQuery.length < 2 || !hasWorkstreamFolders || filterProjectId
+      ? []
+      : workstreams
+          .filter((w) => w.status !== "done" && w.name.toLowerCase().includes(localQuery))
+          .slice(0, 3);
+  const hasLocalMatches = projectMatches.length > 0 || workstreamMatches.length > 0;
 
   const handleSelect = useCallback(
     (result: SearchResultItem) => {
@@ -257,6 +272,30 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                 ))}
               </CommandGroup>
             )}
+            {workstreamMatches.length > 0 && (
+              <CommandGroup heading="Workstreams">
+                {workstreamMatches.map((w) => (
+                  <CommandItem
+                    key={`workstream-${w.id}`}
+                    value={`workstream-${w.id}`}
+                    onSelect={() => {
+                      onOpenChange(false);
+                      revealWorkstream(w.id);
+                    }}
+                    className="!py-2 !px-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="flex w-[13px] shrink-0 justify-center">
+                        <WorkstreamDot workstream={w} />
+                      </span>
+                      <span className="truncate text-[0.8125rem] font-medium text-text-bright">
+                        {w.name}
+                      </span>
+                    </div>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
             {results.length === 0 && !isFetching ? (
               !hasLocalMatches && (
                 <CommandEmpty>
@@ -310,6 +349,11 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                           <span className="flex items-center gap-0.5 text-[0.625rem] text-muted/70">
                             <FolderOpen size={10} />
                             {projectNameById.get(result.projectId) ?? "Unknown"}
+                          </span>
+                        )}
+                        {workstreamFor(result.instanceId) && (
+                          <span className="flex min-w-0 text-[0.625rem]">
+                            <WorkstreamLabel workstream={workstreamFor(result.instanceId)!} />
                           </span>
                         )}
                         {Date.now() - getResultRecencyAt(result) < 86_400_000 && (

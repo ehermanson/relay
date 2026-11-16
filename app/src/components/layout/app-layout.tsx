@@ -9,6 +9,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { NoProvidersLanding } from "@/components/no-providers-landing";
 import { ProviderUpdateNotification } from "@/components/provider-update-notification";
 import { SearchDialog, useSearchDialog } from "@/components/search-dialog";
+import { WorkstreamDialogs } from "@/components/workstreams/workstream-dialogs";
 import { RelayLogo } from "@/components/ui/relay-logo";
 import { SwipeableDrawer } from "@/components/ui/swipeable-drawer";
 import { useInstalledProviders } from "@/hooks/use-available-providers";
@@ -153,6 +154,7 @@ export function AppLayout() {
         )}
         <SearchDialog open={search.open} onOpenChange={search.setOpen} />
         {toaster}
+        <WorkstreamDialogs />
         <ProviderUpdateNotification />
       </div>
     );
@@ -202,6 +204,7 @@ export function AppLayout() {
       )}
       <SearchDialog open={search.open} onOpenChange={search.setOpen} />
       {toaster}
+      <WorkstreamDialogs />
       <ProviderUpdateNotification />
     </>
   );

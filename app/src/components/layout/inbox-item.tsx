@@ -21,6 +21,7 @@ import type { TerminalScope } from "@shared/types";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { getInstanceProjectRouteId } from "@/lib/project-route";
 import { ChatActionsMenuContent } from "./chat-actions-menu";
+import { ChatWorkstreamLabel } from "@/components/workstreams/workstream-chip";
 import {
   deriveInstanceStatusPresentation,
   formatTimeAgo,
@@ -164,9 +165,11 @@ interface InboxItemProps {
   isActive: boolean;
   /** Currently active chatId — used to offer "Open in split view". */
   activeChatId?: string;
+  /** Inside a Workstream folder the label would repeat the folder's name. */
+  hideWorkstream?: boolean;
 }
 
-export function InboxItem({ entry, isActive, activeChatId }: InboxItemProps) {
+export function InboxItem({ entry, isActive, activeChatId, hideWorkstream }: InboxItemProps) {
   const { instance } = entry;
   const actions = useSidebarActions();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -226,7 +229,10 @@ export function InboxItem({ entry, isActive, activeChatId }: InboxItemProps) {
         {/* Line 1 — project. Reserves room on the right for the timestamp/menu,
             which is anchored to this line's band; lines 2–3 below get full width. */}
         <div className="flex min-w-0 items-center gap-1 pr-10 text-[0.6875rem] leading-tight text-muted">
-          <span className="min-w-0 truncate font-medium text-muted/80">{entry.projectName}</span>
+          <span className="max-w-[55%] shrink-0 truncate font-medium text-muted/80">
+            {entry.projectName}
+          </span>
+          {!hideWorkstream && <ChatWorkstreamLabel instanceId={instance.id} />}
         </div>
 
         {/* Line 2 — chat title */}

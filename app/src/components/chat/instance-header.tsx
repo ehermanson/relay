@@ -35,6 +35,7 @@ import {
   MobileViewHeader,
 } from "../ui/view-header";
 import { ProjectBreadcrumb } from "../ui/project-breadcrumb";
+import { ChatWorkstreamChip, ChatWorkstreamLabel } from "../workstreams/workstream-chip";
 import { OpenInMenu } from "../project/open-in-menu";
 import { HeaderContextToggle, HeaderIconSkeleton, HeaderTerminalToggle } from "./header-actions";
 import { CommitMessageDialog } from "../git/commit-message-dialog";
@@ -634,6 +635,7 @@ export function InstanceHeader({
         projectId={projectId}
         projectLabel={getProjectName(instance.workingDirectory)}
         gitBranch={displayBranchName}
+        meta={<ChatWorkstreamLabel instanceId={instance.id} />}
         actions={
           <SidecarToggles
             loading={loadingSidecarActions}
@@ -704,6 +706,7 @@ export function InstanceHeader({
             {instance.name}
           </h1>
         )}
+        <ChatWorkstreamChip instanceId={instance.id} />
         <span className="view-header-badge contents">
           {promotedProviderNotice ? (
             <Tooltip

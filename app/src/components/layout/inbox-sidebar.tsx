@@ -29,6 +29,9 @@ import {
   type InboxProjectOption,
 } from "@/hooks/use-inbox-navigation-model";
 import { useDoneSectionDisclosure, useDoneTransitionPulse } from "@/hooks/use-done-section";
+import { useWorkstreams } from "@/hooks/use-workstreams";
+import { excludeFolderedEntries } from "@/lib/workstreams";
+import { WorkstreamsSection } from "@/components/workstreams/workstreams-section";
 import { setInstancesDone } from "@/lib/api";
 import {
   capInboxEntries,
@@ -270,8 +273,9 @@ export function InboxSidebar({
   const queryClient = useQueryClient();
 
   const {
-    active,
-    done,
+    allEntries,
+    active: projectActive,
+    done: projectDone,
     projectOptions,
     projects,
     projectByDir,
@@ -284,6 +288,17 @@ export function InboxSidebar({
     moveToTop,
     moveUp,
   } = useInboxNavigationModel(projectFilter);
+
+  // A chat in a Workstream lives in its folder, not in the inbox lists.
+  const { workstreams, members } = useWorkstreams();
+  const active = useMemo(
+    () => excludeFolderedEntries(projectActive, members, workstreams),
+    [projectActive, members, workstreams],
+  );
+  const done = useMemo(
+    () => excludeFolderedEntries(projectDone, members, workstreams),
+    [projectDone, members, workstreams],
+  );
 
   const currentId = currentChatId;
   const currentEntry = [...active, ...done].find((entry) =>
@@ -434,6 +449,7 @@ export function InboxSidebar({
             </div>
           ) : (
             <>
+              <WorkstreamsSection entries={allEntries} currentChatId={currentId} />
               <div className="px-2">
                 {active.length > 0 ? (
                   <>

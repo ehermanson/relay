@@ -13,6 +13,7 @@ import { Menu } from "@/components/ui/menu";
 import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { useSidebarLayout } from "@/hooks/use-global-settings";
 import { isChatDone } from "@/lib/utils";
+import { ChatWorkstreamSubmenu } from "@/components/workstreams/chat-workstream-submenu";
 import type { InstanceInfo } from "@shared/types";
 
 export function ChatActionsMenuContent({
@@ -66,6 +67,7 @@ export function ChatActionsMenuContent({
         )}
         {instance.pinned ? "Unpin" : "Pin"}
       </Menu.Item>
+      <ChatWorkstreamSubmenu instanceId={instance.id} />
       <Menu.Item onClick={stop(onRename)}>
         <Pencil size={13} strokeWidth={2} className="text-muted" />
         Rename

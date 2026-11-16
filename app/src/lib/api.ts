@@ -15,6 +15,9 @@ import type {
   SpinOffInfo,
   UpdateInstallResult,
   UpdateSnapshot,
+  Workstream,
+  WorkstreamStatus,
+  WorkstreamsSnapshot,
 } from "@shared/types";
 import { getDefaultProviderCapabilities } from "@shared/provider-catalog";
 
@@ -1207,4 +1210,60 @@ export async function answerUiView(
     const data = await res.json().catch(() => ({ error: "Couldn't send" }));
     throw new ApiError(data.error || "Couldn't send", res.status);
   }
+}
+
+// ── Workstreams ─────────────────────────────────────────────────────────────
+
+async function readWorkstreamError(res: Response, fallback: string): Promise<never> {
+  const data = await res.json().catch(() => ({ error: fallback }));
+  throw new ApiError(data.error || fallback, res.status);
+}
+
+export async function fetchWorkstreams(accountId?: string): Promise<WorkstreamsSnapshot> {
+  const query = accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
+  const res = await fetch(`/api/workstreams${query}`);
+  if (!res.ok) return readWorkstreamError(res, "Failed to load workstreams");
+  const data = (await res.json()) as Partial<WorkstreamsSnapshot>;
+  return { workstreams: data.workstreams ?? [], members: data.members ?? {} };
+}
+
+export async function createWorkstream(name: string, accountId?: string): Promise<Workstream> {
+  const res = await fetch("/api/workstreams", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, accountId }),
+  });
+  if (!res.ok) return readWorkstreamError(res, "Failed to create workstream");
+  return ((await res.json()) as { workstream: Workstream }).workstream;
+}
+
+export async function updateWorkstream(
+  id: string,
+  patch: { name?: string; status?: WorkstreamStatus },
+): Promise<Workstream> {
+  const res = await fetch(`/api/workstreams/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return readWorkstreamError(res, "Failed to update workstream");
+  return ((await res.json()) as { workstream: Workstream }).workstream;
+}
+
+export async function deleteWorkstream(id: string): Promise<void> {
+  const res = await fetch(`/api/workstreams/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) return readWorkstreamError(res, "Failed to delete workstream");
+}
+
+/** Put a chat in one workstream, or in none with `null`. */
+export async function setChatWorkstream(
+  instanceId: string,
+  workstreamId: string | null,
+): Promise<void> {
+  const res = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/workstream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workstreamId }),
+  });
+  if (!res.ok) return readWorkstreamError(res, "Failed to update workstream");
 }
