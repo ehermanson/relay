@@ -28,12 +28,7 @@ import { Input } from "../ui/input";
 import { Tooltip } from "../ui/tooltip";
 import { Menu } from "../ui/menu";
 import { GitBadge, type GitBadgePendingAction } from "../ui/git-badge";
-import {
-  ViewHeader,
-  ViewHeaderTitle,
-  MobileSidebarToggle,
-  MobileViewHeader,
-} from "../ui/view-header";
+import { ViewHeader, ViewHeaderTitle, SidebarToggle, MobileViewHeader } from "../ui/view-header";
 import { ProjectBreadcrumb } from "../ui/project-breadcrumb";
 import { ChatWorkstreamChip, ChatWorkstreamLabel } from "../workstreams/workstream-chip";
 import { OpenInMenu } from "../project/open-in-menu";
@@ -681,7 +676,7 @@ export function InstanceHeader({
 
   return (
     <ViewHeader style={{ containerName: "view-header", containerType: "inline-size" }}>
-      <MobileSidebarToggle />
+      <SidebarToggle />
       <span className="view-header-breadcrumb contents">
         <ProjectBreadcrumb
           projectId={projectId}

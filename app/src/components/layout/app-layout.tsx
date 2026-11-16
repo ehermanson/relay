@@ -1,10 +1,9 @@
 import { DesktopCommands } from "@/components/layout/desktop-commands";
 import { getDesktop } from "@/lib/desktop";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { Toaster } from "sonner";
 import { InboxSidebar } from "@/components/layout/inbox-sidebar";
-import { MiniSidebar } from "@/components/layout/mini-sidebar";
 import { Sidebar } from "@/components/layout/sidebar";
 import { NoProvidersLanding } from "@/components/no-providers-landing";
 import { ProviderUpdateNotification } from "@/components/provider-update-notification";
@@ -63,19 +62,6 @@ export function AppLayout() {
   });
 
   const sidebarWidth = dragWidth ?? storedWidth;
-
-  // Delay content swap until after the collapse animation finishes
-  const [showMini, setShowMini] = useState(collapsed);
-  useEffect(() => {
-    if (collapsed) {
-      // Wait for the width transition to finish before swapping to MiniSidebar
-      const timer = setTimeout(() => setShowMini(true), 200);
-      return () => clearTimeout(timer);
-    } else {
-      // When expanding, show the full sidebar immediately
-      setShowMini(false);
-    }
-  }, [collapsed]);
 
   // Auto-close mobile sidebar overlay on navigation
   useEffect(() => {
@@ -167,18 +153,22 @@ export function AppLayout() {
           {/* Animated sidebar container */}
           <div
             ref={sidebarRef}
-            className={`app-shell-sidebar relative overflow-hidden ${isResizing ? "" : "transition-[width] duration-200 ease-in-out"}`}
-            style={{ width: collapsed ? (desktopMac ? 80 : 48) : sidebarWidth }}
+            // Collapsing hides the sidebar completely; page headers carry the
+            // way back (`SidebarToggle`). It stays mounted so reopening is
+            // instant, and `inert` keeps the hidden controls out of tab order.
+            inert={collapsed}
+            className={`app-shell-sidebar relative overflow-hidden ${collapsed ? "app-shell-sidebar-hidden" : ""} ${isResizing ? "" : "transition-[width,margin] duration-200 ease-in-out"}`}
+            style={{ width: collapsed ? 0 : sidebarWidth }}
           >
-            {showMini ? (
-              <MiniSidebar onExpand={toggleCollapsed} />
-            ) : (
+            {/* Fixed-width inner box: the sidebar slides shut instead of
+                reflowing its rows as the container narrows. */}
+            <div className="h-full" style={{ width: sidebarWidth }}>
               <SidebarComponent
                 showLogo={desktopMac}
                 onCollapse={toggleCollapsed}
                 onSearchOpen={() => search.setOpen(true)}
               />
-            )}
+            </div>
             {/* Persistent logo – never unmounts, sits above both sidebars */}
             <Link
               to="/"

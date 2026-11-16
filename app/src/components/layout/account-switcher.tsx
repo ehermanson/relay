@@ -2,10 +2,9 @@
  * Top-level account switcher — the browser-profile-style control that decides
  * which account everything in view belongs to.
  *
- * Three surfaces share one menu: the pill at the top of the sidebar (both
- * layouts via `SidebarHeader`, which the mobile drawer hosts too), the
- * collapsed rail's avatar button, and the compact pill in the mobile Home
- * header. Renders nothing below two accounts, so a single-account install
+ * Two surfaces share one menu: the pill at the top of the sidebar (both
+ * layouts via `SidebarHeader`, which the mobile drawer hosts too) and the
+ * compact pill in the mobile Home header. Renders nothing below two accounts, so a single-account install
  * never grows a control. Switching changes the per-browser choice, re-runs
  * route loaders, and leaves a project-scoped route (chat, project page)
  * for the app root so the previous account's chat can't stay open unlabelled;
@@ -15,20 +14,15 @@
 import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Menu } from "@/components/ui/menu";
-import { Tooltip } from "@/components/ui/tooltip";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useInstalledProviders } from "@/hooks/use-available-providers";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import {
-  accountLoginLine,
-  accountLoginSummary,
-  accountPrimaryIdentity,
-} from "@/lib/account-identity";
+import { accountLoginLine, accountPrimaryIdentity } from "@/lib/account-identity";
 import { accountInitial, isProjectScopedPath } from "@/lib/account-scope";
 import { getProviderDisplayName } from "@shared/provider-catalog";
 import type { AccountStatus, ProviderKind } from "@shared/types";
 
-type AccountSwitcherVariant = "pill" | "rail" | "compact";
+type AccountSwitcherVariant = "pill" | "compact";
 
 /** Tinted monogram — the account's visual identity on every surface. */
 function AccountMonogram({
@@ -154,8 +148,6 @@ export function AccountSwitcher({
   const providerOrder = providers.map((p) => p.provider);
   const providerLabel = (provider: ProviderKind) =>
     providers.find((p) => p.provider === provider)?.label ?? getProviderDisplayName(provider);
-  // Tooltip text for the rail: the full per-provider summary in words.
-  const identity = accountLoginSummary(active, providerLabel, providerOrder);
   // The pill is one narrow line: the first login's email identifies the
   // account, and each provider's identity is one click away in the menu.
   const pillIdentity = accountPrimaryIdentity(active, providerLabel, providerOrder);
@@ -184,24 +176,6 @@ export function AccountSwitcher({
       onManage={manage}
     />
   );
-
-  if (variant === "rail") {
-    return (
-      <Menu.Root>
-        <Tooltip content={`${active.label} · ${identity}`} side="right">
-          <Menu.Trigger
-            aria-label={ariaLabel}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-surface-hover ${className}`}
-          >
-            <AccountMonogram label={active.label} active size={22} />
-          </Menu.Trigger>
-        </Tooltip>
-        <Menu.Content side="right" align="start" className="w-64">
-          {items}
-        </Menu.Content>
-      </Menu.Root>
-    );
-  }
 
   if (variant === "compact") {
     return (

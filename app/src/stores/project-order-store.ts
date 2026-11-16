@@ -173,8 +173,8 @@ const useProjectOrderStore = create<ProjectOrderState>()((set, get) => ({
 /**
  * Persists a shared project ordering via the server-backed global settings row.
  *
- * Every component that calls this hook shares the same store, so Sidebar,
- * MiniSidebar, and Dashboard always agree on project order.
+ * Every component that calls this hook shares the same store, so Sidebar and
+ * Dashboard always agree on project order.
  *
  * Projects present in the stored order are sorted to match it;
  * any new (unseen) projects are appended at the end in alphabetical order.

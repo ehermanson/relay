@@ -417,11 +417,10 @@ html.relay-desktop[data-desktop-platform="darwin"] .sidebar-build-badges {
 html.relay-desktop[data-desktop-platform="darwin"] .desktop-window-header {
   min-height: 48px;
 }
-html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-rail {
-  width: 100%;
-}
-html.relay-desktop[data-desktop-platform="darwin"] .mini-sidebar-title-slot {
-  width: 100%;
+/* With the sidebar hidden, the page header is under the traffic lights: the
+   show-sidebar button leads every header, so pushing it clears them. */
+html.relay-desktop[data-desktop-platform="darwin"]:not(.desktop-fullscreen) .sidebar-show-toggle {
+  margin-left: 68px;
 }
 @container sidebar (max-width: 280px) {
   html.relay-desktop[data-desktop-platform="darwin"] .sidebar-header .sidebar-logo-text {
@@ -938,6 +937,17 @@ body *::-webkit-scrollbar-thumb:hover {
   flex-shrink: 0;
 }
 
+/* A hidden sidebar takes no room: cancel the shell gap beside it and drop
+   its border, which would otherwise show as a hairline at zero width. */
+.app-shell-sidebar-hidden {
+  margin-right: -8px;
+  border: 0 !important;
+}
+/* The desktop shell has no gap to cancel. */
+html.relay-desktop .app-shell-sidebar-hidden {
+  margin-right: 0;
+}
+
 .app-shell-sidebar aside {
   border-right: none !important;
   border-radius: 12px;
@@ -1022,7 +1032,7 @@ html.relay-desktop:not([data-desktop-platform="darwin"]) .desktop-window-header 
 html.relay-desktop:not([data-desktop-platform="darwin"]) .desktop-window-header-trailing {
   padding-right: 148px;
 }
-html.relay-desktop :is(.sidebar-header, .mini-sidebar-title-slot, .desktop-window-header) {
+html.relay-desktop :is(.sidebar-header, .desktop-window-header) {
   -webkit-app-region: drag;
   app-region: drag;
 }

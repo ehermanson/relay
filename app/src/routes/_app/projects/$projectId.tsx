@@ -13,7 +13,7 @@ import { GitStatusBar } from "@/components/project/git-status-bar";
 import { OpenInMenu } from "@/components/project/open-in-menu";
 import { RelayLogo } from "@/components/ui/relay-logo";
 import { Tooltip } from "@/components/ui/tooltip";
-import { MobileSidebarToggle } from "@/components/ui/view-header";
+import { SidebarToggle } from "@/components/ui/view-header";
 import { ProjectContext } from "@/context/project-context";
 import { useWSState } from "@/context/websocket-context";
 import { readStoredActiveAccountId } from "@/lib/account-scope";
@@ -137,7 +137,7 @@ function ProjectLayout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Header */}
         <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-4 py-2.5 max-[768px]:px-2 max-[768px]:py-2 sm:px-5">
-          <MobileSidebarToggle />
+          <SidebarToggle />
           <Tooltip content={artifacts.directory} side="bottom">
             <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight text-text-bright">
               {dirName}

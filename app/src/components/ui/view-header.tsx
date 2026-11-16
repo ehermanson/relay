@@ -4,7 +4,7 @@
  */
 
 import type { ReactNode } from "react";
-import { GitBranch, Menu as MenuIcon, Zap } from "lucide-react";
+import { GitBranch, Menu as MenuIcon, PanelLeftOpen, Zap } from "lucide-react";
 import { Tooltip } from "./tooltip";
 import { ProjectBreadcrumb } from "./project-breadcrumb";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -31,12 +31,32 @@ export function ViewHeader({ children, className, style }: ViewHeaderProps) {
   );
 }
 
-// ── Mobile sidebar toggle (hamburger) ────────────────────────────────
+// ── Sidebar toggle ───────────────────────────────────────────────────
 
-export function MobileSidebarToggle() {
+/**
+ * The way back to the sidebar from a page header. On phones it is the
+ * hamburger that opens the drawer. On desktop it renders only while the
+ * sidebar is hidden (collapsing hides it completely; there is no rail), so
+ * every page header must start with it or a hidden sidebar has no way back.
+ */
+export function SidebarToggle() {
   const isMobile = useMediaQuery("(max-width: 768px)");
-  const { setMobileSidebarOpen } = useLayoutStore();
-  if (!isMobile) return null;
+  const { setMobileSidebarOpen, sidebarCollapsed, toggleSidebar } = useLayoutStore();
+  if (!isMobile) {
+    if (!sidebarCollapsed) return null;
+    return (
+      <Tooltip content="Show sidebar" side="bottom">
+        <button
+          type="button"
+          aria-label="Show sidebar"
+          onClick={toggleSidebar}
+          className="sidebar-show-toggle flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-hover hover:text-text"
+        >
+          <PanelLeftOpen size={15} strokeWidth={2} />
+        </button>
+      </Tooltip>
+    );
+  }
   return (
     <Tooltip content="Menu">
       <button
@@ -110,7 +130,7 @@ export function MobileViewHeader({
 }: MobileViewHeaderProps) {
   return (
     <ViewHeader style={{ containerName: "view-header", containerType: "inline-size" }}>
-      <MobileSidebarToggle />
+      <SidebarToggle />
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-[0.875rem] font-semibold leading-snug tracking-tight text-text-bright">
           {title}

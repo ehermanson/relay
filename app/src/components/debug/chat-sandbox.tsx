@@ -50,7 +50,7 @@ import {
 } from "@/components/chat/input-area/composer-notices";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import { ViewHeader, ViewHeaderTitle, MobileSidebarToggle } from "@/components/ui/view-header";
+import { ViewHeader, ViewHeaderTitle, SidebarToggle } from "@/components/ui/view-header";
 import type { ChatItem } from "@/hooks/use-instance-messages";
 import type { MergedActivity } from "@/lib/chat-types";
 import { toggleAnswerSelection } from "@/lib/utils";
@@ -1247,7 +1247,7 @@ export function ChatSandbox() {
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Sandbox control header */}
       <ViewHeader>
-        <MobileSidebarToggle />
+        <SidebarToggle />
         <Link
           to="/"
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-hover hover:text-text"

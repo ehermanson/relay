@@ -6,7 +6,7 @@ import { checkForUpdates, fetchUpdateStatus, installUpdate } from "@/lib/api";
 import type { UpdateSnapshot, UpdateStage, UpdateStatus } from "@shared/types";
 
 // Module-level interval so we only schedule one background check regardless of
-// how many hook instances are mounted (mini-sidebar + sidebar + settings page).
+// how many hook instances are mounted (sidebar + settings page).
 let bgCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 const TOAST_ID = "system-update";
@@ -122,8 +122,8 @@ function formatShortCommit(commit: string | null | undefined): string | null {
  * Shared hook for the Relay self-update flow.
  *
  * Consolidates the polling query, install/check mutations, and the persistent
- * "system-update" toast so every update entrypoint (mini-sidebar, expanded
- * sidebar, settings page) stays in sync and shows the same staged progress.
+ * "system-update" toast so every update entrypoint (sidebar,
+ * settings page) stays in sync and shows the same staged progress.
  *
  * Post-install: once the server has restarted on the new commit, we swap the
  * persistent toast for a success toast with a "Reload" action — the old JS in
@@ -205,7 +205,7 @@ export function useSystemUpdate(): UseSystemUpdateResult {
   });
 
   // Shared pending state — counts in-flight mutations globally by key, so every
-  // hook instance (sidebar, mini-sidebar, settings page) sees the same value
+  // hook instance (sidebar, settings page) sees the same value
   // regardless of which one triggered the mutation.
   const installingCount = useIsMutating({ mutationKey: INSTALL_MUTATION_KEY });
   const checkingCount = useIsMutating({ mutationKey: CHECK_MUTATION_KEY });

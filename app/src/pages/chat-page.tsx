@@ -15,6 +15,7 @@ import {
 } from "../lib/utils";
 import { useMediaQuery } from "../hooks/use-media-query";
 import { MobileHome } from "@/components/mobile-home";
+import { SidebarToggle } from "@/components/ui/view-header";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useProjectNavigationModel } from "../hooks/use-project-navigation-model";
 import { useActionToasts } from "@/context/action-toast-context";
@@ -368,6 +369,7 @@ export function Dashboard() {
         <div className="mx-auto w-full max-w-5xl px-4 py-4 sm:px-6 sm:py-8">
           {/* Desktop header */}
           <div className="desktop-window-header mb-6 hidden items-center justify-between gap-3 sm:flex">
+            <SidebarToggle />
             <div className="min-w-0 flex-1">
               <h1 className="text-[1.25rem] font-semibold tracking-tight text-text-bright">
                 Projects

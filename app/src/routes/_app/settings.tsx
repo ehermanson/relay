@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { Settings2, Cpu, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { MobileSidebarToggle } from "@/components/ui/view-header";
+import { SidebarToggle } from "@/components/ui/view-header";
 
 const NAV_ITEMS = [
   {
@@ -45,7 +45,7 @@ function SettingsLayout() {
       return (
         <div className="flex h-full flex-1 flex-col overflow-y-auto">
           <div className="flex items-center gap-2 px-2 pb-2 pt-3">
-            <MobileSidebarToggle />
+            <SidebarToggle />
             <h1 className="text-lg font-bold text-text-bright">Settings</h1>
           </div>
           <ul className="px-2 pb-6">
@@ -99,9 +99,10 @@ function SettingsLayout() {
   return (
     <div className="flex h-full flex-1 overflow-hidden">
       <nav className="w-44 shrink-0 overflow-y-auto border-r border-border px-3 py-6">
-        <h1 className="desktop-window-header mb-5 px-2 text-lg font-bold text-text-bright">
-          Settings
-        </h1>
+        <div className="desktop-window-header mb-5 flex items-center gap-2 px-2">
+          <SidebarToggle />
+          <h1 className="text-lg font-bold text-text-bright">Settings</h1>
+        </div>
         <ul className="space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;

@@ -80,18 +80,3 @@
     animation-duration: 600ms;
   }
 }
-
-/* ── Collapsed rail ─────────────────────────────────────────────── */
-
-/* The rail is only 48px wide and its items are centered. A visible
-   scrollbar reserves width inside the scroll container, which shifts
-   those items left while the fixed header/footer buttons stay centered —
-   so hide it here and let the rail scroll silently. */
-.mini-rail-scroll {
-  scrollbar-width: none;
-}
-
-.mini-rail-scroll::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}

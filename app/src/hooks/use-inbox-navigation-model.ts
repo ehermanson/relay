@@ -20,32 +20,18 @@ import {
 
 export type { InboxEntry, InboxProjectOption } from "@/lib/inbox";
 
-export function useInboxNavigationModel(
-  projectFilter: string | null,
-  /**
-   * `enabled: false` skips the flatten/sort work and returns empty lists —
-   * for callers like MiniSidebar that branch on layout but must call the
-   * hook unconditionally.
-   */
-  { enabled = true }: { enabled?: boolean } = {},
-) {
+export function useInboxNavigationModel(projectFilter: string | null) {
   const controller = useSidebarNavigationController();
   const { projectEntries } = controller;
 
-  const allEntries = useMemo(
-    () => (enabled ? buildInboxEntries(projectEntries) : []),
-    [projectEntries, enabled],
-  );
+  const allEntries = useMemo(() => buildInboxEntries(projectEntries), [projectEntries]);
 
   const { active, done } = useMemo(
     () => partitionInboxEntries(filterInboxEntries(allEntries, projectFilter)),
     [allEntries, projectFilter],
   );
 
-  const projectOptions = useMemo(
-    () => (enabled ? buildInboxProjectOptions(projectEntries) : []),
-    [projectEntries, enabled],
-  );
+  const projectOptions = useMemo(() => buildInboxProjectOptions(projectEntries), [projectEntries]);
 
   return { ...controller, allEntries, active, done, projectOptions };
 }

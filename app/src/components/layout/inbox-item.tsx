@@ -55,55 +55,6 @@ function resolveModelLabel(entry: InboxEntry): string | null {
  * the column; hover and selection restore the favicon, so the row you're
  * pointing at or reading always shows its true colors.
  */
-/**
- * The expanded row's content, rendered as hover-card contents for the
- * collapsed rail — where the avatar is all there is, so the hover is the only
- * place project, branch, model, recency and status can appear.
- */
-export function InboxChatSummary({ entry }: { entry: InboxEntry }) {
-  const { instance } = entry;
-  const status = deriveInstanceStatusPresentation(instance);
-  const modelLabel = resolveModelLabel(entry);
-  const branch = getChatBranch(instance);
-  const recencyAt = getChatSortTimestamp(instance);
-
-  return (
-    <div className="flex w-[13.5rem] min-w-0 flex-col gap-1">
-      <div className="flex min-w-0 items-baseline gap-1.5 text-[0.6875rem] text-muted">
-        <span className="min-w-0 truncate font-medium">{entry.projectName}</span>
-        {recencyAt > 0 && (
-          <span className="ml-auto shrink-0 text-muted/60">{formatTimeAgo(recencyAt)}</span>
-        )}
-      </div>
-
-      <div className="line-clamp-2 text-[0.75rem] font-medium leading-snug text-text-bright">
-        {instance.name}
-      </div>
-
-      <div className="flex min-w-0 items-center gap-1 text-[0.6875rem] text-muted/80">
-        {branch && (
-          <>
-            <GitBranch size={9} strokeWidth={2.5} className="shrink-0" />
-            <span className="min-w-0 truncate">{branch}</span>
-            <span className="shrink-0 text-muted/40">·</span>
-          </>
-        )}
-        <ProviderLogo provider={instance.provider} className="h-2.5 w-2.5 shrink-0" />
-        {modelLabel && <span className="shrink-0 truncate">{modelLabel}</span>}
-      </div>
-
-      <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dotClass}`} />
-        <span className="min-w-0 truncate">{status.label}</span>
-        {entry.done && <span className="ml-auto shrink-0 text-muted/60">Done</span>}
-        {instance.pinned && !entry.done && (
-          <span className="ml-auto shrink-0 text-muted/60">Pinned</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function InboxAvatar({
   entry,
   unread,
