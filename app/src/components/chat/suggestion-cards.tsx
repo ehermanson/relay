@@ -9,7 +9,7 @@ interface SuggestionCardsProps {
   /** Called when a suggestion is selected — parent should pre-fill the composer. */
   onSelect: (prompt: string) => void;
   /** Optional link target for the settings gear icon. */
-  settingsHref?: string;
+  onOpenSettings?: () => void;
   /** Visually dim the cards (e.g., when the user has started composing). */
   dimmed?: boolean;
 }
@@ -17,7 +17,7 @@ interface SuggestionCardsProps {
 export function SuggestionCards({
   suggestions,
   onSelect,
-  settingsHref,
+  onOpenSettings,
   dimmed,
 }: SuggestionCardsProps) {
   const [dismissed, setDismissed] = useState(false);
@@ -36,14 +36,15 @@ export function SuggestionCards({
         <div className="flex items-center gap-2">
           <Sparkles size={11} className="text-muted/50" />
           <span className="text-[0.6875rem] text-muted/60">Suggestions</span>
-          {settingsHref && (
-            <a
-              href={settingsHref}
+          {onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
               className="ml-0.5 rounded p-0.5 text-muted/40 transition-colors hover:bg-surface-hover hover:text-muted"
               title="Suggestion settings"
             >
               <Settings size={11} />
-            </a>
+            </button>
           )}
           <button
             onClick={() => setDismissed(true)}

@@ -1,4 +1,5 @@
 import { getDesktop } from "@/lib/desktop";
+import { openSettings } from "@/stores/settings-dialog-store";
 /**
  * Header, search trigger, and footer shared by both sidebar layouts.
  *
@@ -329,12 +330,10 @@ export function SidebarFooter() {
     <div className="shrink-0 border-t border-border">
       <div className="sidebar-footer flex items-center justify-between gap-1 px-2 py-2">
         <div className="flex items-center gap-0.5">
-          <Link to="/settings">
-            <Button variant="ghost" size="sm">
-              <Settings size={14} />
-              Settings
-            </Button>
-          </Link>
+          <Button variant="ghost" size="sm" onClick={() => openSettings()}>
+            <Settings size={14} />
+            Settings
+          </Button>
         </div>
         <div className="flex items-center gap-1">
           {showUpdateButton && (

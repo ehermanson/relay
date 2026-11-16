@@ -5,7 +5,7 @@ import type { DesktopCommand } from "@/lib/desktop";
 let callback: ((command: DesktopCommand) => void) | undefined;
 let subscribeCount = 0;
 const unsubscribe = vi.fn();
-const navigate = vi.fn();
+const openSettings = vi.fn();
 const createNewChat = vi.fn();
 vi.mock("@/lib/desktop", () => ({
   getDesktop: () => ({
@@ -16,7 +16,9 @@ vi.mock("@/lib/desktop", () => ({
     },
   }),
 }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
+vi.mock("@/stores/settings-dialog-store", () => ({
+  openSettings: (...args: unknown[]) => openSettings(...args),
+}));
 vi.mock("@/hooks/use-sidebar-navigation-controller", () => ({
   useSidebarNavigationController: () => ({
     registeredDirs: new Set(),
@@ -52,7 +54,7 @@ describe("desktop commands", () => {
     });
     expect(onSearch).toHaveBeenCalledOnce();
     expect(onToggleSidebar).toHaveBeenCalledOnce();
-    expect(navigate).toHaveBeenCalledWith({ to: "/settings/general" });
+    expect(openSettings).toHaveBeenCalledWith("general");
     expect(createNewChat).toHaveBeenCalledWith("/project");
   });
   it("cleans up the native event listener when the window layout unmounts", () => {

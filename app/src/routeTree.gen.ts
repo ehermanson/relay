@@ -15,10 +15,7 @@ import { Route as SplatRouteImport } from './routes/$'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppSandboxRouteImport } from './routes/_app/sandbox'
-import { Route as AppSettingsSuggestionsRouteImport } from './routes/_app/settings/suggestions'
-import { Route as AppSettingsProvidersRouteImport } from './routes/_app/settings/providers'
-import { Route as AppSettingsGitRouteImport } from './routes/_app/settings/git'
-import { Route as AppSettingsGeneralRouteImport } from './routes/_app/settings/general'
+import { Route as AppSettingsSplatRouteImport } from './routes/_app/settings/$'
 import { Route as AppProjectsProjectIdRouteImport } from './routes/_app/projects/$projectId'
 import { Route as AppProjectsProjectIdIndexRouteImport } from './routes/_app/projects/$projectId/index'
 import { Route as AppProjectsProjectIdTasksIndexRouteImport } from './routes/_app/projects/$projectId/tasks/index'
@@ -61,24 +58,9 @@ const AppSandboxRoute = AppSandboxRouteImport.update({
   path: '/sandbox',
   getParentRoute: () => AppRoute,
 } as any)
-const AppSettingsSuggestionsRoute = AppSettingsSuggestionsRouteImport.update({
-  id: '/suggestions',
-  path: '/suggestions',
-  getParentRoute: () => AppSettingsRoute,
-} as any)
-const AppSettingsProvidersRoute = AppSettingsProvidersRouteImport.update({
-  id: '/providers',
-  path: '/providers',
-  getParentRoute: () => AppSettingsRoute,
-} as any)
-const AppSettingsGitRoute = AppSettingsGitRouteImport.update({
-  id: '/git',
-  path: '/git',
-  getParentRoute: () => AppSettingsRoute,
-} as any)
-const AppSettingsGeneralRoute = AppSettingsGeneralRouteImport.update({
-  id: '/general',
-  path: '/general',
+const AppSettingsSplatRoute = AppSettingsSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
   getParentRoute: () => AppSettingsRoute,
 } as any)
 const AppProjectsProjectIdRoute = AppProjectsProjectIdRouteImport.update({
@@ -160,10 +142,7 @@ export interface FileRoutesByFullPath {
   '/sandbox': typeof AppSandboxRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
-  '/settings/general': typeof AppSettingsGeneralRoute
-  '/settings/git': typeof AppSettingsGitRoute
-  '/settings/providers': typeof AppSettingsProvidersRoute
-  '/settings/suggestions': typeof AppSettingsSuggestionsRoute
+  '/settings/$': typeof AppSettingsSplatRoute
   '/projects/$projectId/': typeof AppProjectsProjectIdIndexRoute
   '/projects/$projectId/chats/$chatId': typeof AppProjectsProjectIdChatsChatIdRoute
   '/projects/$projectId/plans/$planSlug': typeof AppProjectsProjectIdPlansPlanSlugRoute
@@ -182,10 +161,7 @@ export interface FileRoutesByTo {
   '/sandbox': typeof AppSandboxRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/': typeof AppIndexRoute
-  '/settings/general': typeof AppSettingsGeneralRoute
-  '/settings/git': typeof AppSettingsGitRoute
-  '/settings/providers': typeof AppSettingsProvidersRoute
-  '/settings/suggestions': typeof AppSettingsSuggestionsRoute
+  '/settings/$': typeof AppSettingsSplatRoute
   '/projects/$projectId': typeof AppProjectsProjectIdIndexRoute
   '/projects/$projectId/chats/$chatId': typeof AppProjectsProjectIdChatsChatIdRoute
   '/projects/$projectId/plans/$planSlug': typeof AppProjectsProjectIdPlansPlanSlugRoute
@@ -207,10 +183,7 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/_app/': typeof AppIndexRoute
   '/_app/projects/$projectId': typeof AppProjectsProjectIdRouteWithChildren
-  '/_app/settings/general': typeof AppSettingsGeneralRoute
-  '/_app/settings/git': typeof AppSettingsGitRoute
-  '/_app/settings/providers': typeof AppSettingsProvidersRoute
-  '/_app/settings/suggestions': typeof AppSettingsSuggestionsRoute
+  '/_app/settings/$': typeof AppSettingsSplatRoute
   '/_app/projects/$projectId/': typeof AppProjectsProjectIdIndexRoute
   '/_app/projects/$projectId/chats/$chatId': typeof AppProjectsProjectIdChatsChatIdRoute
   '/_app/projects/$projectId/plans/$planSlug': typeof AppProjectsProjectIdPlansPlanSlugRoute
@@ -232,10 +205,7 @@ export interface FileRouteTypes {
     | '/sandbox'
     | '/settings'
     | '/projects/$projectId'
-    | '/settings/general'
-    | '/settings/git'
-    | '/settings/providers'
-    | '/settings/suggestions'
+    | '/settings/$'
     | '/projects/$projectId/'
     | '/projects/$projectId/chats/$chatId'
     | '/projects/$projectId/plans/$planSlug'
@@ -254,10 +224,7 @@ export interface FileRouteTypes {
     | '/sandbox'
     | '/settings'
     | '/'
-    | '/settings/general'
-    | '/settings/git'
-    | '/settings/providers'
-    | '/settings/suggestions'
+    | '/settings/$'
     | '/projects/$projectId'
     | '/projects/$projectId/chats/$chatId'
     | '/projects/$projectId/plans/$planSlug'
@@ -278,10 +245,7 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/_app/'
     | '/_app/projects/$projectId'
-    | '/_app/settings/general'
-    | '/_app/settings/git'
-    | '/_app/settings/providers'
-    | '/_app/settings/suggestions'
+    | '/_app/settings/$'
     | '/_app/projects/$projectId/'
     | '/_app/projects/$projectId/chats/$chatId'
     | '/_app/projects/$projectId/plans/$planSlug'
@@ -345,32 +309,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSandboxRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/settings/suggestions': {
-      id: '/_app/settings/suggestions'
-      path: '/suggestions'
-      fullPath: '/settings/suggestions'
-      preLoaderRoute: typeof AppSettingsSuggestionsRouteImport
-      parentRoute: typeof AppSettingsRoute
-    }
-    '/_app/settings/providers': {
-      id: '/_app/settings/providers'
-      path: '/providers'
-      fullPath: '/settings/providers'
-      preLoaderRoute: typeof AppSettingsProvidersRouteImport
-      parentRoute: typeof AppSettingsRoute
-    }
-    '/_app/settings/git': {
-      id: '/_app/settings/git'
-      path: '/git'
-      fullPath: '/settings/git'
-      preLoaderRoute: typeof AppSettingsGitRouteImport
-      parentRoute: typeof AppSettingsRoute
-    }
-    '/_app/settings/general': {
-      id: '/_app/settings/general'
-      path: '/general'
-      fullPath: '/settings/general'
-      preLoaderRoute: typeof AppSettingsGeneralRouteImport
+    '/_app/settings/$': {
+      id: '/_app/settings/$'
+      path: '/$'
+      fullPath: '/settings/$'
+      preLoaderRoute: typeof AppSettingsSplatRouteImport
       parentRoute: typeof AppSettingsRoute
     }
     '/_app/projects/$projectId': {
@@ -461,17 +404,11 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppSettingsRouteChildren {
-  AppSettingsGeneralRoute: typeof AppSettingsGeneralRoute
-  AppSettingsGitRoute: typeof AppSettingsGitRoute
-  AppSettingsProvidersRoute: typeof AppSettingsProvidersRoute
-  AppSettingsSuggestionsRoute: typeof AppSettingsSuggestionsRoute
+  AppSettingsSplatRoute: typeof AppSettingsSplatRoute
 }
 
 const AppSettingsRouteChildren: AppSettingsRouteChildren = {
-  AppSettingsGeneralRoute: AppSettingsGeneralRoute,
-  AppSettingsGitRoute: AppSettingsGitRoute,
-  AppSettingsProvidersRoute: AppSettingsProvidersRoute,
-  AppSettingsSuggestionsRoute: AppSettingsSuggestionsRoute,
+  AppSettingsSplatRoute: AppSettingsSplatRoute,
 }
 
 const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(

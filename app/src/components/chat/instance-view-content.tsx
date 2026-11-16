@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { openSettings } from "@/stores/settings-dialog-store";
 import { useQuery } from "@tanstack/react-query";
 import { chatGitStatusQueryOptions, chatSuggestionsQueryOptions } from "@/lib/chat-query-options";
 import { motion } from "motion/react";
@@ -662,7 +663,7 @@ export function InstanceViewContent() {
                 <SuggestionCards
                   suggestions={filteredSuggestions}
                   onSelect={setPendingDraft}
-                  settingsHref="/settings/suggestions"
+                  onOpenSettings={() => openSettings("suggestions")}
                   dimmed={composerHasContent}
                 />
               </div>

@@ -12,6 +12,7 @@
  */
 
 import { Check, ChevronDown, Settings2 } from "lucide-react";
+import { openSettings } from "@/stores/settings-dialog-store";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Menu } from "@/components/ui/menu";
 import { useActiveAccount } from "@/hooks/use-active-account";
@@ -165,7 +166,7 @@ export function AccountSwitcher({
     // Route loaders (project artifacts) read the stored account; re-run them.
     void router.invalidate();
   };
-  const manage = () => navigate({ to: "/settings/providers" });
+  const manage = () => openSettings("providers");
 
   const items = (
     <AccountMenuItems

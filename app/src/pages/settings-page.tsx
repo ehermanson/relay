@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
+import { openSettings } from "@/stores/settings-dialog-store";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { FileText } from "lucide-react";
 import {
@@ -273,9 +273,13 @@ function ProjectProviderMcpGroup({
       ) : (
         <div className="text-[0.75rem] text-muted">
           Global MCP configuration applies to every Project. Add or configure servers in{" "}
-          <Link to="/settings/providers" className="text-accent hover:underline">
+          <button
+            type="button"
+            onClick={() => openSettings("providers")}
+            className="text-accent hover:underline"
+          >
             Global Settings
-          </Link>
+          </button>
           .
         </div>
       )}
@@ -583,9 +587,13 @@ function PerProviderSummary({
       <div className="text-[0.8125rem] font-medium text-text-bright">Per-Provider Defaults</div>
       <div className="mt-0.5 text-[0.75rem] text-muted">
         These are set globally and apply to all projects.{" "}
-        <Link to="/settings/providers" className="text-accent hover:underline">
+        <button
+          type="button"
+          onClick={() => openSettings("providers")}
+          className="text-accent hover:underline"
+        >
           Edit in global settings
-        </Link>
+        </button>
       </div>
       <div className="mt-3 space-y-2 pl-1">
         {providers.map((p) => {

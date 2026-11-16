@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { openSettings } from "@/stores/settings-dialog-store";
 import { toast } from "sonner";
 import { useInstalledProviders } from "@/hooks/use-available-providers";
 import { useDismissedProviderAdvisories } from "@/hooks/use-dismissed-provider-advisories";
@@ -30,7 +30,6 @@ const TOAST_ID = "provider-update-advisory";
  * can't lock the user out of a real advisory when the probe repopulates.
  */
 export function ProviderUpdateNotification() {
-  const navigate = useNavigate();
   // Every installed provider: an update matters whichever account is active.
   const { providers } = useInstalledProviders();
   const { dismissed, dismiss } = useDismissedProviderAdvisories();
@@ -97,7 +96,7 @@ export function ProviderUpdateNotification() {
           if (activeKeyRef.current === notificationKey) {
             activeKeyRef.current = null;
           }
-          void navigate({ to: "/settings/providers" });
+          openSettings("providers");
         },
       },
       onDismiss: () => {
@@ -114,7 +113,7 @@ export function ProviderUpdateNotification() {
         }
       },
     });
-  }, [candidates, dismiss, dismissed, navigate, notificationKey]);
+  }, [candidates, dismiss, dismissed, notificationKey]);
 
   return null;
 }

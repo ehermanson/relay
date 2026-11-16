@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { openSettings } from "@/stores/settings-dialog-store";
 import { getDesktop } from "@/lib/desktop";
 import { useSidebarNavigationController } from "@/hooks/use-sidebar-navigation-controller";
 import { AddProjectDialog } from "@/components/layout/sidebar-chrome";
@@ -14,7 +14,6 @@ export function DesktopCommands({
   onSearch: () => void;
   onToggleSidebar: () => void;
 }) {
-  const navigate = useNavigate();
   const { registeredDirs, projectEntries, createNewChat, currentProjectId } =
     useSidebarNavigationController();
   const [projectOpen, setProjectOpen] = useState(false);
@@ -25,7 +24,6 @@ export function DesktopCommands({
   const context = {
     onSearch,
     onToggleSidebar,
-    navigate,
     projectEntries,
     currentProjectId,
     createNewChat,
@@ -35,17 +33,11 @@ export function DesktopCommands({
   useEffect(
     () =>
       getDesktop()?.onCommand((command) => {
-        const {
-          onSearch,
-          onToggleSidebar,
-          navigate,
-          projectEntries,
-          currentProjectId,
-          createNewChat,
-        } = contextRef.current;
+        const { onSearch, onToggleSidebar, projectEntries, currentProjectId, createNewChat } =
+          contextRef.current;
         if (command === "search") onSearch();
         if (command === "toggle-sidebar") onToggleSidebar();
-        if (command === "settings") void navigate({ to: "/settings/general" });
+        if (command === "settings") openSettings("general");
         if (command === "new-project") setProjectOpen(true);
         if (command === "new-chat") {
           const selected =
