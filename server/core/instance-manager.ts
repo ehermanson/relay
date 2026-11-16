@@ -181,6 +181,7 @@ import type {
   ProviderRuntimeBinding,
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
+  Workstream,
   RelayMcpEndpoint,
   ReasoningEffort,
   ProviderModelOption,
@@ -232,12 +233,14 @@ import {
 } from "#core/internal-user-messages.js";
 import {
   buildSessionBootstrapContext,
+  withRelayBootstrapBlock,
   CUSTOM_INSTRUCTIONS_BLOCK_KIND,
   getDelegationFromRuntimePayload,
   getSessionContextFromRuntimePayload,
   hasSessionBootstrapBlock,
   TASK_CONTEXT_BLOCK_KIND,
 } from "#core/session-context.js";
+import { buildWorkstreamContextBlock } from "#core/workstream-context.js";
 import {
   describeToolUse,
   describeToolDetail,
@@ -2242,9 +2245,16 @@ export class InstanceManager extends EventEmitter {
       forkFrom?: { sessionId: string; cursor?: string };
       /** Read-only side thread (aside chats). */
       readOnly?: boolean;
+      /**
+       * The chat whose Workstream this session belongs to, when it isn't
+       * `instanceId` itself or isn't registered yet (a delegated child being
+       * created belongs through its parent).
+       */
+      workstreamOf?: string;
     },
   ): ProviderSession {
     const provider = options?.provider ?? "claude";
+    options = this.withWorkstreamSessionOptions(options);
     // Asides are read-only side threads: they never get Relay's orchestration
     // tools (delegates wouldn't inherit the read-only guard).
     const relayMcp = options?.readOnly
@@ -2262,6 +2272,47 @@ export class InstanceManager extends EventEmitter {
       relayMcp ? { ...options, relayMcp } : options,
       this.getProviderContext({ provider, configDir: options?.configDir }),
     );
+  }
+
+  /**
+   * The Workstream a chat belongs to. A delegated child belongs through its
+   * parent, so membership is looked up along the delegation chain.
+   */
+  private resolveWorkstream(instanceId: string | undefined): Workstream | null {
+    let current = instanceId;
+    for (let depth = 0; current && depth < 12; depth++) {
+      const workstream = this.db.getChatWorkstream(current);
+      if (workstream) return workstream;
+      current = this.instances.get(current)?.info.delegation?.parentInstanceId;
+    }
+    return null;
+  }
+
+  /**
+   * Give a session its Workstream: access to the linked folder and a context
+   * block with its README and STATUS. Applied where every session is created,
+   * so new, resumed and revived sessions all get the folder as it is now. A
+   * provider that only reads instructions on a new thread (Codex) still gets
+   * the access on a resume, but not the block.
+   */
+  private withWorkstreamSessionOptions<
+    T extends {
+      instanceId?: string;
+      workstreamOf?: string;
+      readOnly?: boolean;
+      bootstrapContext?: ProviderSessionBootstrap;
+    },
+  >(options: T | undefined): (T & { additionalDirectories?: string[] }) | undefined {
+    if (!options || options.readOnly) return options;
+    const workstream = this.resolveWorkstream(options.workstreamOf ?? options.instanceId);
+    if (!workstream || workstream.status === "done") return options;
+    const block = buildWorkstreamContextBlock(workstream);
+    if (!block || !workstream.folderPath) return options;
+    return {
+      ...options,
+      additionalDirectories: [workstream.folderPath],
+      bootstrapContext: withRelayBootstrapBlock(options.bootstrapContext, block),
+    };
   }
 
   // ===========================================================================
@@ -3788,6 +3839,8 @@ export class InstanceManager extends EventEmitter {
     accountId?: string;
     /** Set when another chat delegates this one (`delegate_task`). */
     delegation?: ChatDelegation;
+    /** Start the chat inside this Workstream (ignored when it doesn't exist). */
+    workstreamId?: string;
   }): InstanceInfo {
     if (!this.acceptingMessages) throw new Error("Relay is restarting; retry after it reconnects");
     this.assertProcessCapacity();
@@ -3911,6 +3964,12 @@ export class InstanceManager extends EventEmitter {
           )?.id);
     // An aside continues the source conversation, so like a resume it gets no
     // re-injected project context — the fork already carries it.
+    // Membership first, so the session below starts with the Workstream's
+    // folder and context.
+    if (options?.workstreamId && !options.aside && !options.delegation) {
+      const workstream = this.db.getWorkstream(options.workstreamId);
+      if (workstream) this.db.setChatWorkstream(id, workstream.id, "started_inside", now);
+    }
     const bootstrapContext =
       resumeId || options?.aside
         ? this.buildBootstrapContext(project, {
@@ -3936,8 +3995,11 @@ export class InstanceManager extends EventEmitter {
       instanceId: id,
       forkFrom: options?.forkFrom,
       readOnly: !!options?.aside,
+      workstreamOf: options?.delegation?.parentInstanceId,
     });
-    const deliveredBootstrap = bootstrapContext ?? proc.bootstrapContext;
+    // The session's own copy first: it also carries context added where the
+    // session is created (the chat's Workstream).
+    const deliveredBootstrap = proc.bootstrapContext ?? bootstrapContext;
     const initialBinding = proc.getRuntimeBinding();
     const providerBinding: ProviderRuntimeBinding = deliveredBootstrap
       ? {

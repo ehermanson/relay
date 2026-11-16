@@ -1239,7 +1239,7 @@ export async function createWorkstream(name: string, accountId?: string): Promis
 
 export async function updateWorkstream(
   id: string,
-  patch: { name?: string; status?: WorkstreamStatus },
+  patch: { name?: string; status?: WorkstreamStatus; folderPath?: string | null },
 ): Promise<Workstream> {
   const res = await fetch(`/api/workstreams/${encodeURIComponent(id)}`, {
     method: "PATCH",

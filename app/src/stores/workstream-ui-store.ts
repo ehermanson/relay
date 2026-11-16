@@ -14,7 +14,8 @@ import type { Workstream } from "@shared/types";
 export type WorkstreamDialog =
   | { kind: "create"; instanceId?: string }
   | { kind: "rename"; workstream: Workstream }
-  | { kind: "delete"; workstream: Workstream };
+  | { kind: "delete"; workstream: Workstream }
+  | { kind: "folder"; workstream: Workstream };
 
 const STORAGE_KEY = "relay:workstreams-expanded";
 const SECTION_KEY = "relay:workstreams-section-open";

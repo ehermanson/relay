@@ -475,6 +475,11 @@ export interface Workstream {
   accountId: string;
   name: string;
   status: WorkstreamStatus;
+  /**
+   * The effort's own directory, when one is linked: member chats are told
+   * about it and given access. It belongs to the user; Relay never writes to it.
+   */
+  folderPath?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -871,6 +876,8 @@ export interface CreateInstancePayload {
   review?: ReviewSessionInfo;
   /** Account the chat is created in (`Account.id`); absent = the default account. */
   accountId?: string;
+  /** Start the chat inside this Workstream. Ignored when it doesn't exist. */
+  workstreamId?: string;
 }
 
 export interface RemoveInstancePayload {

@@ -77,6 +77,25 @@ export function buildSessionBootstrapContext(options: {
   };
 }
 
+/**
+ * Add one Relay block to a bootstrap that may not exist yet. For context that
+ * is decided where the session is created rather than where the bootstrap is
+ * first built (a chat's Workstream), so it reaches resumed sessions too.
+ */
+export function withRelayBootstrapBlock(
+  bootstrap: ProviderSessionBootstrap | undefined,
+  block: ProviderContextBlock,
+): ProviderSessionBootstrap {
+  const rendered = `## ${block.title}${block.source ? ` (${block.source})` : ""}\n${block.text.trim()}`;
+  return {
+    ...bootstrap,
+    blocks: [...(bootstrap?.blocks ?? []), block],
+    developerInstructions: bootstrap?.developerInstructions
+      ? `${bootstrap.developerInstructions}\n\n${rendered}`
+      : `Relay-specific session guidance:\n\n${rendered}`,
+  };
+}
+
 export function getSessionContextFromRuntimePayload(
   runtimePayload: Record<string, unknown> | undefined,
 ): ProviderSessionContext | undefined {

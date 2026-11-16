@@ -12,7 +12,7 @@ import "./test-env.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequestHandler } from "../dist/server/http.js";
@@ -20,6 +20,9 @@ import { AuthManager } from "../dist/server/auth.js";
 import { InstanceManager } from "../dist/server/core/instance-manager.js";
 import { resolveConfig } from "../dist/server/config.js";
 import { SessionDB } from "../dist/server/core/db.js";
+import { buildWorkstreamContextBlock } from "../dist/server/core/workstream-context.js";
+import { withRelayBootstrapBlock } from "../dist/server/core/session-context.js";
+import { buildCodexAppServerArgs } from "../dist/server/core/providers/codex-app-server.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -105,6 +108,30 @@ describe("SessionDB workstreams", () => {
     assert.equal(db.deleteWorkstream("w1"), false);
     assert.deepEqual(db.listWorkstreams("default"), []);
     assert.deepEqual(db.listWorkstreamMembers("default"), {});
+  });
+
+  it("links, keeps and unlinks a folder", () => {
+    db.insertWorkstream(workstream("w1"));
+    assert.equal(db.getWorkstream("w1").folderPath, undefined);
+    assert.equal(
+      db.updateWorkstream("w1", { folderPath: "/tmp/effort" }, 2).folderPath,
+      "/tmp/effort",
+    );
+    // A patch that doesn't mention the folder leaves the link alone.
+    assert.equal(db.updateWorkstream("w1", { name: "renamed" }, 3).folderPath, "/tmp/effort");
+    assert.equal(db.updateWorkstream("w1", { folderPath: null }, 4).folderPath, undefined);
+  });
+
+  it("finds the workstream a chat belongs to", () => {
+    db.insertWorkstream(workstream("w1"));
+    db.insertWorkstream(workstream("w2"));
+    assert.equal(db.getChatWorkstream("chat-a"), null);
+    db.setChatWorkstream("chat-a", "w1", "manual", 10);
+    assert.equal(db.getChatWorkstream("chat-a").id, "w1");
+    db.setChatWorkstream("chat-a", "w2", "manual", 20);
+    assert.equal(db.getChatWorkstream("chat-a").id, "w2");
+    db.setChatWorkstream("chat-a", null, "manual", 30);
+    assert.equal(db.getChatWorkstream("chat-a"), null);
   });
 
   it("survives reopening the database", () => {
@@ -245,11 +272,160 @@ describe("workstream routes", () => {
     assert.deepEqual((await call("GET", "/api/workstreams")).body.members, {});
   });
 
+  it("links a real folder, rejects anything else, and unlinks with null", async () => {
+    const { id } = (await call("POST", "/api/workstreams", { name: "a" })).body.workstream;
+    const folder = join(tempDir, "effort");
+    mkdirSync(folder);
+    writeFileSync(join(tempDir, "a-file"), "x");
+
+    const linked = await call("PATCH", `/api/workstreams/${id}`, { folderPath: folder });
+    assert.equal(linked.status, 200);
+    assert.equal(linked.body.workstream.folderPath, realpathSync(folder));
+
+    for (const bad of [join(tempDir, "missing"), join(tempDir, "a-file"), "relative/path", "  "]) {
+      const res = await call("PATCH", `/api/workstreams/${id}`, { folderPath: bad });
+      assert.equal(res.status, 400, bad);
+    }
+    // A rejected path leaves the existing link in place.
+    assert.equal(
+      (await call("GET", "/api/workstreams")).body.workstreams[0].folderPath,
+      realpathSync(folder),
+    );
+
+    const unlinked = await call("PATCH", `/api/workstreams/${id}`, { folderPath: null });
+    assert.equal(unlinked.body.workstream.folderPath, undefined);
+  });
+
+  it("gives a member chat's session the folder and its README and STATUS", async () => {
+    const { id } = (await call("POST", "/api/workstreams", { name: "GraphQL" })).body.workstream;
+    const folder = realpathSync(mkdtempSync(join(tmpdir(), "relay-effort-")));
+    writeFileSync(join(folder, "README.md"), "How this effort is organised.");
+    writeFileSync(join(folder, "STATUS.md"), "Phase two in progress.");
+    try {
+      await call("PATCH", `/api/workstreams/${id}`, { folderPath: folder });
+      await call("POST", "/api/instances/chat-1/workstream", { workstreamId: id });
+
+      const member = manager.withWorkstreamSessionOptions({ instanceId: "chat-1" });
+      assert.deepEqual(member.additionalDirectories, [folder]);
+      const block = member.bootstrapContext.blocks.find((b) => b.kind === "relay_workstream");
+      assert.match(block.text, /How this effort is organised\./);
+      assert.match(block.text, /Phase two in progress\./);
+      assert.match(member.bootstrapContext.developerInstructions, /Workstream: GraphQL/);
+
+      // Not a member, and a read-only aside of a member: nothing added.
+      const other = manager.withWorkstreamSessionOptions({ instanceId: "chat-2" });
+      assert.equal(other.additionalDirectories, undefined);
+      const aside = manager.withWorkstreamSessionOptions({ instanceId: "chat-1", readOnly: true });
+      assert.equal(aside.additionalDirectories, undefined);
+
+      // A delegated child being created belongs through its parent.
+      const child = manager.withWorkstreamSessionOptions({
+        instanceId: "child-1",
+        workstreamOf: "chat-1",
+      });
+      assert.deepEqual(child.additionalDirectories, [folder]);
+
+      // A done workstream, or a folder that has gone away, adds nothing.
+      await call("PATCH", `/api/workstreams/${id}`, { status: "done" });
+      assert.equal(
+        manager.withWorkstreamSessionOptions({ instanceId: "chat-1" }).additionalDirectories,
+        undefined,
+      );
+      await call("PATCH", `/api/workstreams/${id}`, { status: "active" });
+      rmSync(folder, { recursive: true, force: true });
+      assert.equal(
+        manager.withWorkstreamSessionOptions({ instanceId: "chat-1" }).additionalDirectories,
+        undefined,
+      );
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an unknown workstream or a malformed body", async () => {
     assert.equal(
       (await call("POST", "/api/instances/chat-1/workstream", { workstreamId: "missing" })).status,
       404,
     );
     assert.equal((await call("POST", "/api/instances/chat-1/workstream", {})).status, 400);
+  });
+});
+
+describe("workstream context block", () => {
+  let folder;
+
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "relay-workstream-context-"));
+  });
+
+  afterEach(() => {
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  it("needs a folder that exists", () => {
+    assert.equal(buildWorkstreamContextBlock(workstream("w1")), undefined);
+    assert.equal(
+      buildWorkstreamContextBlock(workstream("w1", { folderPath: join(folder, "missing") })),
+      undefined,
+    );
+  });
+
+  it("names the folder even when it has no README or STATUS", () => {
+    const block = buildWorkstreamContextBlock(
+      workstream("w1", { name: "GraphQL", folderPath: folder }),
+    );
+    assert.equal(block.kind, "relay_workstream");
+    assert.equal(block.source, folder);
+    assert.match(block.text, /workstream "GraphQL"/);
+    assert.match(block.text, /no README or STATUS file yet/);
+  });
+
+  it("inlines README and STATUS whatever their case", () => {
+    writeFileSync(join(folder, "readme.md"), "The system.");
+    writeFileSync(join(folder, "Status.md"), "Where things stand.");
+    const block = buildWorkstreamContextBlock(workstream("w1", { folderPath: folder }));
+    assert.match(block.text, /### readme\.md\n\nThe system\./);
+    assert.match(block.text, /### Status\.md\n\nWhere things stand\./);
+  });
+
+  it("cuts a long file and says where the rest is", () => {
+    writeFileSync(join(folder, "README.md"), "x".repeat(50_000));
+    const block = buildWorkstreamContextBlock(workstream("w1", { folderPath: folder }));
+    assert.ok(block.text.length < 20_000);
+    assert.ok(block.text.includes(`The rest is in ${join(folder, "README.md")}`));
+  });
+});
+
+describe("workstream session plumbing", () => {
+  it("adds a block to an absent or existing bootstrap", () => {
+    const block = {
+      key: "k",
+      kind: "relay_workstream",
+      title: "Workstream: A",
+      source: "/f",
+      text: "body",
+    };
+    const fresh = withRelayBootstrapBlock(undefined, block);
+    assert.deepEqual(fresh.blocks, [block]);
+    assert.match(
+      fresh.developerInstructions,
+      /^Relay-specific session guidance:\n\n## Workstream: A \(\/f\)\nbody$/,
+    );
+
+    const existing = {
+      blocks: [{ key: "x", kind: "y", title: "t", text: "t" }],
+      baseInstructions: "base",
+      developerInstructions: "dev",
+    };
+    const merged = withRelayBootstrapBlock(existing, block);
+    assert.equal(merged.blocks.length, 2);
+    assert.equal(merged.baseInstructions, "base");
+    assert.match(merged.developerInstructions, /^dev\n\n## Workstream: A/);
+  });
+
+  it("passes extra writable roots to Codex as a config override", () => {
+    assert.ok(!buildCodexAppServerArgs().some((arg) => arg.includes("writable_roots")));
+    const args = buildCodexAppServerArgs(undefined, ["/tmp/a folder"]);
+    assert.ok(args.includes('sandbox_workspace_write.writable_roots=["/tmp/a folder"]'));
   });
 });

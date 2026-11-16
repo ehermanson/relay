@@ -554,6 +554,7 @@ export function createWebSocketServer(
                 parentSessionId: message.parentSessionId,
                 review: message.review,
                 accountId: message.accountId,
+                workstreamId: message.workstreamId,
               });
             } catch (err) {
               if (err instanceof ProviderUnavailableInAccountError) {
@@ -578,6 +579,7 @@ export function createWebSocketServer(
                     parentSessionId: message.parentSessionId,
                     review: message.review,
                     accountId: message.accountId,
+                    workstreamId: message.workstreamId,
                   },
                 });
               } else {

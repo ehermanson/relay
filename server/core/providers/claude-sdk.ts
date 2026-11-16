@@ -247,6 +247,7 @@ interface SDKOptions {
     { type: "http"; url: string; headers?: Record<string, string>; timeout?: number }
   >;
   disallowedTools?: string[];
+  additionalDirectories?: string[];
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   settings?: Record<string, unknown>;
   systemPrompt?:
@@ -454,6 +455,8 @@ export interface ClaudeSdkSessionOptions {
   configDir?: string;
   /** Relay's MCP endpoint and this chat's token (see `ProviderSessionOptions.relayMcp`). */
   relayMcp?: RelayMcpEndpoint;
+  /** Directories outside `cwd` the session may read and write (its Workstream's folder). */
+  additionalDirectories?: string[];
 }
 
 export interface ClaudeSdkSession extends ProviderSession {
@@ -1276,6 +1279,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       >,
       pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
     };
+    // A read-only aside gets no extra writable directory.
+    if (options.additionalDirectories?.length && !options.readOnly) {
+      sdkOptions.additionalDirectories = options.additionalDirectories;
+    }
     const flagSettings: Record<string, unknown> = {};
     if (options.fastMode) flagSettings.fastMode = true;
     if (options.reasoningEffort === ULTRACODE_EFFORT) flagSettings.ultracode = true;

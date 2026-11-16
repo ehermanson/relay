@@ -12,6 +12,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FolderOpen,
+  FolderX,
   MoreVertical,
   Pencil,
   Plus,
@@ -22,8 +24,10 @@ import { Collapsible } from "@/components/ui/collapsible";
 import { Menu } from "@/components/ui/menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { InboxItem } from "@/components/layout/inbox-item";
+import { NewChatMenu } from "@/components/layout/new-chat-menu";
+import { useSidebarActions } from "@/context/sidebar-actions-context";
 import { useWorkstreamActions, useWorkstreams } from "@/hooks/use-workstreams";
-import { isInboxEntryCurrent, type InboxEntry } from "@/lib/inbox";
+import { isInboxEntryCurrent, type InboxEntry, type InboxProjectOption } from "@/lib/inbox";
 import {
   buildWorkstreamFolders,
   capWorkstreamEntries,
@@ -39,7 +43,7 @@ const SECTION_LABEL_CLASS =
 function FolderMenu({ workstream }: { workstream: Workstream }) {
   const [open, setOpen] = useState(false);
   const openDialog = useWorkstreamUiStore((s) => s.openDialog);
-  const { update } = useWorkstreamActions();
+  const { update, setFolder } = useWorkstreamActions();
   const done = workstream.status === "done";
 
   return (
@@ -58,6 +62,16 @@ function FolderMenu({ workstream }: { workstream: Workstream }) {
           <Pencil size={13} strokeWidth={2} className="text-muted" />
           Rename
         </Menu.Item>
+        <Menu.Item onClick={() => openDialog({ kind: "folder", workstream })}>
+          <FolderOpen size={13} strokeWidth={2} className="text-muted" />
+          {workstream.folderPath ? "Change folder…" : "Link folder…"}
+        </Menu.Item>
+        {workstream.folderPath && (
+          <Menu.Item onClick={() => void setFolder(workstream.id, null)}>
+            <FolderX size={13} strokeWidth={2} className="text-muted" />
+            Unlink folder
+          </Menu.Item>
+        )}
         <Menu.Item onClick={() => void update(workstream.id, { status: done ? "active" : "done" })}>
           {done ? (
             <Undo2 size={13} strokeWidth={2} className="text-muted" />
@@ -109,7 +123,7 @@ function FolderRows({
   if (folder.active.length === 0 && folder.done.length === 0) {
     return (
       <p className="px-2.5 py-2 text-[0.6875rem] leading-snug text-muted/70">
-        No chats yet. Add one from a chat's menu, under Workstream.
+        No chats yet. Start one with + above, or add one from a chat's menu.
       </p>
     );
   }
@@ -152,8 +166,17 @@ function FolderRows({
   );
 }
 
-function Folder({ folder, currentChatId }: { folder: WorkstreamFolder; currentChatId?: string }) {
+function Folder({
+  folder,
+  currentChatId,
+  projectOptions,
+}: {
+  folder: WorkstreamFolder;
+  currentChatId?: string;
+  projectOptions: InboxProjectOption[];
+}) {
   const { workstream } = folder;
+  const actions = useSidebarActions();
   const open = useWorkstreamUiStore((s) => !!s.expanded[workstream.id]);
   const setExpanded = useWorkstreamUiStore((s) => s.setExpanded);
   const revealId = useWorkstreamUiStore((s) => s.revealId);
@@ -195,8 +218,15 @@ function Folder({ folder, currentChatId }: { folder: WorkstreamFolder; currentCh
               {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
             </span>
             <span className={`h-2 w-2 shrink-0 rounded-[3px] ${accent.dot}`} />
-            <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium text-text">
-              {workstream.name}
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <span className="min-w-0 truncate text-[0.75rem] font-medium text-text">
+                {workstream.name}
+              </span>
+              {workstream.folderPath && (
+                <Tooltip content={`Folder: ${workstream.folderPath}`} side="top">
+                  <FolderOpen size={11} strokeWidth={2} className="shrink-0 text-muted/50" />
+                </Tooltip>
+              )}
             </span>
             {folder.attention > 0 && (
               <Tooltip
@@ -215,6 +245,21 @@ function Folder({ folder, currentChatId }: { folder: WorkstreamFolder; currentCh
             )}
             <span className="shrink-0 text-[0.625rem] tabular-nums text-muted/50">{total}</span>
           </Collapsible.Trigger>
+          {projectOptions.length > 0 && (
+            <NewChatMenu
+              projectOptions={projectOptions}
+              soleTarget={projectOptions.length === 1 ? projectOptions[0].dir : null}
+              onCreate={(dir) => {
+                setExpanded(workstream.id, true);
+                actions.quickCreate(dir, { workstreamId: workstream.id });
+              }}
+              icon={<Plus size={14} strokeWidth={2.5} />}
+              label={`New chat in ${workstream.name}`}
+              tooltipSide="bottom"
+              align="end"
+              triggerClassName="sidebar-menu-trigger flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted/60 opacity-0 transition-opacity duration-150 hover:text-text group-hover/workstream:opacity-100 data-[popup-open]:opacity-100"
+            />
+          )}
           <FolderMenu workstream={workstream} />
         </div>
         <Collapsible.Content>
@@ -268,10 +313,13 @@ function DoneWorkstreams({ workstreams }: { workstreams: Workstream[] }) {
 export function WorkstreamsSection({
   entries,
   currentChatId,
+  projectOptions,
 }: {
   /** Every chat in inbox order, unfiltered: a folder shows its chats whatever the inbox filter. */
   entries: readonly InboxEntry[];
   currentChatId?: string;
+  /** Projects a new chat can start in, for each folder's New chat button. */
+  projectOptions: InboxProjectOption[];
 }) {
   const { workstreams, members } = useWorkstreams();
   const sectionOpen = useWorkstreamUiStore((s) => s.sectionOpen);
@@ -319,7 +367,12 @@ export function WorkstreamsSection({
           ) : (
             <>
               {folders.map((folder) => (
-                <Folder key={folder.workstream.id} folder={folder} currentChatId={currentChatId} />
+                <Folder
+                  key={folder.workstream.id}
+                  folder={folder}
+                  currentChatId={currentChatId}
+                  projectOptions={projectOptions}
+                />
               ))}
               <DoneWorkstreams workstreams={doneWorkstreams} />
             </>

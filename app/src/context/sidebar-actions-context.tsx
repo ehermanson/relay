@@ -34,7 +34,8 @@ interface SidebarActions {
   removeProject(target: RemoveProjectTarget): void;
 
   // Chat
-  quickCreate(dir: string): void;
+  /** Start a chat in a project, optionally inside a Workstream. */
+  quickCreate(dir: string, options?: { workstreamId?: string }): void;
 }
 
 const SidebarActionsContext = createContext<SidebarActions | null>(null);
@@ -49,7 +50,7 @@ interface SidebarActionsProviderProps {
   children: ReactNode;
   currentProjectId?: string;
   projectByDir: Map<string, Project>;
-  createNewChat: (dir: string) => void;
+  createNewChat: (dir: string, options?: { workstreamId?: string }) => void;
 }
 
 export function SidebarActionsProvider({
@@ -144,7 +145,7 @@ export function SidebarActionsProvider({
       },
 
       // Chat
-      quickCreate: (dir) => createNewChat(dir),
+      quickCreate: (dir, options) => createNewChat(dir, options),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [

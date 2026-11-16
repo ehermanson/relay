@@ -1,5 +1,8 @@
 import type { Hono } from "hono";
 import { randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, resolve } from "node:path";
 import {
   DEFAULT_ACCOUNT_ID,
   type Workstream,
@@ -19,8 +22,28 @@ function readName(value: unknown): string | null {
 }
 
 /**
+ * Resolve a folder the user typed (`~` allowed) to the real directory it names.
+ * Returns an error message when it isn't an existing directory.
+ */
+function resolveFolder(value: unknown): { path: string } | { error: string } {
+  if (typeof value !== "string" || !value.trim()) return { error: "Folder path is required" };
+  const typed = value.trim();
+  const expanded =
+    typed === "~" ? homedir() : typed.startsWith("~/") ? resolve(homedir(), typed.slice(2)) : typed;
+  if (!isAbsolute(expanded)) return { error: "Use an absolute path, or one starting with ~" };
+  try {
+    const real = realpathSync(expanded);
+    if (!statSync(real).isDirectory()) return { error: "That path is not a folder" };
+    return { path: real };
+  } catch {
+    return { error: "That folder does not exist" };
+  }
+}
+
+/**
  * Workstreams: long-lived, account-scoped chat groupings (`plans/workstreams.md`).
- * Phase 1 is names and membership only; no linked directory, no agent context.
+ * A Workstream may link a directory (`folderPath`): member chats then get its
+ * README and STATUS and access to it when their session starts.
  */
 export function registerWorkstreamRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   const { instanceManager } = deps;
@@ -64,8 +87,20 @@ export function registerWorkstreamRoutes(app: Hono<AppEnv>, deps: HttpDeps): voi
 
   app.patch("/api/workstreams/:id", async (c) => {
     try {
-      const body = await readJsonBody<{ name?: unknown; status?: unknown }>(c);
-      const patch: { name?: string; status?: WorkstreamStatus } = {};
+      const body = await readJsonBody<{
+        name?: unknown;
+        status?: unknown;
+        folderPath?: unknown;
+      }>(c);
+      const patch: { name?: string; status?: WorkstreamStatus; folderPath?: string | null } = {};
+      // `null` unlinks the folder; a string links the directory it names.
+      if (body.folderPath === null) {
+        patch.folderPath = null;
+      } else if (body.folderPath !== undefined) {
+        const folder = resolveFolder(body.folderPath);
+        if ("error" in folder) return c.json({ error: folder.error }, 400);
+        patch.folderPath = folder.path;
+      }
       if (body.name !== undefined) {
         const name = readName(body.name);
         if (!name) return c.json({ error: `Name must be 1-${MAX_NAME_LENGTH} characters` }, 400);

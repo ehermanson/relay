@@ -280,6 +280,8 @@ export interface CodexAppServerSessionOptions {
   codexHome?: string;
   /** Relay's MCP endpoint and this chat's token (see `ProviderSessionOptions.relayMcp`). */
   relayMcp?: RelayMcpEndpoint;
+  /** Directories outside `cwd` the sandbox may write to (the chat's Workstream folder). */
+  additionalDirectories?: string[];
 }
 
 /**
@@ -287,8 +289,21 @@ export interface CodexAppServerSessionOptions {
  * `-c` config overrides (layered over the user's own `config.toml`); the token
  * stays out of argv — Codex reads it from `RELAY_MCP_TOKEN` in the env.
  */
-export function buildCodexAppServerArgs(relayMcp?: RelayMcpEndpoint): string[] {
+export function buildCodexAppServerArgs(
+  relayMcp?: RelayMcpEndpoint,
+  additionalDirectories?: string[],
+): string[] {
   const args = ["app-server", "--listen", "stdio://"];
+  // Extra writable roots for the workspace-write sandbox (the chat's Workstream
+  // folder). Set as a config override, not a per-turn `sandboxPolicy`: a full
+  // policy would also replace the user's own network and tmp settings. It does
+  // replace a `writable_roots` list from the user's config for this session.
+  if (additionalDirectories?.length) {
+    args.push(
+      "-c",
+      `sandbox_workspace_write.writable_roots=${JSON.stringify(additionalDirectories)}`,
+    );
+  }
   if (relayMcp) {
     const key = `mcp_servers.${RELAY_MCP_SERVER_NAME}`;
     args.push(
@@ -847,6 +862,7 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
   private _modelOptions: ProviderModelOptions;
   readonly bootstrapContext?: ProviderSessionBootstrap;
   private readonly relayMcp?: RelayMcpEndpoint;
+  private readonly additionalDirectories?: string[];
   private _stats: SessionStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -937,6 +953,8 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
     this._modelOptions = options.modelOptions ?? {};
     this.bootstrapContext = options.bootstrapContext;
     this.relayMcp = options.relayMcp;
+    // A read-only aside gets no extra writable directory.
+    this.additionalDirectories = options.readOnly ? undefined : options.additionalDirectories;
     if (this._preferredModel) {
       this._stats.model = this._preferredModel;
     }
@@ -1195,11 +1213,15 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   private spawnAndInit(firstMessage: string): void {
     this._closingIntentionally = false;
-    this.process = this.spawnProcess(this.codexPath, buildCodexAppServerArgs(this.relayMcp), {
-      cwd: this.cwd,
-      env: this.sessionSpawnEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.process = this.spawnProcess(
+      this.codexPath,
+      buildCodexAppServerArgs(this.relayMcp, this.additionalDirectories),
+      {
+        cwd: this.cwd,
+        env: this.sessionSpawnEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
 
     this.wireStdout(this.process.stdout);
     this.wireStderr(this.process.stderr);
@@ -1215,11 +1237,15 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
 
   private spawnAndCompact(): void {
     this._closingIntentionally = false;
-    this.process = this.spawnProcess(this.codexPath, buildCodexAppServerArgs(this.relayMcp), {
-      cwd: this.cwd,
-      env: this.sessionSpawnEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.process = this.spawnProcess(
+      this.codexPath,
+      buildCodexAppServerArgs(this.relayMcp, this.additionalDirectories),
+      {
+        cwd: this.cwd,
+        env: this.sessionSpawnEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
 
     this.wireStdout(this.process.stdout);
     this.wireStderr(this.process.stderr);

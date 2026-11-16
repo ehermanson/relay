@@ -131,6 +131,8 @@ interface ProviderSessionOptions {
    * the server into the session and adds the orchestration instructions.
    */
   relayMcp?: RelayMcpEndpoint;
+  /** Directories outside the chat's cwd it may read and write (its Workstream's folder). */
+  additionalDirectories?: string[];
 }
 
 interface ProviderCaptureContext {
@@ -657,6 +659,7 @@ function createClaudeSession(
         processTimeout: config.processTimeout,
         allowedTools: options?.allowedTools,
         bootstrapContext: options?.bootstrapContext,
+        additionalDirectories: options?.additionalDirectories,
         configDir,
         relayMcp: options?.relayMcp,
       },
@@ -946,6 +949,7 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
         modelOptions: options?.modelOptions,
         bootstrapContext: options?.bootstrapContext,
         relayMcp: options?.relayMcp,
+        additionalDirectories: options?.additionalDirectories,
       });
     },
     async getModels(context) {

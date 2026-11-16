@@ -1,6 +1,6 @@
 # Workstreams
 
-Status (2026-11-15): problem pinned down, shape agreed (sidebar folder + chip, optionally linked to a directory), not started. Provider folder-access spike done.
+Status (2026-11-16): phase 1 shipped (folders, chips, ⌘K). Phase 2 built in reduced scope: linked directory, README/STATUS context and folder access at session start, start a chat from a folder. Dropped by decision for now: backfill, automatic linking by folder access, skills from the folder, mid-session injection.
 
 ## Problem
 

@@ -153,5 +153,28 @@ export function useWorkstreamActions() {
     [patchSnapshot, fail],
   );
 
-  return { assign, create, update, remove, refresh };
+  /**
+   * Link the directory at `path`, or unlink with `null`. Not optimistic: the
+   * server decides whether the path is a real folder, and its message is
+   * returned so the dialog can show it beside the input.
+   */
+  const setFolder = useCallback(
+    async (id: string, path: string | null): Promise<string | undefined> => {
+      try {
+        const updated = await updateWorkstream(id, { folderPath: path });
+        patchSnapshot((snapshot) => ({
+          ...snapshot,
+          workstreams: snapshot.workstreams.map((workstream) =>
+            workstream.id === id ? updated : workstream,
+          ),
+        }));
+        return undefined;
+      } catch (err) {
+        return err instanceof Error ? err.message : "Failed to link folder";
+      }
+    },
+    [patchSnapshot],
+  );
+
+  return { assign, create, update, remove, setFolder, refresh };
 }

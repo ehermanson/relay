@@ -449,7 +449,11 @@ export function InboxSidebar({
             </div>
           ) : (
             <>
-              <WorkstreamsSection entries={allEntries} currentChatId={currentId} />
+              <WorkstreamsSection
+                entries={allEntries}
+                currentChatId={currentId}
+                projectOptions={projectOptions}
+              />
               <div className="px-2">
                 {active.length > 0 ? (
                   <>

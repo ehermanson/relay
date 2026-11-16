@@ -35,6 +35,9 @@ function rowToWorkstream(row: Record<string, unknown>): Workstream {
     accountId: String(row.account_id),
     name: String(row.name),
     status: status === "paused" || status === "done" ? status : "active",
+    ...(typeof row.folder_path === "string" && row.folder_path
+      ? { folderPath: row.folder_path }
+      : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -950,15 +953,31 @@ export class SessionDB {
 
   updateWorkstream(
     id: string,
-    patch: { name?: string; status?: WorkstreamStatus },
+    patch: { name?: string; status?: WorkstreamStatus; folderPath?: string | null },
     now: number,
   ): Workstream | null {
     const current = this.getWorkstream(id);
     if (!current) return null;
+    // `folderPath: null` unlinks; leaving it out keeps the current link.
+    const folderPath =
+      patch.folderPath === undefined ? (current.folderPath ?? null) : patch.folderPath;
     this.db
-      .prepare("UPDATE workstreams SET name = ?, status = ?, updated_at = ? WHERE id = ?")
-      .run(patch.name ?? current.name, patch.status ?? current.status, now, id);
+      .prepare(
+        "UPDATE workstreams SET name = ?, status = ?, folder_path = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(patch.name ?? current.name, patch.status ?? current.status, folderPath, now, id);
     return this.getWorkstream(id);
+  }
+
+  /** The Workstream a chat currently belongs to, if any. */
+  getChatWorkstream(instanceId: string): Workstream | null {
+    const row = this.db
+      .prepare(
+        `SELECT w.* FROM workstream_members m JOIN workstreams w ON w.id = m.workstream_id
+         WHERE m.instance_id = ? AND m.removed_at IS NULL`,
+      )
+      .get(instanceId) as Record<string, unknown> | undefined;
+    return row ? rowToWorkstream(row) : null;
   }
 
   /** Delete a workstream and its membership rows. Chats themselves are untouched. */

@@ -9,6 +9,7 @@ import {
 import { Settings2, Cpu, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { SidebarToggle } from "@/components/ui/view-header";
+import { useLayoutStore } from "@/stores/layout-store";
 
 const NAV_ITEMS = [
   {
@@ -35,6 +36,7 @@ function SettingsLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const isMobile = useMediaQuery("(max-width: 768px)");
+  const sidebarHidden = useLayoutStore((state) => state.sidebarCollapsed);
 
   const isRoot = location.pathname === "/settings" || location.pathname === "/settings/";
   const activeItem = NAV_ITEMS.find((item) => location.pathname === item.to);
@@ -98,11 +100,21 @@ function SettingsLayout() {
   // ── Desktop: two-column layout ──────────────────────────────────
   return (
     <div className="flex h-full flex-1 overflow-hidden">
-      <nav className="w-44 shrink-0 overflow-y-auto border-r border-border px-3 py-6">
-        <div className="desktop-window-header mb-5 flex items-center gap-2 px-2">
-          <SidebarToggle />
-          <h1 className="text-lg font-bold text-text-bright">Settings</h1>
-        </div>
+      <nav
+        className={`w-44 shrink-0 overflow-y-auto border-r border-border px-3 pb-6 ${sidebarHidden ? "" : "pt-6"}`}
+      >
+        {/* With the sidebar hidden, the show-sidebar button gets its own row at
+            the window's top edge, level with every other page header. Beside
+            the title it didn't fit: this column is narrow, and on macOS the
+            button also has to clear the traffic lights. */}
+        {sidebarHidden && (
+          <div className="desktop-window-header flex h-12 items-center px-2">
+            <SidebarToggle />
+          </div>
+        )}
+        <h1 className="desktop-window-header mb-5 px-2 text-lg font-bold text-text-bright">
+          Settings
+        </h1>
         <ul className="space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;

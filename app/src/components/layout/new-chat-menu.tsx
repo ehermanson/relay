@@ -1,5 +1,5 @@
 /**
- * "New chat" trigger shared by the inbox header and the collapsed rail.
+ * "New chat" trigger shared by the inbox header and Workstream folders.
  *
  * With exactly one possible target project the trigger creates the chat
  * directly, otherwise it opens a project picker. Callers resolve their own sole
@@ -23,6 +23,7 @@ export function NewChatMenu({
   tooltipSide,
   align,
   triggerClassName,
+  label = LABEL,
 }: {
   projectOptions: InboxProjectOption[];
   /** When set, the trigger creates directly in this project instead of asking. */
@@ -32,16 +33,18 @@ export function NewChatMenu({
   tooltipSide: "bottom" | "right";
   align: "start" | "end";
   triggerClassName: string;
+  /** Tooltip and accessible name; defaults to "New chat". */
+  label?: string;
 }) {
   const [open, setOpen] = useState(false);
 
   // A lone target is a plain button, not a menu.
   if (soleTarget) {
     return (
-      <Tooltip content={LABEL} side={tooltipSide}>
+      <Tooltip content={label} side={tooltipSide}>
         <button
           type="button"
-          aria-label={LABEL}
+          aria-label={label}
           onClick={() => onCreate(soleTarget)}
           className={triggerClassName}
         >
@@ -53,8 +56,8 @@ export function NewChatMenu({
 
   return (
     <Menu.Root open={open} onOpenChange={setOpen}>
-      <Tooltip content={LABEL} side={tooltipSide}>
-        <Menu.Trigger aria-label={LABEL} className={triggerClassName}>
+      <Tooltip content={label} side={tooltipSide}>
+        <Menu.Trigger aria-label={label} className={triggerClassName}>
           {icon}
         </Menu.Trigger>
       </Tooltip>

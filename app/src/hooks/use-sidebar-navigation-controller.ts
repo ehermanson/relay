@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useActionToasts } from "@/context/action-toast-context";
 import { useWSMethods, useWSState } from "@/context/websocket-context";
@@ -42,6 +42,7 @@ export function useSidebarNavigationController() {
   });
   const prevInstanceIds = useRef(new Set<string>());
   const pendingCreate = useRef(false);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const currentIds = new Set(instances.map((instance) => instance.id));
@@ -54,6 +55,8 @@ export function useSidebarNavigationController() {
           !isDelegatedChildInstance(instance)
         ) {
           pendingCreate.current = false;
+          // A chat started inside a Workstream became a member on the server.
+          void queryClient.invalidateQueries({ queryKey: ["workstreams"] });
           navigate({
             to: "/projects/$projectId/chats/$chatId",
             params: { projectId: getInstanceProjectRouteId(instance), chatId: instance.id },
@@ -63,7 +66,7 @@ export function useSidebarNavigationController() {
       }
     }
     prevInstanceIds.current = currentIds;
-  }, [instances, navigate]);
+  }, [instances, navigate, queryClient]);
 
   const projectEntries: SidebarNavigationEntry[] = navigation.groups.map(
     ([dir, groupInstances]) => {
@@ -84,11 +87,16 @@ export function useSidebarNavigationController() {
     },
   );
 
-  const createNewChat = (dir: string) => {
+  const createNewChat = (dir: string, options?: { workstreamId?: string }) => {
     pendingCreate.current = true;
     trackInstanceCreate(dir);
     // New chats bind to the active account (undefined below two accounts).
-    send({ type: "create_instance", workingDirectory: dir, accountId: accountIdParam });
+    send({
+      type: "create_instance",
+      workingDirectory: dir,
+      accountId: accountIdParam,
+      workstreamId: options?.workstreamId,
+    });
   };
 
   // A delegated child has no row of its own; while one is open, its nearest
