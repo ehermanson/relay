@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranch, Loader2, Search } from "lucide-react";
-import { getDesktop } from "@/lib/desktop";
+import { canChooseFolders, getDesktop } from "@/lib/desktop";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchGitRepos } from "../../lib/api";
@@ -98,7 +98,7 @@ export function AddProjectForm({ onSubmit, onCancel, error, registeredDirs }: Ad
         />
       </div>
 
-      {desktop?.capabilities?.localFiles && (
+      {canChooseFolders(desktop) && (
         <Button
           disabled={choosing}
           onClick={async () => {

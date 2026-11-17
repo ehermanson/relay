@@ -162,12 +162,21 @@ export function createBackendSupervisor({
   };
 }
 
+/** True for an origin on this computer's loopback interface. */
+export function isLoopbackOrigin(value) {
+  try {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** Explicitly attached servers retain their own normal password/cookie login. */
 export function attachedServerURL(value) {
   const url = new URL(value);
   if (url.username || url.password || url.search || url.hash)
     throw new Error("Server URL must contain only an origin");
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const loopback = isLoopbackOrigin(url.origin);
   if (url.protocol !== "https:" && !(loopback && url.protocol === "http:"))
     throw new Error("Attached servers require HTTPS or loopback HTTP");
   if (url.pathname !== "/") throw new Error("Server URL must contain only an origin");

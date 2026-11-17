@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { useDirectoryBrowser } from "@/hooks/use-directory-browser";
 import { useWorkstreamActions } from "@/hooks/use-workstreams";
 import { browsePath } from "@/lib/api";
-import { getDesktop } from "@/lib/desktop";
+import { canChooseFolders, getDesktop } from "@/lib/desktop";
 import { useWorkstreamUiStore } from "@/stores/workstream-ui-store";
 
 export function WorkstreamDialogs() {
@@ -130,7 +130,7 @@ function LinkFolderDialog({
   const listRef = useRef<HTMLDivElement>(null);
   const browser = useDirectoryBrowser();
   const desktop = getDesktop();
-  const nativeChooser = desktop?.capabilities?.localFiles ? desktop : undefined;
+  const nativeChooser = canChooseFolders(desktop) ? desktop : undefined;
 
   // The home directory comes from the browse route itself: `fetchHome` returns
   // the default chat directory, which is not what "~" means.

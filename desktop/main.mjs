@@ -34,7 +34,7 @@ import {
   authorizedPath,
   safeOpenPath,
 } from "./native.mjs";
-import { createBackendSupervisor, attachedServerURL } from "./runtime.mjs";
+import { createBackendSupervisor, attachedServerURL, isLoopbackOrigin } from "./runtime.mjs";
 import { createDesktopUpdater } from "./updater.mjs";
 import { sourceRelaunchExecutable } from "./source-relaunch.mjs";
 
@@ -92,6 +92,11 @@ const inlineHashes = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>
   .map((match) => `'sha256-${createHash("sha256").update(match[1]).digest("base64")}'`)
   .join(" ");
 const owned = () => connection.mode === "local";
+// Choosing a folder only yields a path, which the server validates. A loopback
+// server is normally this computer, so the chooser is offered there too; if it
+// is a forwarded port, the server just rejects a path it does not have.
+// Reveal/Open act on this computer's files and stay local-mode only.
+const canChooseFolders = () => owned() || isLoopbackOrigin(connection.url);
 const liveWindows = () => [...windows].filter((item) => !item.isDestroyed());
 const focusedWindow = () => BrowserWindow.getFocusedWindow() || window;
 function saveState() {
@@ -488,6 +493,7 @@ async function createWindow(path = "/") {
       additionalArguments: [
         `--relay-login-supported=${app.isPackaged && ["darwin", "win32"].includes(process.platform)}`,
         `--relay-attached=${!owned()}`,
+        `--relay-choose-folders=${canChooseFolders()}`,
       ],
     },
   });
@@ -671,7 +677,7 @@ function spawnBackend() {
 }
 function registerIPC() {
   handle("desktop:choose-directory", async (target) => {
-    if (!owned()) throw new Error("Choose folders through the connected Relay server");
+    if (!canChooseFolders()) throw new Error("Choose folders through the connected Relay server");
     const result = await dialog.showOpenDialog(target, {
       properties: ["openDirectory", "createDirectory"],
     });

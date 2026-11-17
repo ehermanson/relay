@@ -18,6 +18,8 @@ export interface RelayDesktop {
     attachedServer?: boolean;
     sharing?: boolean;
     localFiles?: boolean;
+    /** The native folder chooser applies: local mode, or attached to a server on this computer. */
+    chooseFolders?: boolean;
   };
   getConnection(): Promise<DesktopConnection>;
   setConnection(connection: { mode: "local" | "existing"; url?: string }): Promise<void>;
@@ -43,4 +45,9 @@ declare global {
 }
 export function getDesktop(): RelayDesktop | undefined {
   return typeof window === "undefined" ? undefined : window.relayDesktop;
+}
+
+/** Older shells only report `localFiles`; newer ones also allow a localhost-attached server. */
+export function canChooseFolders(desktop: RelayDesktop | undefined): desktop is RelayDesktop {
+  return Boolean(desktop?.capabilities?.chooseFolders ?? desktop?.capabilities?.localFiles);
 }

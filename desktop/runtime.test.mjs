@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { createBackendSupervisor, attachedServerURL } from "./runtime.mjs";
+import { createBackendSupervisor, attachedServerURL, isLoopbackOrigin } from "./runtime.mjs";
 
 class Child extends EventEmitter {
   messages = [];
@@ -87,6 +87,18 @@ test("shutdown during restart backoff cancels the next child", async () => {
   await supervisor.stop();
   await delay(70);
   assert.equal(children.length, 1);
+});
+
+test("loopback origins are recognized for the folder chooser", () => {
+  for (const url of ["http://localhost:8888", "http://127.0.0.1:7777", "http://[::1]:7777"])
+    assert.equal(isLoopbackOrigin(url), true);
+  for (const url of [
+    "https://relay.example",
+    "http://192.168.1.2:7777",
+    "http://localhost.evil.test",
+    null,
+  ])
+    assert.equal(isLoopbackOrigin(url), false);
 });
 
 test("explicit attachment accepts secure origins and rejects credentials or non-loopback HTTP", () => {

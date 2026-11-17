@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("relayDesktop", {
     attachedServer: attached,
     sharing: attached,
     localFiles: !attached,
+    chooseFolders: process.argv.includes("--relay-choose-folders=true"),
   },
   fullscreen: false,
   onNavigate: (callback) => subscribe("desktop:navigate", callback),
