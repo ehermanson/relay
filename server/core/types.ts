@@ -729,6 +729,12 @@ export interface InstanceInfo {
    * while its recency is at or below this value, so later activity revives it.
    */
   doneAt?: number;
+  /**
+   * The chat ran before, but its provider transcript is no longer on disk
+   * (providers delete old transcripts by themselves). Set when the chat is
+   * opened; its history can't be shown. Never persisted.
+   */
+  transcriptMissing?: boolean;
   /** Running token/cost stats for this session */
   stats?: SessionStats;
   /** Git branch name when instance runs in a worktree (e.g. "relay/a1b2c3d4") */

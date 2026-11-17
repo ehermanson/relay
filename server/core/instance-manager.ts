@@ -5739,11 +5739,13 @@ export class InstanceManager extends EventEmitter {
       instance.providerBinding?.transcriptPath ??
       instance.externalState?.jsonlPath;
     if (!transcriptPath || !existsSync(transcriptPath)) {
+      this.noteTranscriptPresence(instance, false);
       return this.buildHistoryView(
         instance.history,
         this.withDetectedFileChanges(id, instance.files),
       );
     }
+    this.noteTranscriptPresence(instance, true);
 
     const hydrateStartedAt = Date.now();
     const { parsed, cacheHit } = this.parseProviderTranscriptCached(
@@ -6077,6 +6079,24 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  /**
+   * Record whether a chat's transcript could be read. A chat that has a
+   * provider session but no transcript lost its history (the provider's own
+   * cleanup, usually); `transcriptMissing` lets the UI say so, where the empty
+   * state would present it as a chat that never started. A running chat is
+   * exempt: its first transcript may not be written yet.
+   */
+  private noteTranscriptPresence(instance: Instance, found: boolean): void {
+    const ranBefore =
+      instance.sessionId ??
+      instance.providerBinding?.providerSessionId ??
+      instance.externalState?.sessionId;
+    const missing = !found && !!ranBefore && !instance.process;
+    if (!!instance.info.transcriptMissing === missing) return;
+    instance.info.transcriptMissing = missing || undefined;
+    this.emitInstanceStatus(instance);
+  }
+
   private hydrateInstance(id: string, instance: Instance): void {
     if (instance.hydrated) return;
 
@@ -6129,6 +6149,7 @@ export class InstanceManager extends EventEmitter {
       }
     } else {
       instance.files = this.withDetectedFileChanges(id, instance.files);
+      this.noteTranscriptPresence(instance, false);
     }
 
     instance.hydrated = true;

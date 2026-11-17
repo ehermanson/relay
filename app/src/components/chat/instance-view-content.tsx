@@ -44,7 +44,7 @@ import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
 import { getProjectName } from "@/lib/project-route";
 import { buildReviewSendBackMessage, getReviewSourceInstance } from "@/lib/review-session";
-import { ArrowRightFromLine, X } from "lucide-react";
+import { ArrowRightFromLine, FileX, X } from "lucide-react";
 import type { SpinOffPacket } from "@shared/types";
 import type { SuggestionCondition } from "@shared/types";
 
@@ -228,6 +228,29 @@ function ReviewSourceBar({
           : "whole branch/worktree"}{" "}
         from {sourceName}
       </span>
+    </div>
+  );
+}
+
+/** Shown instead of the empty state for a chat whose transcript was deleted. */
+function TranscriptMissingState() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center px-6 py-10 max-[768px]:py-6">
+      <div className="flex w-full max-w-md flex-col items-center text-center">
+        <FileX size={28} className="mb-4 text-muted" />
+        <p className="text-[0.875rem] font-medium text-text-bright">
+          This chat's history is no longer on this computer
+        </p>
+        <p className="mt-2 text-[0.75rem] leading-relaxed text-muted">
+          Relay can't find its transcript. Providers delete old transcripts on their own; Claude
+          Code does it after 30 days unless{" "}
+          <code className="rounded bg-surface-hover px-1 py-px text-[0.6875rem] text-text">
+            cleanupPeriodDays
+          </code>{" "}
+          is raised in its settings. The chat keeps its title and its place in your lists, but the
+          conversation can't be shown and may not resume.
+        </p>
+      </div>
     </div>
   );
 }
@@ -652,10 +675,14 @@ export function InstanceViewContent() {
         // Empty state + suggestions share one scrollable region so the composer
         // (shrink-0, below) always stays on screen even on short viewports.
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          {shared.embeddedSourceChat?.emptyState ?? (
-            <EmptyChatState projectName={getProjectName(shared.instance.workingDirectory)} />
-          )}
+          {shared.embeddedSourceChat?.emptyState ??
+            (shared.instance.transcriptMissing ? (
+              <TranscriptMissingState />
+            ) : (
+              <EmptyChatState projectName={getProjectName(shared.instance.workingDirectory)} />
+            ))}
           {!shared.instance.external &&
+            !shared.instance.transcriptMissing &&
             !isReviewMode &&
             filteredSuggestions &&
             filteredSuggestions.length > 0 && (

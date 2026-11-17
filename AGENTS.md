@@ -247,6 +247,8 @@ The left-gutter tick column in `app/src/components/chat/chat-rail.tsx` replaced 
 
 Sidebar/dashboard rows render from persisted SQLite metadata first. Opening a chat triggers lazy hydration of transcript/task/file state and git info, but history reads stay passive: Relay does not boot/resume a stopped managed session until the user explicitly sends a message (or otherwise takes over/resumes it).
 
+**A deleted transcript is said out loud.** Providers delete old transcripts themselves (Claude Code after `cleanupPeriodDays`, 30 by default), and the two kinds of chat then diverge: the startup scan archives a terminal chat whose JSONL is gone, while a managed chat keeps its row and its place in every list. When such a chat is read (`getHistory`, or hydrate on send), `noteTranscriptPresence` sets `InstanceInfo.transcriptMissing` (never persisted; cleared when the file is back; a running chat is exempt because its first transcript may not exist yet), and the chat view shows `TranscriptMissingState` instead of the "Ready when you are" empty state. Sending is not blocked and nothing about resume changes.
+
 ### Entry Screens & Project View
 
 Phone users open Relay to start or continue a chat, so the entry screens lead with chats, not stats.

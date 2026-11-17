@@ -6,6 +6,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  copyFileSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -1447,6 +1448,36 @@ describe("InstanceManager", () => {
       const info = manager.createInstance();
       const history = manager.getHistory(info.id);
       assert.deepEqual(history, []);
+    });
+
+    it("flags a chat whose transcript was deleted, and clears the flag when it is back", async () => {
+      const transcriptPath = join(manager.baseConfig.workingDirectory, "deleted-later.jsonl");
+      const db = new SessionDB(manager.baseConfig.dbPath, noopLogger);
+      try {
+        db.upsertManaged(
+          makeManagedRow({
+            instance_id: "managed-lost",
+            provider_name: "codex",
+            provider_session_id: "codex-lost-session",
+            working_directory: manager.baseConfig.workingDirectory,
+            transcript_path: transcriptPath,
+            resume_cursor_json: JSON.stringify({ sessionId: "codex-lost-session" }),
+          }),
+        );
+      } finally {
+        db.close();
+      }
+      manager.restoreInstances();
+      const instance = manager.instances.get("managed-lost");
+      assert.ok(instance);
+      assert.equal(instance.info.transcriptMissing, undefined);
+
+      assert.deepEqual(manager.getHistory("managed-lost"), []);
+      assert.equal(instance.info.transcriptMissing, true);
+
+      copyFileSync(join(fixturesDir, "codex-managed-session.jsonl"), transcriptPath);
+      assert.ok(manager.getHistory("managed-lost").length > 0);
+      assert.equal(instance.info.transcriptMissing, undefined);
     });
 
     it("returns transcript history for stopped managed chats without booting them", async () => {
