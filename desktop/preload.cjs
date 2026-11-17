@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("relayDesktop", {
     launchAtLogin: process.argv.includes("--relay-login-supported=true"),
     multipleWindows: true,
     attachedServer: attached,
-    sharing: attached,
+    sharing: attached || process.argv.includes("--relay-sharing=true"),
     localFiles: !attached,
     chooseFolders: process.argv.includes("--relay-choose-folders=true"),
   },

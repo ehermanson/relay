@@ -162,6 +162,68 @@ export function createBackendSupervisor({
   };
 }
 
+/**
+ * How local mode runs its own server.
+ * - `data`: "private" keeps state in the desktop home; "shared" uses the same
+ *   home as the Relay CLI, so the app and `relay start` see the same data
+ *   (never at the same moment: the server state lock allows one writer).
+ * - `share`: serve browsers and phones like `relay start` does (every
+ *   interface, fixed `port`, the user's `password` or open mode, the saved
+ *   named tunnel). Off: loopback only, behind a private per-launch password.
+ */
+export const DEFAULT_LOCAL_SERVER = Object.freeze({
+  data: "private",
+  share: false,
+  port: 7777,
+  password: null,
+});
+
+/** The message a second server gets from the server state lock. */
+export const STATE_OWNED_MESSAGE =
+  "Another Relay server is already using this data (for example `relay start`). Stop it and open Relay again, or connect to it instead.";
+
+/**
+ * Validate local-server settings from disk or the renderer. `password`:
+ * omitted keeps the previous one, null or "" clears it, a string sets it.
+ */
+export function normalizeLocalServer(value, previous = DEFAULT_LOCAL_SERVER) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid local server settings");
+  const known = ["data", "share", "port", "password"];
+  if (Object.keys(value).some((key) => !known.includes(key)))
+    throw new Error("Invalid local server settings");
+  const data = value.data ?? previous.data;
+  if (data !== "private" && data !== "shared") throw new Error("Choose where Relay keeps its data");
+  const share = value.share ?? previous.share;
+  if (typeof share !== "boolean") throw new Error("Invalid sharing setting");
+  const port = value.port ?? previous.port;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535)
+    throw new Error("Port must be a number from 1024 to 65535");
+  let password = previous.password ?? null;
+  if (value.password === null || value.password === "") password = null;
+  else if (value.password !== undefined) {
+    if (
+      typeof value.password !== "string" ||
+      value.password.length > 256 ||
+      // eslint-disable-next-line no-control-regex
+      /[\u0000-\u001f\u007f]/.test(value.password)
+    )
+      throw new Error("Password must be at most 256 characters with no control characters");
+    password = value.password;
+  }
+  return { data, share, port, password };
+}
+
+/** What the renderer may see: never the password itself. */
+export function publicLocalServer(value) {
+  return {
+    data: value.data,
+    share: value.share,
+    port: value.port,
+    hasPassword: Boolean(value.password),
+  };
+}
+
 /** True for an origin on this computer's loopback interface. */
 export function isLoopbackOrigin(value) {
   try {

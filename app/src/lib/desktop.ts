@@ -4,11 +4,25 @@ export interface DesktopPreferences {
   notifications: boolean;
   closeToTray: boolean;
   globalShortcut: boolean;
+  /** Absent on app shells that predate it. */
+  stayAwake?: boolean;
 }
 export type DesktopCommand = "search" | "new-chat" | "new-project" | "toggle-sidebar" | "settings";
+/** How local mode runs its own server. The password itself never reaches the page. */
+export interface DesktopLocalServer {
+  /** "shared" uses the Relay CLI's data; "private" keeps the app's own. */
+  data: "private" | "shared";
+  /** Serve browsers and phones too, like `relay start`. */
+  share: boolean;
+  port: number;
+  hasPassword: boolean;
+}
 export interface DesktopConnection {
   mode: "local" | "existing";
   url: string | null;
+  /** Absent on app shells older than shared local servers. */
+  local?: DesktopLocalServer;
+  sharedHome?: string;
 }
 export interface RelayDesktop {
   platform: string;
@@ -22,7 +36,12 @@ export interface RelayDesktop {
     chooseFolders?: boolean;
   };
   getConnection(): Promise<DesktopConnection>;
-  setConnection(connection: { mode: "local" | "existing"; url?: string }): Promise<void>;
+  setConnection(connection: {
+    mode: "local" | "existing";
+    url?: string;
+    /** `password`: omit to keep, null to clear, a string to set. */
+    local?: { data: "private" | "shared"; share: boolean; port: number; password?: string | null };
+  }): Promise<void>;
   fullscreen?: boolean;
   onFullscreen(callback: (fullscreen: boolean) => void): () => void;
   onCommand(callback: (command: DesktopCommand) => void): () => void;

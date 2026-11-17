@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createBackendUpdateService } from "./update-service.mjs";
 import { acquireStateLock } from "./state-lock.mjs";
+import { STATE_OWNED_MESSAGE } from "./runtime.mjs";
 
 // The Relay home is resolved at module initialization. Do not statically import
 // server modules: main must choose the isolated desktop home first.
@@ -17,6 +18,7 @@ let authDirectory;
 let starting;
 let stopping = false;
 let releaseStateLock;
+let stopTunnel;
 let nativeTerminalMetrics;
 const bootAt = performance.now();
 
@@ -144,14 +146,29 @@ async function start(message) {
   if (typeof message.home !== "string" || !isAbsolute(message.home)) {
     throw new Error("Desktop state requires an absolute home directory");
   }
-  if (typeof message.password !== "string" || message.password.length < 32) {
+  // Shared with browsers and phones: the user's own password, or open mode.
+  // Otherwise only this app may log in, with a password nobody else knows.
+  const share = message.share ?? null;
+  if (share) {
+    if (!Number.isInteger(share.port) || share.port < 1024 || share.port > 65535)
+      throw new Error("Invalid shared server port");
+    if (share.password !== null && typeof share.password !== "string")
+      throw new Error("Invalid shared server password");
+  } else if (typeof message.password !== "string" || message.password.length < 32) {
     throw new Error("Desktop authentication requires a strong ephemeral password");
   }
+  // The server's state may live in the CLI's home; the app's own files (saved
+  // port, outbox identity, backend lock) always stay in the desktop home.
+  const desktopHome = message.desktopHome ?? message.home;
+  if (typeof desktopHome !== "string" || !isAbsolute(desktopHome))
+    throw new Error("Desktop state requires an absolute home directory");
   process.env.RELAY_HOME = message.home;
   await mkdir(message.home, { recursive: true, mode: 0o700 });
-  releaseStateLock = await acquireStateLock(message.home);
-  const port = await readDesktopPort(message.home);
-  const outboxIdentity = await readDesktopIdentity(message.home);
+  await mkdir(desktopHome, { recursive: true, mode: 0o700 });
+  releaseStateLock = await acquireStateLock(desktopHome);
+  const port = share ? share.port : await readDesktopPort(desktopHome);
+  const password = share ? share.password || undefined : message.password;
+  const outboxIdentity = await readDesktopIdentity(desktopHome);
   await restoreShellPath();
   // Fail explicitly rather than silently falling back to an incompatible DB.
   const { DatabaseSync } = await import("node:sqlite");
@@ -165,18 +182,40 @@ async function start(message) {
     installDir: join(import.meta.dirname, ".."),
     getRuntimeStatus: () => relay.getRuntimeStatus(),
   });
+  let tunnelUrl = null;
+  let namedTunnel = null;
+  if (share) {
+    // Same rule as `relay start`: a saved named tunnel starts with the server.
+    const { readTunnelSettings } = await import("../dist/server/tunnel-settings.js");
+    try {
+      namedTunnel = await readTunnelSettings();
+      if (namedTunnel) await readFile(namedTunnel.tokenFile, "utf8");
+    } catch {
+      console.warn("Saved tunnel settings could not be read; starting without the tunnel");
+      namedTunnel = null;
+    }
+    tunnelUrl = namedTunnel?.publicUrl ?? null;
+  }
   relay = createRelay({
     updateManager,
-    host: "127.0.0.1",
     port,
     outboxIdentity,
     backgroundStartupDelayMs: 2000,
-    password: message.password,
-    // Authentication is scoped to this process lifetime; the private session
-    // file is removed at quit. A long-running desktop window never needs to
-    // prompt the user for its unknowable bootstrap password.
-    sessionMaxAge: 100 * 365 * 24 * 60 * 60 * 1000,
-    sessionFile: join(authDirectory, "sessions.json"),
+    password,
+    ...(share
+      ? {
+          // Every interface, sessions kept in the home, like `relay start`.
+          getTunnelUrl: () => tunnelUrl,
+        }
+      : {
+          host: "127.0.0.1",
+          // Authentication is scoped to this process lifetime; the private
+          // session file is removed at quit. A long-running desktop window
+          // never needs to prompt the user for its unknowable bootstrap
+          // password.
+          sessionMaxAge: 100 * 365 * 24 * 60 * 60 * 1000,
+          sessionFile: join(authDirectory, "sessions.json"),
+        }),
     workingDirectory: homedir(),
     ...(process.env.RELAY_DESKTOP_BENCHMARK === "1"
       ? {
@@ -194,15 +233,27 @@ async function start(message) {
   if (!address) throw new Error("Desktop backend did not acquire a listener");
   // Origin stability keeps localStorage, IndexedDB drafts/outbox and browser
   // permissions attached to this desktop installation across restarts.
-  if (port === 0) await saveDesktopPort(message.home, address.port);
+  if (!share && port === 0) await saveDesktopPort(desktopHome, address.port);
+  if (namedTunnel) {
+    const tunnel = await import("../dist/server/tunnel.js");
+    stopTunnel = tunnel.stopTunnel;
+    tunnel.startTunnel(address.port, {
+      named: namedTunnel,
+      onUrl: (value) => {
+        tunnelUrl = value;
+      },
+    });
+  }
   const url = `http://127.0.0.1:${address.port}`;
   const response = await fetch(`${url}/auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password: message.password }),
+    body: JSON.stringify({ password: password ?? "" }),
   });
   const cookie = response.headers.get("set-cookie");
-  if (!response.ok || !cookie) throw new Error("Desktop backend authentication failed");
+  // Open mode (shared, no password) needs no cookie.
+  if (!response.ok || (!cookie && password))
+    throw new Error("Desktop backend authentication failed");
   if (!stopping)
     send({
       type: "ready",
@@ -228,6 +279,7 @@ async function stop() {
   deadline.unref();
   try {
     await starting?.catch(() => {});
+    stopTunnel?.();
     if (relay?.address) await relay.stop();
     if (authDirectory) await rm(authDirectory, { recursive: true, force: true });
     await releaseStateLock?.();
@@ -250,8 +302,11 @@ parent.on("message", async ({ data: message }) => {
         type: "error",
         message:
           error?.code === "EADDRINUSE"
-            ? "Relay Desktop's saved local port is occupied. Close the other listener and restart Relay Desktop."
-            : "Desktop backend could not start. Check its runtime and logs.",
+            ? "Relay Desktop's port is occupied. Close the other listener and restart Relay Desktop."
+            : // The server state lock's fixed text; safe to pass on.
+              /already owns this state directory/.test(error?.message ?? "")
+              ? STATE_OWNED_MESSAGE
+              : "Desktop backend could not start. Check its runtime and logs.",
       });
       void stop();
     });

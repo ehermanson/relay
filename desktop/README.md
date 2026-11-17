@@ -28,9 +28,16 @@ macOS ARM builds appear at `desktop-release/mac-arm64/Relay.app`. Build Windows/
 
 Default local mode owns isolated `~/.relay-desktop` state; override with absolute `RELAY_DESKTOP_HOME`. It uses existing Provider transcript roots but does not merge writable CLI settings or managed bindings from `~/.relay`. Desktop and CLI share an OS-backed exclusive state lock, so explicit attempts to point two servers at the same DB fail safely.
 
+Settings → General → Relay Server → Run locally has two options, both off by default:
+
+- **Use my existing Relay data** runs the app's server on the CLI's home (`~/.relay`; `RELAY_DESKTOP_SHARED_HOME` overrides it for tests), so the app and `relay start` show the same Projects, chats and settings. Only one of them can run at a time. If `relay start` is already running, the app says so at launch and offers to go back to separate data. Keep the app and the CLI install on the same version: a server that finds a database from a different schema version backs it up and rebuilds it.
+- **Allow browser and phone access** makes the app's server reachable like `relay start`: it listens on every interface on the chosen port, uses your password (or open mode with none), keeps logins across restarts, and starts a saved named tunnel. It serves only while the app runs, so enabling it also enables Keep running when closed. The password is stored in the owner-only `desktop.json`. Changing the port changes the window's origin, so unsent drafts stored by the old origin are not carried over.
+
+Stay awake while chats run (on by default) keeps the computer from idle-sleeping while a Chat is working. A closed laptop lid still sleeps it.
+
 Settings → General → Relay Server can instead connect to an existing Relay origin. `RELAY_DESKTOP_SERVER_URL` is a launch override. Only HTTPS or loopback HTTP is allowed; URLs cannot contain credentials, paths, queries or fragments. Existing mode starts no backend, uses the server's normal login in a separate persistent browser partition, and never stops that server on Quit. It restores web sharing/Sign Out controls and disables local file actions (Reveal, Open) so remote server paths cannot target this computer. The native folder chooser stays available when the attached server is a loopback origin, since that is normally this computer and the server validates the chosen path either way. Choose this mode to use the existing CLI server, settings, Projects and phone/tunnel access together. Switching mode saves configuration and relaunches; an owned busy backend must become idle first.
 
-The owned server restores the login-shell PATH with a bounded deadline, binds `127.0.0.1`, persists its port/origin, and uses a private per-launch password and cookie. Origin stability preserves localStorage and IndexedDB. Offline sends retain a stable desktop owner across launches. An occupied saved port fails explicitly instead of silently discarding browser state. No owned desktop tunnel or browser push subscription is started.
+Unless browser and phone access is on, the owned server restores the login-shell PATH with a bounded deadline, binds `127.0.0.1`, persists its port/origin, and uses a private per-launch password and cookie. Origin stability preserves localStorage and IndexedDB. Offline sends retain a stable desktop owner across launches. An occupied saved port fails explicitly instead of silently discarding browser state. No owned desktop tunnel or browser push subscription is started.
 
 ## Seamless updates
 

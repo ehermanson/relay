@@ -2,7 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { createBackendSupervisor, attachedServerURL, isLoopbackOrigin } from "./runtime.mjs";
+import {
+  createBackendSupervisor,
+  attachedServerURL,
+  isLoopbackOrigin,
+  DEFAULT_LOCAL_SERVER,
+  normalizeLocalServer,
+  publicLocalServer,
+} from "./runtime.mjs";
 
 class Child extends EventEmitter {
   messages = [];
@@ -112,4 +119,42 @@ test("explicit attachment accepts secure origins and rejects credentials or non-
     "file:///tmp/test",
   ])
     assert.throws(() => attachedServerURL(url));
+});
+
+test("local server settings default to private loopback and validate every field", () => {
+  assert.deepEqual(normalizeLocalServer({}), { ...DEFAULT_LOCAL_SERVER });
+  assert.deepEqual(normalizeLocalServer({ data: "shared", share: true, port: 8888 }), {
+    data: "shared",
+    share: true,
+    port: 8888,
+    password: null,
+  });
+  for (const bad of [
+    null,
+    [],
+    { data: "elsewhere" },
+    { share: "yes" },
+    { port: 80 },
+    { port: 70000 },
+    { port: 8888.5 },
+    { password: 12 },
+    { password: "a\nb" },
+    { password: "x".repeat(257) },
+    { host: "0.0.0.0" },
+  ])
+    assert.throws(() => normalizeLocalServer(bad));
+});
+
+test("a local server password is kept unless set or cleared, and never shown", () => {
+  const set = normalizeLocalServer({ password: "hunter2" });
+  assert.equal(set.password, "hunter2");
+  assert.equal(normalizeLocalServer({ port: 9000 }, set).password, "hunter2");
+  assert.equal(normalizeLocalServer({ password: null }, set).password, null);
+  assert.equal(normalizeLocalServer({ password: "" }, set).password, null);
+  assert.deepEqual(publicLocalServer(set), {
+    data: "private",
+    share: false,
+    port: 7777,
+    hasPassword: true,
+  });
 });

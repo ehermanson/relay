@@ -68,6 +68,19 @@ export function DesktopSettings() {
           onCheckedChange={(closeToTray) => void update({ closeToTray })}
         />
       </SettingRow>
+      {data?.stayAwake !== undefined && (
+        <SettingRow
+          label="Stay awake while chats run"
+          description="Keep this computer from going to sleep on its own while a chat is working. Closing a laptop lid still puts it to sleep."
+        >
+          <Switch
+            aria-label="Stay awake while chats run"
+            checked={data.stayAwake}
+            disabled={busy}
+            onCheckedChange={(stayAwake) => void update({ stayAwake })}
+          />
+        </SettingRow>
+      )}
       <SettingRow
         label="Global shortcut"
         description="Press Command/Control + Shift + Space from any app to show Relay."

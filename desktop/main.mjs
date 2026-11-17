@@ -14,10 +14,11 @@ import {
   powerMonitor,
   globalShortcut,
   clipboard,
+  powerSaveBlocker,
 } from "electron";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename, realpath } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, isAbsolute } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import {
   isLocalURL,
@@ -34,7 +35,15 @@ import {
   authorizedPath,
   safeOpenPath,
 } from "./native.mjs";
-import { createBackendSupervisor, attachedServerURL, isLoopbackOrigin } from "./runtime.mjs";
+import {
+  createBackendSupervisor,
+  attachedServerURL,
+  isLoopbackOrigin,
+  DEFAULT_LOCAL_SERVER,
+  STATE_OWNED_MESSAGE,
+  normalizeLocalServer,
+  publicLocalServer,
+} from "./runtime.mjs";
 import { createDesktopUpdater } from "./updater.mjs";
 import { sourceRelaunchExecutable } from "./source-relaunch.mjs";
 
@@ -63,6 +72,10 @@ app.setName("Relay");
 app.setAppUserModelId("com.relay.desktop");
 const home = process.env.RELAY_DESKTOP_HOME || join(homedir(), ".relay-desktop");
 app.setPath("userData", join(home, "electron"));
+// Where the Relay CLI keeps its state. Local mode can use it instead of the
+// desktop home, so the app and `relay start` share one set of data.
+const sharedHome =
+  process.env.RELAY_DESKTOP_SHARED_HOME || process.env.RELAY_HOME || join(homedir(), ".relay");
 const appIcon = join(import.meta.dirname, "../app/public/icon-512.png");
 const bootAt = performance.now();
 const windows = new Set();
@@ -82,6 +95,9 @@ let quitting = false,
 let preferences = { ...DEFAULT_PREFERENCES };
 let bounds = { width: 1280, height: 860 };
 let connection = { mode: "local", url: null };
+let localServer = { ...DEFAULT_LOCAL_SERVER };
+let sleepBlocker = null;
+let sleepCheck = null;
 let lastPath = "/";
 let switchingConnection = false;
 let pendingPath = process.argv.map(deepLinkPath).find(Boolean);
@@ -100,7 +116,7 @@ const canChooseFolders = () => owned() || isLoopbackOrigin(connection.url);
 const liveWindows = () => [...windows].filter((item) => !item.isDestroyed());
 const focusedWindow = () => BrowserWindow.getFocusedWindow() || window;
 function saveState() {
-  const state = JSON.stringify({ preferences, bounds, connection, lastPath });
+  const state = JSON.stringify({ preferences, bounds, connection, localServer, lastPath });
   saveQueue = saveQueue
     .catch(() => {})
     .then(async () => {
@@ -191,7 +207,32 @@ async function open(path) {
   if (error) throw new Error(error);
 }
 let trayFailedCount = 0;
+// Keep the computer from idle-sleeping while Chats are running, so work a
+// phone is following doesn't pause. A closed lid still sleeps the machine.
+function stayAwake(running) {
+  const want = preferences.stayAwake && running > 0;
+  if (want && sleepBlocker === null) {
+    sleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
+    // With every window closed nothing reports activity, so ask the backend
+    // now and then, only while the blocker is held.
+    if (owned())
+      sleepCheck = setInterval(
+        () =>
+          void supervisor
+            ?.request("status")
+            .then(trayMenu)
+            .catch(() => {}),
+        60_000,
+      );
+  } else if (!want && sleepBlocker !== null) {
+    powerSaveBlocker.stop(sleepBlocker);
+    sleepBlocker = null;
+    clearInterval(sleepCheck);
+    sleepCheck = null;
+  }
+}
 function trayMenu(state) {
+  if (state) stayAwake(state.activeCount || 0);
   if (!tray) return;
   // Backend status reports running/pending only; the renderer's
   // desktop:activity report owns the failed count.
@@ -494,6 +535,7 @@ async function createWindow(path = "/") {
         `--relay-login-supported=${app.isPackaged && ["darwin", "win32"].includes(process.platform)}`,
         `--relay-attached=${!owned()}`,
         `--relay-choose-folders=${canChooseFolders()}`,
+        `--relay-sharing=${!owned() || localServer.share}`,
       ],
     },
   });
@@ -596,16 +638,19 @@ async function createWindow(path = "/") {
 async function recoverBackend(ready) {
   origin = new URL(ready.url).origin;
   backendMetrics = ready.metrics;
-  authCookie = ready.cookie.split(";")[0];
+  // A shared server in open mode has no login, so no cookie.
+  authCookie = ready.cookie ? ready.cookie.split(";")[0] : null;
   if (session) {
-    const separator = authCookie.indexOf("=");
-    await session.cookies.set({
-      url: origin,
-      name: authCookie.slice(0, separator),
-      value: authCookie.slice(separator + 1),
-      httpOnly: true,
-      sameSite: "strict",
-    });
+    if (authCookie) {
+      const separator = authCookie.indexOf("=");
+      await session.cookies.set({
+        url: origin,
+        name: authCookie.slice(0, separator),
+        value: authCookie.slice(separator + 1),
+        httpOnly: true,
+        sameSite: "strict",
+      });
+    }
     for (const target of liveWindows()) {
       // One window's failed or aborted reload must not reject onReady: the
       // supervisor would treat that as a terminal backend failure.
@@ -735,9 +780,14 @@ function registerIPC() {
       shortcut();
       throw error;
     }
+    if (!preferences.stayAwake) stayAwake(0);
     return { ...preferences };
   });
-  handle("desktop:connection", () => ({ ...connection }));
+  handle("desktop:connection", () => ({
+    ...connection,
+    local: publicLocalServer(localServer),
+    sharedHome,
+  }));
   handle("desktop:set-connection", async (_target, value) => {
     if (!value || !["local", "existing"].includes(value.mode))
       throw new Error("Choose a server mode");
@@ -745,12 +795,19 @@ function registerIPC() {
       mode: value.mode,
       url: value.mode === "existing" ? attachedServerURL(value.url) : null,
     };
+    const nextLocal =
+      value.mode === "local" && value.local !== undefined
+        ? normalizeLocalServer(value.local, localServer)
+        : localServer;
+    if (!isAbsolute(sharedHome)) throw new Error("The shared Relay home must be an absolute path");
     // Save the new connection before quiescing the backend: quiescence is
     // one-way, so a failed save must not strand a quiesced backend with no
     // relaunch scheduled.
     const wasOwned = owned();
-    const previous = { connection, lastPath, switchingConnection };
+    const previous = { connection, lastPath, switchingConnection, localServer, preferences };
     const restore = async () => {
+      localServer = previous.localServer;
+      preferences = previous.preferences;
       connection = previous.connection;
       lastPath = previous.lastPath;
       switchingConnection = previous.switchingConnection;
@@ -759,6 +816,9 @@ function registerIPC() {
     switchingConnection = true;
     lastPath = "/";
     connection = next;
+    // A server other devices rely on should outlive its window.
+    if (nextLocal.share && !localServer.share) preferences = { ...preferences, closeToTray: true };
+    localServer = nextLocal;
     try {
       await saveState();
     } catch (error) {
@@ -955,7 +1015,9 @@ async function smoke() {
 }
 function bootstrapMessage() {
   return {
-    home,
+    home: localServer.data === "shared" ? sharedHome : home,
+    desktopHome: home,
+    share: localServer.share ? { port: localServer.port, password: localServer.password } : null,
     password: randomBytes(32).toString("hex"),
     packaged: app.isPackaged || updateSmoke,
     currentVersion: app.isPackaged ? app.getVersion() : manifest.version,
@@ -996,6 +1058,7 @@ async function start() {
     lastPath = applicationPath(state.lastPath) || "/";
     if (state.connection?.mode === "existing")
       connection = { mode: "existing", url: attachedServerURL(state.connection.url) };
+    if (state.localServer) localServer = normalizeLocalServer(state.localServer);
   } catch (error) {
     if (error.code !== "ENOENT")
       console.warn("Desktop preferences could not be restored; using safe defaults");
@@ -1162,11 +1225,31 @@ else {
   app
     .whenReady()
     .then(start)
-    .catch((error) => {
+    .catch(async (error) => {
       console.error("Desktop startup failed:", error.message);
       if (process.env.RELAY_DESKTOP_SMOKE === "1") {
         requestedExitCode = 1;
         console.error("DESKTOP_SMOKE_FAILED", error.message);
+      } else if (error.message === STATE_OWNED_MESSAGE && localServer.data === "shared") {
+        // The shared data has a running server (`relay start`). Offer the way
+        // back so the app can't get stuck unable to open its own settings.
+        const { response } = await dialog.showMessageBox({
+          type: "warning",
+          message: "Relay's data is in use by another Relay server",
+          detail:
+            "Stop the other server (for example `relay start`) and open Relay again. Or switch this app back to its own separate data.",
+          buttons: ["Quit", "Use Separate Data"],
+          defaultId: 0,
+          cancelId: 0,
+        });
+        if (response === 1) {
+          localServer = { ...localServer, data: "private" };
+          await saveState().catch(() => {});
+          stopped = true;
+          app.relaunch();
+          app.exit(0);
+          return;
+        }
       } else dialog.showErrorBox("Relay could not start", error.message);
       app.quit();
     });

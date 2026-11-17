@@ -6,6 +6,7 @@ export const DEFAULT_PREFERENCES = {
   notifications: false,
   closeToTray: true,
   globalShortcut: false,
+  stayAwake: true,
 };
 export function validatePreferences(value) {
   if (
