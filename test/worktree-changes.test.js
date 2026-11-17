@@ -330,8 +330,10 @@ describe("worktree change detection", () => {
   it("reports why a snapshot failed, but not for a plain non-repo", async () => {
     const dir = makeRepo();
     const reasons = [];
+    // An aborted signal fails the git read every time. A tiny timeout raced
+    // git itself and lost on a fast CI runner.
     const snapshot = await captureWorktreeSnapshot(dir, {
-      timeoutMs: 0.001,
+      signal: AbortSignal.abort(),
       onFailure: (reason) => reasons.push(reason),
     });
     assert.equal(snapshot, null);
