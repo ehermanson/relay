@@ -7,7 +7,7 @@
 
 import { mkdirSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import type { Logger } from "#core/logger.js";
 import {
   loginRootForTranscriptPath,
@@ -3084,7 +3084,179 @@ ${buildSearchIndexSchemaSql()},
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
 
+  /** A consistent copy of this database, taken through SQLite itself. */
+  backupTo(path: string): void {
+    this.db.prepare("VACUUM INTO ?").run(path);
+  }
+
+  /**
+   * Merge another Relay database into this one: its Projects, managed chats and
+   * what hangs off them (session events, delegated tasks, Workstreams). Rows
+   * this database already has always win — nothing is overwritten, so running
+   * it twice changes nothing. One transaction; the source is only read.
+   *
+   * Terminal-chat rows (`sessions`) aren't copied: they are an index of the
+   * provider transcripts both databases already see. Only their pin and done
+   * marks carry over. Search docs are rebuilt at startup.
+   */
+  importFromDatabase(sourcePath: string): DatabaseImportResult {
+    const result: DatabaseImportResult = { projects: 0, chats: 0, instanceIds: [] };
+    this.db.prepare("ATTACH DATABASE ? AS src").run(sourcePath);
+    const columnsOf = (schema: "main" | "src", table: string): string[] =>
+      (this.db.prepare(`PRAGMA ${schema}.table_info(${table})`).all() as Array<{ name?: string }>)
+        .map((column) => column.name ?? "")
+        .filter(Boolean);
+    // Databases written by another version may lack a table or a column; copy
+    // what both sides have and let defaults fill the rest.
+    const shared = (table: string, omit: string[] = []): string[] | null => {
+      const source = new Set(columnsOf("src", table));
+      if (source.size === 0) return null;
+      const columns = columnsOf("main", table).filter(
+        (column) => source.has(column) && !omit.includes(column),
+      );
+      return columns.length ? columns : null;
+    };
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.exec(
+        "CREATE TEMP TABLE IF NOT EXISTS imported_chats (instance_id TEXT PRIMARY KEY); DELETE FROM temp.imported_chats;",
+      );
+
+      // Projects are keyed by directory. One already registered here keeps its
+      // own row; the source's chats are re-pointed at it.
+      const projectIds = new Map<string, string>();
+      const projectColumns = shared("projects");
+      if (projectColumns) {
+        const existing = this.db.prepare("SELECT id FROM main.projects WHERE directory = ?");
+        const idTaken = this.db.prepare("SELECT 1 FROM main.projects WHERE id = ?");
+        const slugTaken = this.db.prepare("SELECT 1 FROM main.projects WHERE slug = ?");
+        const insert = this.db.prepare(
+          `INSERT INTO main.projects (${projectColumns.join(", ")}) VALUES (${projectColumns.map(() => "?").join(", ")})`,
+        );
+        const rows = this.db
+          .prepare(`SELECT ${projectColumns.join(", ")} FROM src.projects`)
+          .all() as Array<Record<string, SQLInputValue>>;
+        for (const row of rows) {
+          const id = String(row.id);
+          const here = existing.get(row.directory) as { id: string } | undefined;
+          if (here) {
+            projectIds.set(id, here.id);
+            continue;
+          }
+          if (idTaken.get(id)) continue;
+          // A slug in use here is dropped; ProjectManager assigns a free one.
+          if (row.slug != null && slugTaken.get(row.slug)) row.slug = null;
+          insert.run(...projectColumns.map((column) => row[column] ?? null));
+          // An explicit import is a re-registration, like adding the Project.
+          this.db
+            .prepare("DELETE FROM main.removed_projects WHERE directory = ?")
+            .run(row.directory);
+          projectIds.set(id, id);
+          result.projects++;
+        }
+      }
+
+      const chatColumns = shared("managed_sessions");
+      if (chatColumns) {
+        const idTaken = this.db.prepare(
+          "SELECT 1 FROM main.managed_sessions WHERE instance_id = ?",
+        );
+        // The same provider session managed on both sides is one chat, not two.
+        const sessionTaken = this.db.prepare(
+          "SELECT 1 FROM main.managed_sessions WHERE provider_name = ? AND provider_session_id = ?",
+        );
+        const insert = this.db.prepare(
+          `INSERT INTO main.managed_sessions (${chatColumns.join(", ")}) VALUES (${chatColumns.map(() => "?").join(", ")})`,
+        );
+        const remember = this.db.prepare(
+          "INSERT INTO temp.imported_chats (instance_id) VALUES (?)",
+        );
+        const rows = this.db
+          .prepare(`SELECT ${chatColumns.join(", ")} FROM src.managed_sessions`)
+          .all() as Array<Record<string, SQLInputValue>>;
+        for (const row of rows) {
+          const id = String(row.instance_id);
+          if (idTaken.get(id)) continue;
+          if (
+            row.provider_session_id != null &&
+            sessionTaken.get(row.provider_name, row.provider_session_id)
+          )
+            continue;
+          if (typeof row.project_id === "string")
+            row.project_id = projectIds.get(row.project_id) ?? row.project_id;
+          insert.run(...chatColumns.map((column) => row[column] ?? null));
+          remember.run(id);
+          result.instanceIds.push(id);
+          result.chats++;
+        }
+      }
+
+      // `id` is this database's own autoincrement.
+      const eventColumns = shared("session_events", ["id"]);
+      if (eventColumns) {
+        this.db.exec(
+          `INSERT INTO main.session_events (${eventColumns.join(", ")})
+           SELECT ${eventColumns.join(", ")} FROM src.session_events
+           WHERE instance_id IN (SELECT instance_id FROM temp.imported_chats)
+           ORDER BY id`,
+        );
+      }
+      const taskColumns = shared("delegated_tasks");
+      if (taskColumns) {
+        this.db.exec(
+          `INSERT OR IGNORE INTO main.delegated_tasks (${taskColumns.join(", ")})
+           SELECT ${taskColumns.join(", ")} FROM src.delegated_tasks
+           WHERE child_instance_id IN (SELECT instance_id FROM temp.imported_chats)`,
+        );
+      }
+      const memberColumns = shared("workstream_members");
+      const workstreamColumns = shared("workstreams");
+      if (memberColumns && workstreamColumns) {
+        this.db.exec(
+          `INSERT OR IGNORE INTO main.workstreams (${workstreamColumns.join(", ")})
+           SELECT ${workstreamColumns.join(", ")} FROM src.workstreams
+           WHERE id IN (
+             SELECT workstream_id FROM src.workstream_members
+             WHERE instance_id IN (SELECT instance_id FROM temp.imported_chats)
+           );
+           INSERT OR IGNORE INTO main.workstream_members (${memberColumns.join(", ")})
+           SELECT ${memberColumns.join(", ")} FROM src.workstream_members
+           WHERE instance_id IN (SELECT instance_id FROM temp.imported_chats)
+             AND workstream_id IN (SELECT id FROM main.workstreams);`,
+        );
+      }
+      // Pins and done marks the user set on terminal chats over there.
+      const flags = new Set(columnsOf("src", "sessions"));
+      if (flags.has("pinned") && flags.has("done_at")) {
+        this.db.exec(
+          `UPDATE main.sessions SET
+             pinned = MAX(pinned, (SELECT s.pinned FROM src.sessions s WHERE s.session_id = main.sessions.session_id)),
+             done_at = NULLIF(MAX(COALESCE(done_at, 0), COALESCE((SELECT s.done_at FROM src.sessions s WHERE s.session_id = main.sessions.session_id), 0)), 0)
+           WHERE session_id IN (SELECT session_id FROM src.sessions WHERE pinned = 1 OR done_at IS NOT NULL)`,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* no transaction was open */
+      }
+      throw error;
+    } finally {
+      this.db.exec("DETACH DATABASE src");
+    }
+    return result;
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+export interface DatabaseImportResult {
+  projects: number;
+  chats: number;
+  /** The managed chats that were added. */
+  instanceIds: string[];
 }

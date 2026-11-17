@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("relayDesktop", {
   setPreferences: (preferences) => ipcRenderer.invoke("desktop:set-preferences", preferences),
   getConnection: () => ipcRenderer.invoke("desktop:connection"),
   setConnection: (connection) => ipcRenderer.invoke("desktop:set-connection", connection),
+  importPrivateData: () => ipcRenderer.invoke("desktop:import-private-data"),
   revealPath: (path) => ipcRenderer.invoke("desktop:reveal", path),
   openPath: (path) => ipcRenderer.invoke("desktop:open", path),
   newWindow: (path) => ipcRenderer.invoke("desktop:new-window", path),

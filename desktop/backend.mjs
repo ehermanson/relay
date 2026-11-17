@@ -142,6 +142,52 @@ async function verifyNativeTerminal() {
   };
 }
 
+/**
+ * Merge the app's separate data into the home this backend is about to serve,
+ * before the server opens it. A failed import never blocks startup: the result
+ * is reported and the server starts on the data as it was.
+ */
+async function importHome(message) {
+  const toDb = join(message.home, "sessions.db");
+  if (
+    typeof message.importFrom !== "string" ||
+    !isAbsolute(message.importFrom) ||
+    message.importFrom === toDb
+  )
+    return { ok: false, error: "Nothing to import" };
+  try {
+    const { acquireServerStateLock } = await import("../dist/server/state-lock.js");
+    const { importRelayHome } = await import("../dist/server/core/home-import.js");
+    // Both databases must be idle: hold each server lock for the merge.
+    const releaseTarget = acquireServerStateLock(toDb);
+    let releaseSource;
+    try {
+      releaseSource = acquireServerStateLock(message.importFrom);
+      const result = importRelayHome({
+        fromDbPath: message.importFrom,
+        toDbPath: toDb,
+        logger: console,
+      });
+      return { ok: true, projects: result.projects, chats: result.chats };
+    } finally {
+      releaseSource?.();
+      releaseTarget();
+    }
+  } catch (error) {
+    console.error("Desktop data import failed:", error?.code ?? error?.name ?? "Error");
+    const text = error?.message ?? "";
+    return {
+      ok: false,
+      // Fixed texts only: other errors can carry paths or SQL.
+      error: /already owns this state directory/.test(text)
+        ? "The data is in use by another Relay server. Stop it and try again."
+        : /no data to import/.test(text)
+          ? "There is no separate app data to import."
+          : "The import failed. Your data was left as it was.",
+    };
+  }
+}
+
 async function start(message) {
   if (typeof message.home !== "string" || !isAbsolute(message.home)) {
     throw new Error("Desktop state requires an absolute home directory");
@@ -174,6 +220,7 @@ async function start(message) {
   const { DatabaseSync } = await import("node:sqlite");
   const probe = new DatabaseSync(":memory:");
   probe.close();
+  const importResult = message.importFrom ? await importHome(message) : null;
   authDirectory = await mkdtemp(join(tmpdir(), "relay-desktop-auth-"));
   const { createRelay } = await import("../dist/server/index.js");
   const updateManager = await createBackendUpdateService({
@@ -259,6 +306,7 @@ async function start(message) {
       type: "ready",
       url,
       cookie,
+      importResult,
       metrics: {
         startupMs: performance.now() - bootAt,
         rssBytes: process.memoryUsage().rss,

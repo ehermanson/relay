@@ -23,6 +23,16 @@ export interface DesktopConnection {
   /** Absent on app shells older than shared local servers. */
   local?: DesktopLocalServer;
   sharedHome?: string;
+  /** The app runs on the shared data and still has its own separate data. */
+  privateData?: boolean;
+  /** What the last import of that separate data did. */
+  lastImport?: {
+    ok: boolean;
+    projects?: number;
+    chats?: number;
+    error?: string;
+    at: number;
+  } | null;
 }
 export interface RelayDesktop {
   platform: string;
@@ -42,6 +52,8 @@ export interface RelayDesktop {
     /** `password`: omit to keep, null to clear, a string to set. */
     local?: { data: "private" | "shared"; share: boolean; port: number; password?: string | null };
   }): Promise<void>;
+  /** Merge the app's separate data into the shared data; restarts the app. */
+  importPrivateData?(): Promise<void>;
   fullscreen?: boolean;
   onFullscreen(callback: (fullscreen: boolean) => void): () => void;
   onCommand(callback: (command: DesktopCommand) => void): () => void;

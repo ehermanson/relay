@@ -18,6 +18,7 @@ import {
 } from "electron";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, basename, isAbsolute } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import {
@@ -96,6 +97,10 @@ let preferences = { ...DEFAULT_PREFERENCES };
 let bounds = { width: 1280, height: 860 };
 let connection = { mode: "local", url: null };
 let localServer = { ...DEFAULT_LOCAL_SERVER };
+// A one-shot request to merge the app's separate data into the shared home at
+// the next backend start, and what the last such merge did.
+let pendingImport = false;
+let lastImport = null;
 let sleepBlocker = null;
 let sleepCheck = null;
 let lastPath = "/";
@@ -116,7 +121,15 @@ const canChooseFolders = () => owned() || isLoopbackOrigin(connection.url);
 const liveWindows = () => [...windows].filter((item) => !item.isDestroyed());
 const focusedWindow = () => BrowserWindow.getFocusedWindow() || window;
 function saveState() {
-  const state = JSON.stringify({ preferences, bounds, connection, localServer, lastPath });
+  const state = JSON.stringify({
+    preferences,
+    bounds,
+    connection,
+    localServer,
+    pendingImport,
+    lastImport,
+    lastPath,
+  });
   saveQueue = saveQueue
     .catch(() => {})
     .then(async () => {
@@ -636,6 +649,13 @@ async function createWindow(path = "/") {
   return target;
 }
 async function recoverBackend(ready) {
+  if (pendingImport) {
+    // The request is spent whether or not the merge worked: never loop on it.
+    pendingImport = false;
+    if (ready.importResult && typeof ready.importResult === "object")
+      lastImport = { ...ready.importResult, at: Date.now() };
+    await saveState().catch(() => {});
+  }
   origin = new URL(ready.url).origin;
   backendMetrics = ready.metrics;
   // A shared server in open mode has no login, so no cookie.
@@ -787,7 +807,34 @@ function registerIPC() {
     ...connection,
     local: publicLocalServer(localServer),
     sharedHome,
+    // Offered once the app runs on the shared data and still has its own.
+    privateData: owned() && localServer.data === "shared" && existsSync(join(home, "sessions.db")),
+    lastImport,
   }));
+  handle("desktop:import-private-data", async () => {
+    if (!owned() || localServer.data !== "shared")
+      throw new Error("Importing needs Relay to run locally on your existing Relay data");
+    if (!existsSync(join(home, "sessions.db"))) throw new Error("There is no separate app data");
+    // Same order as a connection change: save first, then quiesce (one-way).
+    pendingImport = true;
+    try {
+      await saveState();
+      const ready = await prepareInstall();
+      if (!ready.ok) throw new Error(ready.error);
+    } catch (error) {
+      pendingImport = false;
+      await saveState().catch(() => {});
+      throw error;
+    }
+    setTimeout(
+      () =>
+        requestExit(() => {
+          app.relaunch();
+          app.exit(0);
+        }),
+      200,
+    );
+  });
   handle("desktop:set-connection", async (_target, value) => {
     if (!value || !["local", "existing"].includes(value.mode))
       throw new Error("Choose a server mode");
@@ -1018,6 +1065,7 @@ function bootstrapMessage() {
     home: localServer.data === "shared" ? sharedHome : home,
     desktopHome: home,
     share: localServer.share ? { port: localServer.port, password: localServer.password } : null,
+    importFrom: pendingImport && localServer.data === "shared" ? join(home, "sessions.db") : null,
     password: randomBytes(32).toString("hex"),
     packaged: app.isPackaged || updateSmoke,
     currentVersion: app.isPackaged ? app.getVersion() : manifest.version,
@@ -1059,6 +1107,8 @@ async function start() {
     if (state.connection?.mode === "existing")
       connection = { mode: "existing", url: attachedServerURL(state.connection.url) };
     if (state.localServer) localServer = normalizeLocalServer(state.localServer);
+    pendingImport = state.pendingImport === true;
+    if (state.lastImport && typeof state.lastImport === "object") lastImport = state.lastImport;
   } catch (error) {
     if (error.code !== "ENOENT")
       console.warn("Desktop preferences could not be restored; using safe defaults");

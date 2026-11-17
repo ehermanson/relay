@@ -22,6 +22,7 @@ export function DesktopConnectionSetting() {
   // Empty means "leave the password as it is".
   const [password, setPassword] = useState("");
   const [removePassword, setRemovePassword] = useState(false);
+  const [confirmImport, setConfirmImport] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -67,6 +68,16 @@ export function DesktopConnectionSetting() {
       setBusy(false);
     }
   };
+  const runImport = async () => {
+    setError(undefined);
+    setBusy(true);
+    try {
+      await desktop.importPrivateData?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start the import");
+      setBusy(false);
+    }
+  };
   const unchanged =
     !data || (mode === data.mode && (mode === "local" ? !localChanged : url.trim() === data.url));
   return (
@@ -104,6 +115,41 @@ export function DesktopConnectionSetting() {
                 onCheckedChange={setShared}
               />
             </label>
+            {data?.lastImport && (
+              <p className={`text-xs ${data.lastImport.ok ? "text-muted" : "text-destructive"}`}>
+                {data.lastImport.ok
+                  ? `Imported ${data.lastImport.chats ?? 0} chats and ${data.lastImport.projects ?? 0} Projects from this app's separate data.`
+                  : `Import did not run: ${data.lastImport.error ?? "unknown error"}`}
+              </p>
+            )}
+            {data?.privateData && desktop.importPrivateData && (
+              <div className="flex flex-col items-start gap-1.5">
+                <p className="text-xs text-muted">
+                  This app still has the separate data it used before. Importing adds its Projects
+                  and chats to your existing Relay data. Nothing already there is changed, a backup
+                  is taken first, and the separate data is left in place.
+                </p>
+                {confirmImport ? (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void runImport()}
+                    >
+                      {busy ? "Restarting…" : "Import and Restart"}
+                    </Button>
+                    <Button size="sm" disabled={busy} onClick={() => setConfirmImport(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button size="sm" disabled={busy} onClick={() => setConfirmImport(true)}>
+                    Import chats from this app's separate data…
+                  </Button>
+                )}
+              </div>
+            )}
             <label className="flex items-start justify-between gap-4">
               <span>
                 <span className="block text-sm text-text">Allow browser and phone access</span>
