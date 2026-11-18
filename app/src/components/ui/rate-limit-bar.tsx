@@ -129,7 +129,7 @@ export function RateLimitBar({
 }
 
 /**
- * Renders a monthly spending-limit bar using Claude's extra_usage budget data.
+ * Renders Claude's extra-usage (overage) spend for the billing period.
  * Amounts are stored as minor currency units (cents for USD) and displayed as
  * formatted currency strings.
  */
@@ -140,7 +140,7 @@ export function SpendLimitBar({
   spendLimit: SpendLimit;
   size?: "sm" | "md";
 }) {
-  const { usedCents, limitCents, utilization, currency } = spendLimit;
+  const { usedCents, limitCents, utilization, currency, enabled } = spendLimit;
 
   const fmtCurrency = (cents: number) =>
     new Intl.NumberFormat("en-US", {
@@ -162,7 +162,7 @@ export function SpendLimitBar({
   return (
     <div>
       <div className={`mb-1 flex items-center justify-between ${textSize} text-muted`}>
-        <span>Monthly spend</span>
+        <span>Extra usage</span>
         <span className="tabular-nums">{usageText}</span>
       </div>
       {pct !== null ? (
@@ -171,6 +171,11 @@ export function SpendLimitBar({
             className={`h-full rounded-full transition-all ${barColor}`}
             style={{ width: `${Math.min(pct, 100)}%` }}
           />
+        </div>
+      ) : null}
+      {enabled === false ? (
+        <div className={`mt-1 ${textSize} text-warning`}>
+          Off: extra usage can't cover requests right now.
         </div>
       ) : null}
     </div>

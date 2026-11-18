@@ -229,7 +229,7 @@ export interface ProviderRateLimitStatus {
   windows?: ProviderRateLimitWindow[];
 }
 
-/** Monthly spending-limit snapshot from Claude's extra_usage budget. */
+/** Extra-usage (overage) spend for the billing period, from Claude's extra_usage budget. */
 export interface SpendLimit {
   /** Spend so far this billing period, in minor currency units (cents for USD). */
   usedCents: number;
@@ -239,6 +239,8 @@ export interface SpendLimit {
   utilization: number | null;
   /** ISO 4217 currency code (e.g. "USD"). */
   currency: string;
+  /** False while extra usage cannot cover sends (e.g. the cap is reached or billing is off). */
+  enabled: boolean;
 }
 
 export interface ProviderAccountStatus {

@@ -646,8 +646,8 @@ function windowsFromUsageSnapshot(
 }
 
 /**
- * Extract the monthly spend-limit from the experimental get_usage snapshot.
- * Returns null when extra_usage is absent, disabled, or missing required fields.
+ * Extract extra-usage spend from the experimental get_usage snapshot.
+ * Returns null when extra_usage is absent or missing required fields.
  */
 function extraUsageFromSnapshot(
   snapshot: SdkUsageSnapshot | null,
@@ -657,7 +657,6 @@ function extraUsageFromSnapshot(
   const extra = (limits as Record<string, unknown>).extra_usage;
   if (!extra || typeof extra !== "object") return null;
   const e = extra as Record<string, unknown>;
-  if (e.is_enabled === false) return null;
   const usedCents = typeof e.used_credits === "number" ? e.used_credits : null;
   if (usedCents === null) return null;
   return {
@@ -665,6 +664,9 @@ function extraUsageFromSnapshot(
     limitCents: typeof e.monthly_limit === "number" ? e.monthly_limit : null,
     utilization: typeof e.utilization === "number" ? e.utilization : null,
     currency: typeof e.currency === "string" && e.currency ? e.currency : "USD",
+    // Disabled is when this matters most (extra usage can't cover sends), so
+    // keep the snapshot and let the UI flag it rather than hiding it.
+    enabled: e.is_enabled !== false,
   };
 }
 
