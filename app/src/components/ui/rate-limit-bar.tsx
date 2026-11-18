@@ -1,4 +1,4 @@
-import type { ProviderRateLimitStatus, ProviderRateLimitWindow } from "@shared/types";
+import type { ProviderRateLimitStatus, ProviderRateLimitWindow, SpendLimit } from "@shared/types";
 import { formatTimeUntil, rateLimitColorClass } from "../../lib/utils";
 
 /**
@@ -122,6 +122,60 @@ export function RateLimitBar({
             className={`h-full rounded-full transition-all ${barColor}`}
             style={{ width: `${Math.min(effectivePct, 100)}%` }}
           />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Renders Claude's extra-usage (overage) spend for the billing period.
+ * Amounts are stored as minor currency units (cents for USD) and displayed as
+ * formatted currency strings.
+ */
+export function SpendLimitBar({
+  spendLimit,
+  size = "sm",
+}: {
+  spendLimit: SpendLimit;
+  size?: "sm" | "md";
+}) {
+  const { usedCents, limitCents, utilization, currency, enabled } = spendLimit;
+
+  const fmtCurrency = (cents: number) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency || "USD",
+      minimumFractionDigits: 2,
+    }).format(cents / 100);
+
+  const pct = typeof utilization === "number" ? utilization : null;
+  const barColor = rateLimitColorClass(undefined, pct ?? undefined);
+  const textSize = size === "sm" ? "text-[0.6875rem]" : "text-[0.75rem]";
+  const barHeight = size === "sm" ? "h-1.5" : "h-2";
+
+  const usageText =
+    limitCents !== null
+      ? `${fmtCurrency(usedCents)} / ${fmtCurrency(limitCents)}`
+      : fmtCurrency(usedCents);
+
+  return (
+    <div>
+      <div className={`mb-1 flex items-center justify-between ${textSize} text-muted`}>
+        <span>Extra usage</span>
+        <span className="tabular-nums">{usageText}</span>
+      </div>
+      {pct !== null ? (
+        <div className={`flex ${barHeight} w-full overflow-hidden rounded-full bg-surface-hover`}>
+          <div
+            className={`h-full rounded-full transition-all ${barColor}`}
+            style={{ width: `${Math.min(pct, 100)}%` }}
+          />
+        </div>
+      ) : null}
+      {enabled === false ? (
+        <div className={`mt-1 ${textSize} text-warning`}>
+          Off: extra usage can't cover requests right now.
         </div>
       ) : null}
     </div>
