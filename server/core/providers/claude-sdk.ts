@@ -1979,11 +1979,11 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
 
   /**
    * Resolve the Relay key for a task_* event (or `<task-notification>`).
-   * Background tasks are not all agents — `local_bash` tasks emit the same
-   * events — so an event is only treated as an agent when its `tool_use_id`
-   * is an already-known agent key, its `task_id` maps to one, or the event
-   * itself says it is an agent (`subagent_type`, or a `task_type` naming an
-   * agent/workflow). The bare `task_id` is never used as a key.
+   * Background tasks are not all agents — `local_bash` and `mcp_task` tasks
+   * emit the same events — so an event is only treated as an agent when its
+   * `tool_use_id` is an already-known agent key, its `task_id` maps to one,
+   * or the event itself says it is an agent (`subagent_type`, or a `task_type`
+   * naming an agent/workflow). The bare `task_id` is never used as a key.
    */
   private resolveTaskAgentKey(msg: {
     task_id?: unknown;
