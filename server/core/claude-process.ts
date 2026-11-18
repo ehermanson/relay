@@ -37,6 +37,7 @@ import {
   FILE_WRITE_TOOLS,
 } from "#core/tools.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
+import { MessageUsageTracker } from "#core/message-usage.js";
 import { buildClaudeSpawnEnv, resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 // =============================================================================
@@ -100,6 +101,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
   private _processTimeout: ReturnType<typeof setTimeout> | null = null;
   private _preferredModel: string | null = null;
   private _runtimeMode: ProviderRuntimeMode;
+  private readonly usageTracker = new MessageUsageTracker();
   private _stats: SessionStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -359,6 +361,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
       cache_creation_input_tokens?: number;
       cache_read_input_tokens?: number;
     },
+    messageId?: string,
   ): void {
     if (!usage.input_tokens && !usage.output_tokens) return;
     const u = {
@@ -367,10 +370,8 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
       cache_creation_input_tokens: usage.cache_creation_input_tokens,
       cache_read_input_tokens: usage.cache_read_input_tokens,
     };
-    this._stats.inputTokens += u.input_tokens;
-    this._stats.outputTokens += u.output_tokens;
-    this._stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
-    this._stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+    // Assistant events repeat the message's usage once per content block.
+    this.usageTracker.add(this._stats, messageId, u);
     // Only record the primary (first) model — Claude Code may use cheaper
     // models (e.g. Haiku) internally for subagent/tool operations.
     if (!this._stats.model) {
@@ -565,7 +566,7 @@ export class ClaudeProcess extends EventEmitter implements ProviderSession {
             }
             // Extract usage from assistant event
             if (event.message?.usage && event.message?.model) {
-              this.accumulateUsage(event.message.model, event.message.usage);
+              this.accumulateUsage(event.message.model, event.message.usage, event.message.id);
             }
           } else if (event.type === "tool_use") {
             const toolName = event.name || event.tool || "Unknown tool";

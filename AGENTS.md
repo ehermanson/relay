@@ -381,6 +381,12 @@ A Workstream is a long-lived, account-scoped grouping of chats for one effort: a
 - Plan utilization has two SDK sources: live `rate_limit_event` messages mid-session, and the experimental `get_usage` snapshot (SDK ≥ 0.3.169) probed at prewarm, session start, and after each completed turn (throttled, `refreshUsageRateLimits` in `server/core/providers/claude-sdk.ts`). Always feature-detect the snapshot method (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`) — it will be renamed at stabilization.
 - Merging is field-level, never whole-window: live events carry `status` (and only sometimes `utilization` — `allowed` events have none), the snapshot carries authoritative `utilization` but no status. An event without utilization must not erase a known percentage, and a snapshot below 100% clears a stale `rejected` (both in `claude-sdk.ts` and in `mergeRateLimitWindows` in `instance-manager.ts`). The CLI replays cached rate-limit status at session start, so a latched `rejected` that snapshots can't override will stick for hours.
 
+### Claude Token Totals
+
+- **Count usage once per API message.** Claude Code writes one transcript record (and the SDK emits one assistant frame) per content block, each repeating the whole message's `usage`; summing records inflated totals ~3×. Live frames, transcript replay and the stats reader all go through `server/core/message-usage.ts`, keyed by `message.id` (root frames only, matching replay — subagents have their own transcripts).
+- **Never add `result.modelUsage` tokens.** It is a running total for the whole `query()` (plus subagents and background calls); it only feeds `thinkingTokens` (as growth since the previous result) and `costBasis`.
+- Totals are per process, so a resume passes the chat's totals as `initialStats` (`createProviderSession`); Codex reports whole-thread totals and ignores it. Stored rows from older counting are recomputed once per project via `stats_recounts` + `CLAUDE_USAGE_COUNT_VERSION` (`backfillProjectTranscriptStats`), deferred while a Claude chat in the project is running.
+
 ### Plan Review Abstraction
 
 - Provider-specific plan output should normalize onto Relay's shared `ExitPlanMode` / `pendingPlan` / `planContent` flow instead of inventing a separate UI path

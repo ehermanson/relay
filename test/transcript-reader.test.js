@@ -176,3 +176,24 @@ test("Claude replay uses only the last valid compact boundary for state rebuildi
   assert.equal(result.files.has("/tmp/relay-stream-project/old.txt"), true);
   assert.equal(result.files.has("/tmp/relay-stream-project/new.txt"), true);
 });
+
+test("claude replay counts a message's usage once across its per-block records", (t) => {
+  // Claude Code writes one record per content block, each repeating the
+  // message's full usage; summing records multiplied every message.
+  const usage = { input_tokens: 2, output_tokens: 466, cache_read_input_tokens: 16491 };
+  const record = (id, block, u = usage) => ({
+    type: "assistant",
+    timestamp,
+    message: { id, model: "claude-test", content: [block], usage: u },
+  });
+  const entries = [
+    record("msg_a", { type: "thinking", thinking: "hm" }),
+    record("msg_a", { type: "text", text: "Looking" }),
+    record("msg_a", { type: "tool_use", id: "toolu_1", name: "Read", input: {} }),
+    record("msg_b", { type: "text", text: "Done" }, { input_tokens: 1, output_tokens: 9 }),
+  ];
+  const result = manager.parseJsonl(fixture(t, entries.map(JSON.stringify).join("\n") + "\n"));
+  assert.equal(result.stats.inputTokens, 3);
+  assert.equal(result.stats.outputTokens, 475);
+  assert.equal(result.stats.cacheReadTokens, 16491);
+});

@@ -916,7 +916,7 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
 
-    it("accumulates stats from result modelUsage", async () => {
+    it("never adds result modelUsage running totals to token stats", async () => {
       const harness = makeHarness();
       const session = await createTestSession(harness);
       const statsEvents = collectEvents(session, "stats");
@@ -939,10 +939,85 @@ describe("ClaudeSdkSession", () => {
       await tick();
       assert.ok(statsEvents.length >= 1);
       const lastStats = statsEvents[statsEvents.length - 1][0];
-      assert.equal(lastStats.inputTokens, 100);
-      assert.equal(lastStats.outputTokens, 50);
+      // modelUsage is a running total for the whole query() and includes
+      // subagents and background calls; totals come from root frames.
+      assert.equal(lastStats.inputTokens, 0);
+      assert.equal(lastStats.outputTokens, 0);
       // modelUsage never names the chat's model — see the next test.
       assert.equal(lastStats.model, undefined);
+      session.close();
+    });
+
+    it("counts a message's usage once across its per-block frames", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const statsEvents = collectEvents(session, "stats");
+      const frame = (id, block, usage) => ({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: { id, model: "claude-opus-4-8", content: [block], usage },
+      });
+      const usage = {
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_read_input_tokens: 1000,
+        cache_creation_input_tokens: 50,
+      };
+
+      harness.fakeQuery.emit(frame("msg_1", { type: "thinking", thinking: "hm" }, usage));
+      harness.fakeQuery.emit(frame("msg_1", { type: "text", text: "Hi" }, usage));
+      harness.fakeQuery.emit(
+        frame("msg_1", { type: "tool_use", id: "toolu_1", name: "Read", input: {} }, usage),
+      );
+      harness.fakeQuery.emit(
+        frame(
+          "msg_2",
+          { type: "text", text: "Done" },
+          { input_tokens: 5, output_tokens: 20, cache_read_input_tokens: 1300 },
+        ),
+      );
+      await tick();
+
+      const lastStats = statsEvents[statsEvents.length - 1][0];
+      assert.equal(lastStats.inputTokens, 15);
+      assert.equal(lastStats.outputTokens, 220);
+      assert.equal(lastStats.cacheReadTokens, 2300);
+      assert.equal(lastStats.cacheCreationTokens, 50);
+      session.close();
+    });
+
+    it("continues the chat's totals when resumed with initialStats", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness, {
+        resumeSessionId: "sess-1",
+        initialStats: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheCreationTokens: 10,
+          cacheReadTokens: 20,
+          reasoningTokens: 7,
+        },
+      });
+      const statsEvents = collectEvents(session, "stats");
+      // Frames before the first send are the resumed history replaying.
+      session.send("continue");
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_new",
+          model: "claude-opus-4-8",
+          content: [{ type: "text", text: "Back" }],
+          usage: { input_tokens: 3, output_tokens: 4 },
+        },
+      });
+      await tick();
+      const lastStats = statsEvents[statsEvents.length - 1][0];
+      assert.equal(lastStats.inputTokens, 1003);
+      assert.equal(lastStats.outputTokens, 504);
+      assert.equal(lastStats.reasoningTokens, 7);
       session.close();
     });
 

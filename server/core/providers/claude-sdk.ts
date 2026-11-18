@@ -80,6 +80,7 @@ import {
   RELAY_ORCHESTRATION_INSTRUCTIONS,
 } from "#core/orchestration/instructions.js";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
+import { MessageUsageTracker } from "#core/message-usage.js";
 import { extFromPath } from "#core/paths.js";
 import { createPatch } from "diff";
 
@@ -438,6 +439,12 @@ export interface ClaudeSdkSessionOptions {
   forkFrom?: { sessionId: string; cursor?: string };
   /** Read-only side thread: no edits, no delegation, no permission prompts. */
   readOnly?: boolean;
+  /**
+   * The chat's token totals before this process (a resume). Usage is counted
+   * per process from its own frames, so a resumed session continues from these
+   * instead of restarting the chat's totals at zero.
+   */
+  initialStats?: SessionStats;
   /** Logger from CoreConfig */
   logger: CoreConfig["logger"];
   /** Process timeout in ms (0 = no timeout) */
@@ -1217,6 +1224,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _lastFastModeDisabledReason: string | undefined;
   private _sessionId: string | undefined;
   private _stopped = false;
+  /** Counts each API message's usage once across its per-block frames. */
+  private readonly usageTracker = new MessageUsageTracker();
   /** Last cumulative modelUsage thinkingTokens total seen (see handleResult). */
   private _lastCumulativeThinking = 0;
   private _stats: SessionStats = {
@@ -1283,6 +1292,16 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     this._runtimeMode = options.runtimeMode ?? "approval-required";
     this.allowedToolSet = new Set(options.allowedTools || []);
     this.promptQueue = new PromptQueue();
+    if (options.initialStats) {
+      const seed = options.initialStats;
+      this._stats = {
+        inputTokens: seed.inputTokens,
+        outputTokens: seed.outputTokens,
+        cacheCreationTokens: seed.cacheCreationTokens,
+        cacheReadTokens: seed.cacheReadTokens,
+        ...(seed.reasoningTokens !== undefined ? { reasoningTokens: seed.reasoningTokens } : {}),
+      };
+    }
 
     // Build SDK options
     const sdkOptions: SDKOptions = {
@@ -2210,6 +2229,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             id?: string;
             input?: Record<string, unknown>;
           }>;
+          /** API message id, shared by every per-block frame of one message. */
+          id?: string;
           model?: string;
           usage?: {
             input_tokens?: number;
@@ -2232,9 +2253,10 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         this.emitAgentUpdate({ agentId: agentKey, model: message.model, status: "running" });
       }
     } else {
-      // Accumulate usage (root only — the turn result already folds in subagent totals)
+      // Accumulate usage from root frames only, like transcript replay
+      // (subagents write their own transcripts).
       if (message.usage && message.model) {
-        this.accumulateUsage(message.model, message.usage);
+        this.accumulateUsage(message.model, message.usage, message.id);
       }
 
       // Track whether this message contained tool_use for auto-continue fallback
@@ -2386,13 +2408,12 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       // Code's background Haiku calls (session titling, summaries) and
       // subagents, so its first key is often not the model the chat runs on.
       // The chat model comes from root assistant frames (accumulateUsage).
+      // Its token counts are a running total for the whole query() (each
+      // result carries the total so far), so they are never added to the
+      // chat's totals: those come from root frames, counted once per message.
       let turnCostBasis: "list" | "managed" | "unknown" | undefined;
       let cumulativeThinking: number | undefined;
       for (const usage of Object.values(modelUsage)) {
-        this._stats.inputTokens += usage.inputTokens || 0;
-        this._stats.outputTokens += usage.outputTokens || 0;
-        this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
-        this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
         if (typeof usage.thinkingTokens === "number") {
           cumulativeThinking = (cumulativeThinking ?? 0) + usage.thinkingTokens;
         }
@@ -3121,6 +3142,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       cache_creation_input_tokens?: number;
       cache_read_input_tokens?: number;
     },
+    messageId: string | undefined,
   ): void {
     if (!usage.input_tokens && !usage.output_tokens) return;
     const u = {
@@ -3129,10 +3151,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       cache_creation_input_tokens: usage.cache_creation_input_tokens,
       cache_read_input_tokens: usage.cache_read_input_tokens,
     };
-    this._stats.inputTokens += u.input_tokens;
-    this._stats.outputTokens += u.output_tokens;
-    this._stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
-    this._stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+    // One frame per content block, each repeating the message's usage:
+    // count it once per message id (matching transcript replay).
+    this.usageTracker.add(this._stats, messageId, u);
     // Latest root frame wins, so a mid-session model switch is reflected
     // (matching transcript replay). CLI-generated frames use "<synthetic>".
     if (model !== "<synthetic>") {

@@ -418,6 +418,100 @@ describe("DB Persistence", () => {
     verifyDb.close();
   });
 
+  it("recounts stored Claude totals once with per-message usage", () => {
+    const workingDirectory = join(tempDir, "claude-workspace");
+    const encodedProjectDir = "-" + workingDirectory.slice(1).replace(/\//g, "-");
+    const projectDir = join(tempDir, ".claude", "projects", encodedProjectDir);
+    const jsonlPath = join(projectDir, "claude-recount.jsonl");
+    mkdirSync(workingDirectory, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      jsonlPath,
+      [
+        JSON.stringify({
+          type: "system",
+          subtype: "init",
+          cwd: workingDirectory,
+          timestamp: "2026-02-10T10:00:00.000Z",
+        }),
+        // One message written as three per-block records, each repeating usage.
+        ...["thinking", "text", "text"].map((type) =>
+          JSON.stringify({
+            type: "assistant",
+            timestamp: "2026-02-10T10:00:05.000Z",
+            message: {
+              id: "msg_recount",
+              role: "assistant",
+              model: "claude-opus-4-6",
+              usage: { input_tokens: 10, output_tokens: 5 },
+              content: [type === "thinking" ? { type, thinking: "hm" } : { type, text: "Hello" }],
+            },
+          }),
+        ),
+      ].join("\n") + "\n",
+    );
+
+    const db = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
+    db.upsertProject({
+      id: "proj-claude-recount",
+      name: "claude-workspace",
+      directory: workingDirectory,
+      repo_root: null,
+      remote_url: null,
+      target_branch: null,
+      created_at: Date.now(),
+      last_activity_at: null,
+    });
+    db.upsert({
+      session_id: "claude-recount-session",
+      instance_id: "claude-recount-instance",
+      provider_name: "claude",
+      name: "Claude Recount",
+      working_directory: workingDirectory,
+      jsonl_path: jsonlPath,
+      created_at: Date.now() - 1_000,
+      last_activity_at: Date.now(),
+      type: "external",
+      archived: 0,
+      custom_title: 0,
+      // Totals stored by the old per-record counting (3×).
+      input_tokens: 30,
+      output_tokens: 15,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      summary: null,
+      first_prompt: null,
+      git_branch: null,
+      message_count: 0,
+      allowed_tools: "[]",
+      worktree_path: null,
+      original_directory: null,
+      parent_session_id: null,
+      preferred_model: null,
+      reasoning_budget: null,
+      last_message_text: null,
+      last_message_from: null,
+      last_message_at: null,
+      git_info_branch: null,
+      git_info_is_worktree: null,
+      project_id: null,
+      model: "claude-opus-4-6",
+    });
+    db.close();
+
+    const manager = new InstanceManager(makeConfig(tempDir));
+    manager.restoreAndScan();
+    manager.getProjectArtifacts("proj-claude-recount");
+    manager.stopAll();
+
+    const verifyDb = new SessionDB(join(tempDir, "sessions.db"), noopLogger);
+    const row = verifyDb.getBySessionId("claude-recount-session");
+    assert.equal(row?.input_tokens, 10);
+    assert.equal(row?.output_tokens, 5);
+    assert.equal(verifyDb.getStatsRecountVersion(workingDirectory), 1);
+    verifyDb.close();
+  });
+
   it("persists model for newly discovered external Codex sessions", () => {
     const workingDirectory = join(tempDir, "codex-discovery-workspace");
     const codexDir = join(tempDir, ".codex", "sessions", "2026", "03", "18");

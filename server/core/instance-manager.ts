@@ -40,6 +40,7 @@ import { homedir, tmpdir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { findProjectIcon } from "#core/favicon-scanner.js";
+import { addMessageUsage } from "#core/message-usage.js";
 import { HtmlRenderImageError, inlineLocalImages } from "#core/html-render-images.js";
 import {
   HTML_RENDER_EVENT,
@@ -1269,6 +1270,13 @@ function readModelFromJsonl(jsonlPath: string): string | null {
   return null;
 }
 
+/**
+ * Bump when Claude transcript token counting changes, so each project's stored
+ * chat totals are recomputed once (backfillProjectTranscriptStats).
+ * 1: usage counted once per API message instead of once per content-block record.
+ */
+const CLAUDE_USAGE_COUNT_VERSION = 1;
+
 function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
   try {
     const stats: SessionStats = {
@@ -1284,6 +1292,7 @@ function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
         const entry = JSON.parse(line) as {
           type?: string;
           message?: {
+            id?: string;
             model?: string;
             usage?: {
               input_tokens?: number;
@@ -1298,10 +1307,7 @@ function readClaudeStatsFromJsonl(jsonlPath: string): SessionStats | undefined {
           stats.model = entry.message.model;
         }
         if (!entry.message.usage) continue;
-        stats.inputTokens += entry.message.usage.input_tokens ?? 0;
-        stats.outputTokens += entry.message.usage.output_tokens ?? 0;
-        stats.cacheCreationTokens += entry.message.usage.cache_creation_input_tokens ?? 0;
-        stats.cacheReadTokens += entry.message.usage.cache_read_input_tokens ?? 0;
+        addMessageUsage(stats, entry.message.id, entry.message.usage);
       } catch {
         // skip malformed lines
       }
@@ -2268,10 +2274,22 @@ export class InstanceManager extends EventEmitter {
     const providerDirs = this.providerDirsForLogin(provider, options?.configDir);
     const sessionConfig: CoreConfig =
       providerDirs === this.providerDirs ? config : { ...config, providerDirs };
+    // A resumed session continues the chat's token totals rather than
+    // restarting them (drivers that report whole-thread totals ignore this).
+    const initialStats =
+      options?.resumeSessionId && options.instanceId
+        ? this.instances.get(options.instanceId)?.info.stats
+        : undefined;
     return createManagedProviderSession(
       provider,
       sessionConfig,
-      relayMcp ? { ...options, relayMcp } : options,
+      relayMcp || initialStats
+        ? {
+            ...options,
+            ...(relayMcp ? { relayMcp } : {}),
+            ...(initialStats ? { initialStats: { ...initialStats } } : {}),
+          }
+        : options,
       this.getProviderContext({ provider, configDir: options?.configDir }),
     );
   }
@@ -8782,6 +8800,8 @@ export class InstanceManager extends EventEmitter {
   private convertAssistantEntry(
     message: {
       model?: string;
+      /** API message id; shared by every per-block record of one message. */
+      id?: string;
       /** ISO-8601 model-completion time from SDKAssistantMessage.timestamp */
       timestamp?: string;
       usage?: {
@@ -8889,10 +8909,7 @@ export class InstanceManager extends EventEmitter {
         cache_creation_input_tokens: usage.cache_creation_input_tokens,
         cache_read_input_tokens: usage.cache_read_input_tokens,
       };
-      ctx.stats.inputTokens += u.input_tokens;
-      ctx.stats.outputTokens += u.output_tokens;
-      ctx.stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
-      ctx.stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+      addMessageUsage(ctx.stats, message.id, u);
       ctx.stats.model = message.model;
       ctx.stats.contextTokens =
         u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
@@ -8904,6 +8921,8 @@ export class InstanceManager extends EventEmitter {
   private convertAssistantConversationEntry(
     message: {
       model?: string;
+      /** API message id; shared by every per-block record of one message. */
+      id?: string;
       usage?: {
         input_tokens?: number;
         output_tokens?: number;
@@ -8989,10 +9008,7 @@ export class InstanceManager extends EventEmitter {
         cache_creation_input_tokens: usage.cache_creation_input_tokens,
         cache_read_input_tokens: usage.cache_read_input_tokens,
       };
-      ctx.stats.inputTokens += u.input_tokens;
-      ctx.stats.outputTokens += u.output_tokens;
-      ctx.stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
-      ctx.stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+      addMessageUsage(ctx.stats, message.id, u);
       ctx.stats.model = message.model;
       ctx.stats.contextTokens =
         u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
@@ -9644,9 +9660,28 @@ export class InstanceManager extends EventEmitter {
   }
 
   private backfillProjectTranscriptStats(directory: string): void {
+    // Rows stored before Claude usage was counted once per message hold
+    // inflated totals; recompute this project's Claude rows from their
+    // transcripts once, then only fill rows that have no usage yet.
+    const recountClaude = this.db.getStatsRecountVersion(directory) < CLAUDE_USAGE_COUNT_VERSION;
+    // A running session continues from the totals it started with, so a
+    // recount underneath it would be undone; retry once nothing is running.
+    let recountDeferred = false;
+    const skip = (
+      row: { instance_id: string; provider_name: string; model: string | null },
+      hasUsage: boolean,
+    ) => {
+      if (!hasUsage || !row.model) return false;
+      if (!recountClaude || row.provider_name !== "claude") return true;
+      if (this.instances.get(row.instance_id)?.process) {
+        recountDeferred = true;
+        return true;
+      }
+      return false;
+    };
     for (const row of this.db.getAllActive()) {
       if (row.working_directory !== directory) continue;
-      if (hasPersistedTokenUsage(row) && row.model) continue;
+      if (skip(row, hasPersistedTokenUsage(row))) continue;
       const stats = this.readTranscriptStats(row.provider_name as ProviderKind, row.jsonl_path);
       if (!stats) continue;
       const nextRow = buildBackfilledSessionRow(row, stats);
@@ -9660,7 +9695,7 @@ export class InstanceManager extends EventEmitter {
 
     for (const row of this.db.getAllManagedActive()) {
       if (row.working_directory !== directory) continue;
-      if (hasPersistedTokenUsage(row) && row.model) continue;
+      if (skip(row, hasPersistedTokenUsage(row))) continue;
 
       let resumeCursor: unknown;
       try {
@@ -9685,6 +9720,9 @@ export class InstanceManager extends EventEmitter {
         ...stats,
         model: nextRow.model ?? undefined,
       });
+    }
+    if (recountClaude && !recountDeferred) {
+      this.db.setStatsRecountVersion(directory, CLAUDE_USAGE_COUNT_VERSION);
     }
   }
 

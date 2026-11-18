@@ -878,6 +878,10 @@ export class SessionDB {
         instance_id TEXT PRIMARY KEY,
         snapshot_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS stats_recounts (
+        directory TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_delegated_tasks_parent ON delegated_tasks(parent_instance_id);
       CREATE INDEX IF NOT EXISTS idx_delegated_tasks_child ON delegated_tasks(child_instance_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_delegated_tasks_request
@@ -2456,6 +2460,26 @@ ${buildSearchIndexSchemaSql()},
     this.stmtUpdateSessionEventPayload.run(payloadJson, rowId);
   }
 
+  /**
+   * Which transcript token-counting version a project's stored chat totals were
+   * last recomputed with (0 = never). Lets a counting fix recompute old rows once.
+   */
+  getStatsRecountVersion(directory: string): number {
+    const row = this.db
+      .prepare("SELECT version FROM stats_recounts WHERE directory = ?")
+      .get(directory) as { version?: number } | undefined;
+    return typeof row?.version === "number" ? row.version : 0;
+  }
+
+  setStatsRecountVersion(directory: string, version: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO stats_recounts (directory, version) VALUES (?, ?)
+         ON CONFLICT(directory) DO UPDATE SET version = excluded.version`,
+      )
+      .run(directory, version);
+  }
+
   /** The running turn's worktree baseline; kept here so a restart can reconcile it. */
   saveTurnBaseline(instanceId: string, snapshotJson: string): void {
     this.db
@@ -3078,6 +3102,7 @@ ${buildSearchIndexSchemaSql()},
     this.db.exec("DELETE FROM session_events");
     this.db.exec("DELETE FROM turn_baselines");
     this.db.exec("DELETE FROM delegated_tasks");
+    this.db.exec("DELETE FROM stats_recounts");
   }
 
   checkpointWal(): void {

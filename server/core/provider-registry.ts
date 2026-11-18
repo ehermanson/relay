@@ -133,6 +133,12 @@ interface ProviderSessionOptions {
   relayMcp?: RelayMcpEndpoint;
   /** Directories outside the chat's cwd it may read and write (its Workstream's folder). */
   additionalDirectories?: string[];
+  /**
+   * The chat's token totals so far, on a resume. Claude counts usage per
+   * process, so its driver continues from these; Codex reports whole-thread
+   * totals itself and ignores them.
+   */
+  initialStats?: SessionStats;
 }
 
 interface ProviderCaptureContext {
@@ -662,6 +668,7 @@ function createClaudeSession(
         additionalDirectories: options?.additionalDirectories,
         configDir,
         relayMcp: options?.relayMcp,
+        initialStats: options?.initialStats,
       },
       context.sdkQueryFn as Parameters<typeof createSdkSessionSync>[1],
     );
