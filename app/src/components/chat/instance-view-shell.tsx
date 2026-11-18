@@ -178,6 +178,7 @@ export function InstanceViewShell() {
                   agents={shared.agents}
                   agentItems={shared.agentItems}
                   pendingRequest={shared.instance.pendingPermission ?? null}
+                  onStopAgent={actions.handleStopAgent}
                   provider={shared.instance.provider}
                   providerStatus={shared.instance.providerStatus}
                   providerGlobalState={currentProviderGlobalState}
@@ -209,6 +210,7 @@ export function InstanceViewShell() {
             agents={shared.agents}
             agentItems={shared.agentItems}
             pendingRequest={shared.instance.pendingPermission ?? null}
+            onStopAgent={actions.handleStopAgent}
             provider={shared.instance.provider}
             providerStatus={shared.instance.providerStatus}
             providerGlobalState={currentProviderGlobalState}

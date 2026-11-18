@@ -11,6 +11,7 @@ import {
   isAgentActive,
 } from "@/lib/agents";
 import { AgentStatusBadge } from "@/components/chat/agent-status-badge";
+import { AgentStopButton } from "@/components/chat/agent-stop-button";
 import { AgentAvatar } from "@/components/chat/agent-avatar";
 import { AgentDetail } from "@/components/chat/agent-detail";
 import { RelayAgentMarker } from "@/components/chat/relay-agent";
@@ -25,6 +26,7 @@ interface AgentsPanelProps {
   instanceId?: string;
   provider?: ProviderKind;
   pendingAgentId?: string;
+  onStopAgent?: (providerAgentId: string) => void;
 }
 
 interface SummaryChip {
@@ -99,43 +101,49 @@ function AgentRow({
 
   return (
     <div className="flex flex-col" style={{ paddingLeft: depth * 16 }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="group/row flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-hover"
-      >
-        <AgentAvatar agent={agent} size={24} className="mt-px" />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            <span className="truncate text-[0.8125rem] font-medium text-text">{title}</span>
-            {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
-            {hasPendingRequest && (
-              <ShieldAlert
-                size={11}
-                className="shrink-0 text-warning"
-                aria-label="Needs approval"
-              />
-            )}
+      <div className="flex items-start">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="group/row flex min-w-0 flex-1 items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-hover"
+        >
+          <AgentAvatar agent={agent} size={24} className="mt-px" />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5">
+              <span className="truncate text-[0.8125rem] font-medium text-text">{title}</span>
+              {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
+              {hasPendingRequest && (
+                <ShieldAlert
+                  size={11}
+                  className="shrink-0 text-warning"
+                  aria-label="Needs approval"
+                />
+              )}
+            </span>
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.6875rem]">
+              {modelLabel && <span className="shrink-0 text-muted/70">{modelLabel}</span>}
+              {modelLabel && detailLine && <span className="shrink-0 text-muted/30">·</span>}
+              {detailLine && (
+                <span className={`truncate ${detailIsError ? "text-error/90" : "text-muted"}`}>
+                  {detailLine}
+                </span>
+              )}
+            </span>
           </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.6875rem]">
-            {modelLabel && <span className="shrink-0 text-muted/70">{modelLabel}</span>}
-            {modelLabel && detailLine && <span className="shrink-0 text-muted/30">·</span>}
-            {detailLine && (
-              <span className={`truncate ${detailIsError ? "text-error/90" : "text-muted"}`}>
-                {detailLine}
-              </span>
-            )}
+          <span className="flex shrink-0 items-center gap-1.5 pt-0.5">
+            <AgentStatusBadge status={agent.status} resultIsError={agent.resultIsError} />
+            <ChevronRight
+              size={12}
+              className={`text-muted/40 transition-transform duration-200 group-hover/row:text-muted/70 ${open ? "rotate-90" : ""}`}
+            />
           </span>
+        </button>
+        {/* A sibling of the row button, never inside it: buttons can't nest. */}
+        <span className="pt-1.5 pr-1 empty:hidden">
+          <AgentStopButton agent={agent} onStop={ctx?.onStopAgent} />
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 pt-0.5">
-          <AgentStatusBadge status={agent.status} resultIsError={agent.resultIsError} />
-          <ChevronRight
-            size={12}
-            className={`text-muted/40 transition-transform duration-200 group-hover/row:text-muted/70 ${open ? "rotate-90" : ""}`}
-          />
-        </span>
-      </button>
+      </div>
       {open && (
         <div className="mb-1.5 ml-[30px] rounded-lg border border-border/50 bg-panel/30 px-3 py-2.5">
           <AgentDetail agent={agent} depth={depth} />
@@ -157,13 +165,22 @@ export const AgentsPanel = memo(function AgentsPanel({
   instanceId,
   provider,
   pendingAgentId,
+  onStopAgent,
 }: AgentsPanelProps) {
   const tree = useMemo(() => buildAgentTree(agents), [agents]);
   const summary = useMemo(() => buildSummary(agents), [agents]);
   const anchors = useMemo(() => buildAgentAnchorIndex(items, agents), [items, agents]);
   const contextValue = useMemo(
-    () => ({ agents, agentItems, anchoredAgents: anchors, instanceId, provider, pendingAgentId }),
-    [agents, agentItems, anchors, instanceId, provider, pendingAgentId],
+    () => ({
+      agents,
+      agentItems,
+      anchoredAgents: anchors,
+      instanceId,
+      provider,
+      pendingAgentId,
+      onStopAgent,
+    }),
+    [agents, agentItems, anchors, instanceId, provider, pendingAgentId, onStopAgent],
   );
 
   return (

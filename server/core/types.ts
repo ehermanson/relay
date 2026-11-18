@@ -455,6 +455,14 @@ export interface ProviderCapabilities {
    */
   supportsAgentActivity?: boolean;
   /**
+   * The provider supports stopping an individual delegated agent task while
+   * leaving other background agents running. Claude SDK: `query.stopTask(id)`,
+   * set via `perTaskStopAffordance: true` at session init. When true the UI
+   * renders a Stop button on each active agent card / Agents sidecar row, and
+   * the main interrupt spares background agents (stops only the foreground task).
+   */
+  perTaskStop?: boolean;
+  /**
    * The driver injects Relay's own MCP server (`/mcp`, see
    * `server/core/orchestration/`) into its sessions, so the agent can use
    * Relay's cross-chat orchestration tools. Without this no endpoint or
@@ -978,6 +986,13 @@ export interface InstanceTakeoverPayload {
   instanceId: string;
 }
 
+export interface StopAgentTaskPayload {
+  type: "instance_stop_agent_task";
+  instanceId: string;
+  /** Provider-native agent id passed to `query.stopTask()`. */
+  providerAgentId: string;
+}
+
 export interface RespondToRequestPayload {
   type: "respond_to_request";
   instanceId: string;
@@ -1095,6 +1110,7 @@ export type ClientMessage =
   | RemoveQueuedMessagePayload
   | ReorderQueuedMessagesPayload
   | InstanceTakeoverPayload
+  | StopAgentTaskPayload
   | RespondToRequestPayload
   | RenameInstancePayload
   | MergeInstancePayload

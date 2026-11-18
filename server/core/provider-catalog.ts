@@ -240,6 +240,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
     reasoningEffortLevels: EXTENDED_EFFORTS,
     composerHints: { helpText: "Use @ for files and / for commands and skills" },
     supportsAgentActivity: true,
+    perTaskStop: true,
     supportsRelayOrchestration: true,
     supportsAside: true,
     supportsAccountLogins: true,

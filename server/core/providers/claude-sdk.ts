@@ -182,6 +182,8 @@ interface QueryHandle extends AsyncIterable<SDKMessageBase> {
   /** Interrupt the running turn. Pass `cancel_queued: true` when the CLI
    *  advertises `interrupt_cancel_queued_v1` to also cancel queued messages. */
   interrupt(opts?: { cancel_queued?: boolean }): Promise<void>;
+  /** Stop one background task by its `task_id`; emits a 'stopped' task_notification. */
+  stopTask?(taskId: string): Promise<void>;
   setPermissionMode(
     mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto",
   ): Promise<void>;
@@ -252,6 +254,11 @@ interface SDKOptions {
   additionalDirectories?: string[];
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   settings?: Record<string, unknown>;
+  /**
+   * Declares that this host renders a per-task stop wired to `stopTask`. With
+   * it, an interrupt ends the turn but spares running background agents.
+   */
+  perTaskStopAffordance?: boolean;
   systemPrompt?:
     | string
     | {
@@ -1310,6 +1317,9 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       effort: toSdkEffort(options.reasoningEffort),
       includePartialMessages: true,
       forwardSubagentText: true,
+      // Relay offers Stop on each agent card (stopAgentTask), so an interrupt
+      // can leave background agents running instead of killing them all.
+      perTaskStopAffordance: true,
       env: buildClaudeSpawnEnv(options.configDir ?? resolveClaudeConfigDir()) as Record<
         string,
         string | undefined
@@ -1512,6 +1522,18 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       .catch((err) => {
         this.logger.debug(`[SdkSession] Interrupt error (expected): ${err}`);
       });
+  }
+
+  stopAgentTask(providerAgentId: string): void {
+    if (this._stopped) return;
+    if (!this.query.stopTask) {
+      this.logger.warn("[SdkSession] stopTask is not available in this SDK");
+      return;
+    }
+    this.logger.info(`[SdkSession] Stopping agent task: ${providerAgentId}`);
+    this.query.stopTask(providerAgentId).catch((err) => {
+      this.logger.warn(`[SdkSession] stopTask failed for ${providerAgentId}: ${err}`);
+    });
   }
 
   close(): void {

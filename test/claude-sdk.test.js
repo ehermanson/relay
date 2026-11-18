@@ -45,6 +45,10 @@ class FakeQuery {
     this.interruptCalls++;
   }
 
+  async stopTask(taskId) {
+    (this.stopTaskCalls ??= []).push(taskId);
+  }
+
   async setPermissionMode(mode) {
     this.setPermissionModeCalls.push(mode);
   }
@@ -106,9 +110,12 @@ function makeHarness() {
   const fakeQuery = new FakeQuery();
   /** @type {any} */
   let capturedPrompt;
+  /** @type {any} */
+  let capturedOptions;
 
-  const queryFn = ({ prompt, options: _options }) => {
+  const queryFn = ({ prompt, options }) => {
     capturedPrompt = prompt;
+    capturedOptions = options;
     return fakeQuery;
   };
 
@@ -116,6 +123,7 @@ function makeHarness() {
     fakeQuery,
     queryFn,
     getCapturedPrompt: () => capturedPrompt,
+    getCapturedOptions: () => capturedOptions,
   };
 }
 
@@ -1959,6 +1967,17 @@ describe("ClaudeSdkSession", () => {
       assert.deepEqual(result?.resourceLinks, [
         { uri: "file:///tmp/report.csv", name: "report.csv" },
       ]);
+      session.close();
+    });
+
+    it("declares per-task stop and stops one agent through stopTask", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      assert.equal(harness.getCapturedOptions()?.perTaskStopAffordance, true);
+      session.stopAgentTask("task-abc");
+      await tick();
+      assert.deepEqual(harness.fakeQuery.stopTaskCalls, ["task-abc"]);
+      assert.equal(harness.fakeQuery.interruptCalls, 0, "the turn is not interrupted");
       session.close();
     });
 
