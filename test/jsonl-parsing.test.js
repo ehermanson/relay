@@ -494,7 +494,7 @@ describe("DB Persistence", () => {
       last_message_at: null,
       git_info_branch: null,
       git_info_is_worktree: null,
-      project_id: null,
+      project_id: "proj-claude-recount",
       model: "claude-opus-4-6",
     });
     db.close();
