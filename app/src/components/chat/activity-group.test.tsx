@@ -39,12 +39,19 @@ describe("custom tool activity visibility", () => {
             detail: "text(42)",
           },
           { type: "activity", activity: "tool_use", tool: "Bash", description: "Running... 2s" },
+          {
+            type: "activity",
+            activity: "tool_use",
+            tool: "PreToolUse",
+            description: "Waiting for hook… 5s",
+          },
         ]}
       />,
     );
     fireEvent.click(view.getByText("Using exec"));
     expect(view.container.textContent).toContain("text(42)");
     expect(view.queryByText("Running... 2s")).toBeNull();
+    expect(view.queryByText("Waiting for hook… 5s")).toBeNull();
   });
 });
 

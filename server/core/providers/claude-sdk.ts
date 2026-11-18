@@ -2434,6 +2434,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private handleToolProgress(msg: Record<string, unknown>): void {
     const toolName = msg.tool_name as string;
     const elapsed = msg.elapsed_time_seconds as number;
+    const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
 
     if (toolName === "Bash" || toolName === "bash") {
       const activity: ActivityMessage = {
@@ -2441,6 +2442,19 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         activity: "tool_use",
         tool: "Bash",
         description: `Running... ${Math.round(elapsed)}s`,
+      };
+      const agentKey = frameAgentKey(msg);
+      if (agentKey) activity.agentId = agentKey;
+      this.emit("activity", activity);
+    } else if (toolUseId.startsWith("hook-")) {
+      // Periodic heartbeat while a turn is waiting on a long-running
+      // PreToolUse or PostToolUse hook. Surface as a transient activity so
+      // the chat doesn't look frozen.
+      const activity: ActivityMessage = {
+        type: "activity",
+        activity: "tool_use",
+        tool: toolName,
+        description: `Waiting for hook… ${Math.round(elapsed)}s`,
       };
       const agentKey = frameAgentKey(msg);
       if (agentKey) activity.agentId = agentKey;
