@@ -4,6 +4,7 @@ import { ChevronRight, ShieldAlert } from "lucide-react";
 import type { AgentInfo } from "@shared/types";
 import { getAgentLastActivity, getAgentSubtitle, getAgentTitle, isAgentActive } from "@/lib/agents";
 import { AgentStatusBadge } from "@/components/chat/agent-status-badge";
+import { AgentStopButton } from "@/components/chat/agent-stop-button";
 import { AgentAvatar } from "@/components/chat/agent-avatar";
 import { AgentDetail } from "@/components/chat/agent-detail";
 import { useAgentCards } from "@/components/chat/agent-card-context";
@@ -73,52 +74,58 @@ export function AgentCard({
 
   return (
     <div className={`flex flex-col ${frame}`} data-agent-card={agent.agentId}>
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        className="group/agent flex w-full items-center gap-2.5 rounded-[inherit] px-2.5 py-2 text-left transition-colors hover:bg-panel-content/60"
-      >
-        <AgentAvatar agent={agent} size={22} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="truncate text-[0.8125rem] font-medium leading-tight text-text">
-              {title}
-            </span>
-            {modelLabel && (
-              <span className="shrink-0 whitespace-nowrap rounded bg-surface-hover px-1.5 py-px text-[0.5625rem] font-medium text-muted/80 max-[768px]:hidden">
-                {modelLabel}
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="group/agent flex min-w-0 flex-1 items-center gap-2.5 rounded-[inherit] px-2.5 py-2 text-left transition-colors hover:bg-panel-content/60"
+        >
+          <AgentAvatar agent={agent} size={22} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2">
+              <span className="truncate text-[0.8125rem] font-medium leading-tight text-text">
+                {title}
               </span>
-            )}
-            {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
-            {hasPendingRequest && (
+              {modelLabel && (
+                <span className="shrink-0 whitespace-nowrap rounded bg-surface-hover px-1.5 py-px text-[0.5625rem] font-medium text-muted/80 max-[768px]:hidden">
+                  {modelLabel}
+                </span>
+              )}
+              {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
+              {hasPendingRequest && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-warning/10 px-1.5 py-px text-[0.5625rem] font-medium text-warning"
+                  title="This agent is waiting on a permission decision"
+                >
+                  <ShieldAlert size={9} />
+                  Needs approval
+                </span>
+              )}
+            </span>
+            {previewText && (
               <span
-                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-warning/10 px-1.5 py-px text-[0.5625rem] font-medium text-warning"
-                title="This agent is waiting on a permission decision"
+                className={`mt-0.5 block truncate text-[0.6875rem] leading-tight ${
+                  previewIsError ? "text-error/90" : "text-muted"
+                }`}
               >
-                <ShieldAlert size={9} />
-                Needs approval
+                {previewText}
               </span>
             )}
           </span>
-          {previewText && (
-            <span
-              className={`mt-0.5 block truncate text-[0.6875rem] leading-tight ${
-                previewIsError ? "text-error/90" : "text-muted"
-              }`}
-            >
-              {previewText}
-            </span>
-          )}
+          <AgentStatusBadge status={agent.status} resultIsError={agent.resultIsError} />
+          <ChevronRight
+            size={12}
+            className={`shrink-0 text-muted/40 transition-transform duration-200 group-hover/agent:text-muted/70 ${
+              expanded ? "rotate-90" : ""
+            }`}
+          />
+        </button>
+        {/* A sibling of the header, never inside it: buttons can't nest. */}
+        <span className="pr-1.5 empty:hidden">
+          <AgentStopButton agent={agent} onStop={ctx?.onStopAgent} />
         </span>
-        <AgentStatusBadge status={agent.status} resultIsError={agent.resultIsError} />
-        <ChevronRight
-          size={12}
-          className={`shrink-0 text-muted/40 transition-transform duration-200 group-hover/agent:text-muted/70 ${
-            expanded ? "rotate-90" : ""
-          }`}
-        />
-      </button>
+      </div>
       <AnimatePresence initial={false}>
         {expanded && hasBeenExpanded.current && (
           <motion.div

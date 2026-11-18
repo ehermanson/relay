@@ -71,6 +71,8 @@ interface MessageListProps {
   provider?: ProviderKind;
   /** Pending permission request — badges the owning agent's card when tagged. */
   pendingRequest?: ProviderRequest | null;
+  /** Stop one running agent task by provider-native id. Present only when provider supports perTaskStop. */
+  onStopAgent?: (providerAgentId: string) => void;
 }
 
 export function MessageList({
@@ -96,6 +98,7 @@ export function MessageList({
   instanceId,
   provider,
   pendingRequest,
+  onStopAgent,
 }: MessageListProps) {
   // Delegated-agent cards: anchor index (tool_use id → agent) is recomputed
   // when the stream or agent set changes; the context keeps ToolContainer's
@@ -106,8 +109,16 @@ export function MessageList({
     [pendingRequest, agents],
   );
   const agentCardsValue = useMemo(
-    () => ({ agents, agentItems, anchoredAgents, instanceId, provider, pendingAgentId }),
-    [agents, agentItems, anchoredAgents, instanceId, provider, pendingAgentId],
+    () => ({
+      agents,
+      agentItems,
+      anchoredAgents,
+      instanceId,
+      provider,
+      pendingAgentId,
+      onStopAgent,
+    }),
+    [agents, agentItems, anchoredAgents, instanceId, provider, pendingAgentId, onStopAgent],
   );
   // When a new turn is sent we "frame" it: park the message near the top and
   // reserve space below (spacerHeight) so the answer can stream into the gap,

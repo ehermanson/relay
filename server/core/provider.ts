@@ -110,6 +110,13 @@ export interface ProviderSession extends EventEmitter {
   /** Trigger provider-native compaction when supported. */
   compactThread?(): void;
 
+  /**
+   * Stop one delegated agent task without interrupting the whole turn.
+   * Claude SDK: calls `query.stopTask(providerAgentId)`.
+   * Only available when the driver advertises `perTaskStop` in capabilities.
+   */
+  stopAgentTask?(providerAgentId: string): void;
+
   /** Set the provider session ID (CLI provider discovers it post-hoc from transcripts). */
   setSessionId?(sessionId: string): void;
 

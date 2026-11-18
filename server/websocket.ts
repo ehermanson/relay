@@ -789,6 +789,19 @@ export function createWebSocketServer(
             break;
           }
 
+          case "instance_stop_agent_task": {
+            try {
+              await instanceManager.stopAgentTask(message.instanceId, message.providerAgentId);
+            } catch (err) {
+              sendMessage(ws, {
+                type: "error",
+                message: err instanceof Error ? err.message : "Failed to stop agent task",
+                instanceId: message.instanceId,
+              });
+            }
+            break;
+          }
+
           case "instance_interrupt_and_send": {
             try {
               await instanceManager.interruptAndSend(

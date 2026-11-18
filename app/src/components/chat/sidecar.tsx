@@ -172,6 +172,7 @@ interface SidecarProps {
   agents?: Record<string, AgentInfo>;
   agentItems?: Record<string, ChatItem[]>;
   pendingRequest?: ProviderRequest | null;
+  onStopAgent?: (providerAgentId: string) => void;
   provider?: ProviderKind;
   providerStatus?: ProviderStatusSummary;
   providerGlobalState?: ProviderGlobalState;
@@ -213,6 +214,7 @@ export const Sidecar = memo(
     agents,
     agentItems,
     pendingRequest,
+    onStopAgent,
     provider,
     providerStatus,
     providerGlobalState,
@@ -277,6 +279,7 @@ export const Sidecar = memo(
             instanceId={instanceId}
             provider={provider}
             pendingAgentId={findRequestAgentId(pendingRequest, agents)}
+            onStopAgent={onStopAgent}
           />
         );
       if (key === "plan" && hasPlan) return <PlanPanel content={planContent} />;

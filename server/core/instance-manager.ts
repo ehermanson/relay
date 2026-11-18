@@ -5411,6 +5411,16 @@ export class InstanceManager extends EventEmitter {
     });
   }
 
+  /** Stop one delegated agent task without interrupting the whole turn. */
+  async stopAgentTask(id: string, providerAgentId: string): Promise<void> {
+    await this.enqueueInstanceMutation(id, (instance) => {
+      if (instance.info.external) throw new Error("Cannot stop agent task on external instances");
+      if (!instance.process?.stopAgentTask)
+        throw new Error("Provider does not support per-task stop");
+      instance.process.stopAgentTask(providerAgentId);
+    });
+  }
+
   /**
    * Interrupt the current agent turn so queued messages are delivered sooner.
    * The queued messages will be drained by the normal output/exit handler
