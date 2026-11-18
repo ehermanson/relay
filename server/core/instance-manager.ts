@@ -10863,10 +10863,19 @@ export class InstanceManager extends EventEmitter {
                     : [];
                 })
               : undefined;
+            // Each session init reports the full set, so it replaces the last
+            // one: an error fixed since the previous start must disappear.
             const pluginErrors = Array.isArray(payload.pluginErrors)
               ? payload.pluginErrors.filter((p): p is string => typeof p === "string")
-              : undefined;
-            if (slashCommands.length || skills.length || mcpServers !== undefined || pluginErrors) {
+              : [];
+            const hadPluginErrors = Boolean(live.info.providerStatus?.pluginErrors?.length);
+            if (
+              slashCommands.length ||
+              skills.length ||
+              mcpServers !== undefined ||
+              pluginErrors.length ||
+              hadPluginErrors
+            ) {
               live.info.providerStatus = {
                 ...live.info.providerStatus,
                 slashCommands: slashCommands.length
@@ -10874,7 +10883,7 @@ export class InstanceManager extends EventEmitter {
                   : live.info.providerStatus?.slashCommands,
                 skills: skills.length ? skills : live.info.providerStatus?.skills,
                 ...(mcpServers !== undefined ? { mcpServers } : {}),
-                ...(pluginErrors ? { pluginErrors } : {}),
+                pluginErrors: pluginErrors.length ? pluginErrors : undefined,
               };
               this.emitInstanceStatus(live);
             }

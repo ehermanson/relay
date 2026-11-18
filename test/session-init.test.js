@@ -20,6 +20,14 @@ describe("normalizeSessionInitPayload", () => {
     assert.deepEqual(payload?.commands, ["review", "plain-command"]);
   });
 
+  it("reads plugin_errors paths and skips malformed entries", () => {
+    const payload = normalizeSessionInitPayload({
+      slash_commands: ["review"],
+      plugin_errors: [{ path: " /plugins/broken " }, "/plugins/legacy", { path: "" }, 42],
+    });
+    assert.deepEqual(payload?.pluginErrors, ["/plugins/broken", "/plugins/legacy"]);
+  });
+
   it("preserves skill metadata from object payloads", () => {
     const payload = normalizeSessionInitPayload({
       skills: [
