@@ -1203,6 +1203,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _lastFastModeDisabledReason: string | undefined;
   private _sessionId: string | undefined;
   private _stopped = false;
+  /** Last cumulative modelUsage thinkingTokens total seen (see handleResult). */
+  private _lastCumulativeThinking = 0;
   private _stats: SessionStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -2302,6 +2304,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             outputTokens: number;
             cacheReadInputTokens: number;
             cacheCreationInputTokens: number;
+            /** Extended thinking tokens (SDK >= 0.3.257); already counted inside outputTokens. */
+            thinkingTokens?: number;
             /** Canonical model id used for pricing (SDK >= 0.3.218); may differ from the map key alias. */
             canonicalModel?: string;
             /** API provider that served this model (SDK >= 0.3.218). */
@@ -2318,11 +2322,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       // subagents, so its first key is often not the model the chat runs on.
       // The chat model comes from root assistant frames (accumulateUsage).
       let turnCostBasis: "list" | "managed" | "unknown" | undefined;
+      let cumulativeThinking: number | undefined;
       for (const usage of Object.values(modelUsage)) {
         this._stats.inputTokens += usage.inputTokens || 0;
         this._stats.outputTokens += usage.outputTokens || 0;
         this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
         this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
+        if (typeof usage.thinkingTokens === "number") {
+          cumulativeThinking = (cumulativeThinking ?? 0) + usage.thinkingTokens;
+        }
         // costBasis across models: unknown > managed > list, so the most
         // consequential basis wins regardless of model order.
         if (
@@ -2333,6 +2341,17 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         }
       }
       if (turnCostBasis) this._stats.costBasis = turnCostBasis;
+      if (cumulativeThinking !== undefined) {
+        // modelUsage is a running total for this query() (each result carries
+        // the total so far), so add only the growth since the previous result.
+        // A smaller total means the SDK reset it (/clear, restart): count it whole.
+        const delta =
+          cumulativeThinking >= this._lastCumulativeThinking
+            ? cumulativeThinking - this._lastCumulativeThinking
+            : cumulativeThinking;
+        this._lastCumulativeThinking = cumulativeThinking;
+        if (delta > 0) this._stats.reasoningTokens = (this._stats.reasoningTokens ?? 0) + delta;
+      }
       this.emit("stats", { ...this._stats });
     }
 

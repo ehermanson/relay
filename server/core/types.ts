@@ -669,7 +669,7 @@ export interface SessionStats {
     isDeferred?: boolean;
     kind?: "used" | "free" | "buffer" | "deferred";
   }[];
-  /** Reasoning/thinking output tokens (Codex/OpenAI models). */
+  /** Reasoning/thinking output tokens (Codex/OpenAI models and Claude extended thinking). */
   reasoningTokens?: number;
   /**
    * Which price table the most recent request was priced at: 'list' (Claude Code's
