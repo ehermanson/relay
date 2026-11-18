@@ -356,4 +356,21 @@ describe("AgentInfo builders", () => {
     assert.deepEqual(failed.usage, { totalTokens: 9 });
     assert.equal(failed.originToolUseId, undefined);
   });
+
+  it("labels a worker restart only when there is nothing better to show", () => {
+    const restarted = buildTaskNotificationInfo("k", {
+      taskId: "t",
+      status: "running",
+      fireReason: "worker_restart",
+    });
+    assert.equal(restarted.lastActivity, "Worker restarted");
+
+    const withSummary = buildTaskNotificationInfo("k", {
+      taskId: "t",
+      status: "completed",
+      summary: "Done",
+      fireReason: "worker_restart",
+    });
+    assert.notEqual(withSummary.lastActivity, "Worker restarted");
+  });
 });
