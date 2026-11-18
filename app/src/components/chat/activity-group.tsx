@@ -9,6 +9,11 @@ import { INTERACTIVE_TOOLS } from "@shared/tools";
 
 const VISIBLE_COUNT = 3;
 
+/** Server-emitted heartbeat rows (tool_progress) that never carry tool input. */
+function isProgressDescription(description: string): boolean {
+  return description.startsWith("Running... ") || description.startsWith("Waiting for hook… ");
+}
+
 interface ActivityGroupProps {
   activities: MergedActivity[];
   onSendMessage?: (text: string) => void;
@@ -104,12 +109,13 @@ export function ActivityGroup({
     hiddenResults.add(i);
   }
 
-  // Hide known progress-update entries (emitted by the server
-  // for long-running Bash commands as "Running... Ns"). Once the real result is
-  // merged into the original tool_use (which has `input`), these are stale noise.
+  // Hide known progress-update entries (emitted by the server for long-running
+  // Bash commands as "Running... Ns" and for slow hooks as "Waiting for hook… Ns").
+  // Once the real result is merged into the original tool_use (which has `input`),
+  // these are stale noise.
   for (let i = 0; i < activities.length; i++) {
     const act = activities[i];
-    if (act.activity !== "tool_use" || act.input || !act.description.startsWith("Running... "))
+    if (act.activity !== "tool_use" || act.input || !isProgressDescription(act.description))
       continue;
     // Missing input alone does not imply progress: custom tools may lack arguments.
     hiddenResults.add(i);
