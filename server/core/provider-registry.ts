@@ -12,6 +12,7 @@ import type { CoreConfig } from "#core/config.js";
 import { ClaudeProcess } from "#core/claude-process.js";
 import { readAgentModelFromTranscript } from "#core/agent-model.js";
 import {
+  capReasoningEffortLevels,
   DEFAULT_PROVIDER_CAPABILITIES,
   findProviderModelLabel,
   getBuiltinProviderModels,
@@ -31,6 +32,7 @@ import type {
   ProviderRuntimeMode,
   ProviderSessionBootstrap,
   ProviderRuntimeBinding,
+  ReasoningEffort,
   RelayMcpEndpoint,
   SessionStats,
   TaskItem,
@@ -42,7 +44,15 @@ import {
   probeClaudeAccountIdentity,
   refreshSdkDiscoveredModelsIfStale,
 } from "#core/providers/claude-sdk.js";
-import { findClaudeBinary, isClaudeInstalled } from "#core/providers/claude-cli.js";
+import {
+  findClaudeBinary,
+  isClaudeInstalled,
+  resolveClaudeConfigDir,
+} from "#core/providers/claude-cli.js";
+import {
+  claudeEffortCapForModel,
+  readClaudeEffortCaps,
+} from "#core/providers/claude-effort-cap.js";
 import { readClaudeWorktreeState } from "#core/providers/claude-worktree-state.js";
 import { findCodexBinary, isCodexInstalled } from "#core/providers/codex-cli.js";
 import {
@@ -237,6 +247,14 @@ interface ProviderDriver {
    * its spawn cwd. File-system read only; must be cheap enough per watcher tick.
    */
   readSessionWorkingDirectory?(transcriptPath: string): string | null;
+  /**
+   * The highest reasoning effort the login's settings allow for a model
+   * (undefined = uncapped). `configDir` is the login's dir, or undefined for
+   * the server's own. File-system read only.
+   */
+  readModelEffortCaps?(
+    configDir: string | undefined,
+  ): (modelId: string) => ReasoningEffort | undefined;
   discoverExternalSessions?(
     context: ProviderExternalDiscoveryContext,
   ): Promise<DiscoveredExternalSession[]>;
@@ -877,6 +895,10 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
     readSessionWorkingDirectory(transcriptPath) {
       return readClaudeWorktreeState(transcriptPath)?.worktreePath ?? null;
     },
+    readModelEffortCaps(configDir) {
+      const caps = readClaudeEffortCaps(configDir ?? resolveClaudeConfigDir());
+      return (modelId) => claudeEffortCapForModel(caps, modelId);
+    },
     captureManagedSession(context) {
       const binding = context.binding ?? context.proc.getRuntimeBinding();
       const runtimeSessionId = binding.providerSessionId ?? context.fallbackSessionId;
@@ -1369,6 +1391,35 @@ export function createManagedProviderSession(
     ? requestedMode
     : "approval-required";
   return driver.createSession(config, { ...options, runtimeMode }, context);
+}
+
+/**
+ * Hide reasoning-effort levels above what the login's settings allow, on the
+ * provider capabilities (models no setting names) and on each model's
+ * resolved capabilities.
+ */
+export function applyModelEffortCaps<M extends ProviderModelOption>(
+  provider: ProviderKind,
+  configDir: string | undefined,
+  capabilities: ProviderCapabilities,
+  models: M[],
+): { capabilities: ProviderCapabilities; models: M[] } {
+  const capFor = getProviderDriver(provider).readModelEffortCaps?.(configDir);
+  if (!capFor) return { capabilities, models };
+  const cap = (base: ProviderCapabilities, modelId: string | undefined): ProviderCapabilities => {
+    const levels = capReasoningEffortLevels(base.reasoningEffortLevels, capFor(modelId ?? ""));
+    return levels === base.reasoningEffortLevels
+      ? base
+      : { ...base, reasoningEffortLevels: levels };
+  };
+  return {
+    capabilities: cap(capabilities, undefined),
+    models: models.map((model) =>
+      model.resolvedCapabilities
+        ? { ...model, resolvedCapabilities: cap(model.resolvedCapabilities, model.id) }
+        : model,
+    ),
+  };
 }
 
 export function readSessionWorkingDirectoryForProvider(
