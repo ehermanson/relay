@@ -536,6 +536,12 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
         } else if (msg.event === UI_RENDER_EVENT) {
           const view = readUiView(msg.payload);
           if (view) main.push({ kind: "ui-render", view, timestamp: entry.timestamp });
+        } else if (msg.event === "session_writes_lost") {
+          main.push({
+            kind: "system",
+            text: "Session writes lost — history may not be saved on restart",
+            isError: true,
+          });
         }
         break;
       }
@@ -1182,6 +1188,15 @@ function coreReducer(state: State, action: Action): State {
         if (!view) return state;
         // Like a page: never ends the turn. An update replaces the view in place.
         return { ...state, items: upsertUiViewItem(state.items, view, Date.now()) };
+      }
+      if (action.message.event === "session_writes_lost") {
+        const items = [...state.items];
+        items.push({
+          kind: "system",
+          text: "Session writes lost — history may not be saved on restart",
+          isError: true,
+        });
+        return { ...state, items };
       }
       if (action.message.event !== "compact_boundary") return state;
       const items = [...state.items];
