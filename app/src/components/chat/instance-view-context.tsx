@@ -135,6 +135,8 @@ export type InstanceViewContextValue = {
     handleAnswerUserInput: (requestId: string, answers: Record<string, UserInputAnswer>) => void;
     handleTakeover: () => void;
     handleCancel: () => void;
+    /** Stop one provider agent without interrupting the turn; absent when the provider can't. */
+    handleStopAgent?: (providerAgentId: string) => void;
     /** Interrupt the turn and send this queued message now (the rest stay queued). */
     handleInterruptAndSend: (queuedId: string) => void;
     handleEditQueued: (row: UserChatItem) => void;

@@ -723,6 +723,7 @@ export function InstanceViewContent() {
               instanceId={shared.id}
               provider={shared.instance.provider}
               pendingRequest={shared.instance.pendingPermission ?? null}
+              onStopAgent={actions.handleStopAgent}
             />
           </MaybeRelayProvider>
         </ErrorBoundary>

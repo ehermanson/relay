@@ -20,6 +20,8 @@ export interface AgentCardsContextValue {
   provider?: ProviderKind;
   /** Relay agent key that owns the chat's pending permission request, if any. */
   pendingAgentId?: string;
+  /** Stop one running agent task by its provider-native id. Present only when the provider supports perTaskStop. */
+  onStopAgent?: (providerAgentId: string) => void;
 }
 
 const AgentCardsContext = createContext<AgentCardsContextValue | null>(null);
