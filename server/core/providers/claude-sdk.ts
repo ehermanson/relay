@@ -1217,8 +1217,14 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _lastFastModeDisabledReason: string | undefined;
   private _sessionId: string | undefined;
   private _stopped = false;
-  /** Last cumulative modelUsage thinkingTokens total seen (see handleResult). */
+  /** Last cumulative modelUsage totals seen (see handleResult). modelUsage is a
+   *  running total for the current query(), so we store the last value and add
+   *  only the delta — the same approach thinkingTokens already used. */
   private _lastCumulativeThinking = 0;
+  private _lastCumulativeInput = 0;
+  private _lastCumulativeOutput = 0;
+  private _lastCumulativeCacheRead = 0;
+  private _lastCumulativeCacheCreation = 0;
   private _stats: SessionStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -2386,15 +2392,24 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       // Code's background Haiku calls (session titling, summaries) and
       // subagents, so its first key is often not the model the chat runs on.
       // The chat model comes from root assistant frames (accumulateUsage).
+      //
+      // modelUsage is a running total for this query() — each result event
+      // carries the total so far, not a per-result increment. Sum across all
+      // models to get the new query-wide cumulative, then add only the delta
+      // since the last result (a smaller total means a /clear or restart).
+      let newInput = 0;
+      let newOutput = 0;
+      let newCacheRead = 0;
+      let newCacheCreation = 0;
+      let newThinking: number | undefined;
       let turnCostBasis: "list" | "managed" | "unknown" | undefined;
-      let cumulativeThinking: number | undefined;
       for (const usage of Object.values(modelUsage)) {
-        this._stats.inputTokens += usage.inputTokens || 0;
-        this._stats.outputTokens += usage.outputTokens || 0;
-        this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
-        this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
+        newInput += usage.inputTokens || 0;
+        newOutput += usage.outputTokens || 0;
+        newCacheRead += usage.cacheReadInputTokens || 0;
+        newCacheCreation += usage.cacheCreationInputTokens || 0;
         if (typeof usage.thinkingTokens === "number") {
-          cumulativeThinking = (cumulativeThinking ?? 0) + usage.thinkingTokens;
+          newThinking = (newThinking ?? 0) + usage.thinkingTokens;
         }
         // costBasis across models: unknown > managed > list, so the most
         // consequential basis wins regardless of model order.
@@ -2405,17 +2420,41 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
           turnCostBasis = usage.costBasis;
         }
       }
+
+      const deltaInput =
+        newInput >= this._lastCumulativeInput ? newInput - this._lastCumulativeInput : newInput;
+      const deltaOutput =
+        newOutput >= this._lastCumulativeOutput
+          ? newOutput - this._lastCumulativeOutput
+          : newOutput;
+      const deltaCacheRead =
+        newCacheRead >= this._lastCumulativeCacheRead
+          ? newCacheRead - this._lastCumulativeCacheRead
+          : newCacheRead;
+      const deltaCacheCreation =
+        newCacheCreation >= this._lastCumulativeCacheCreation
+          ? newCacheCreation - this._lastCumulativeCacheCreation
+          : newCacheCreation;
+
+      this._lastCumulativeInput = newInput;
+      this._lastCumulativeOutput = newOutput;
+      this._lastCumulativeCacheRead = newCacheRead;
+      this._lastCumulativeCacheCreation = newCacheCreation;
+
+      this._stats.inputTokens += deltaInput;
+      this._stats.outputTokens += deltaOutput;
+      this._stats.cacheReadTokens += deltaCacheRead;
+      this._stats.cacheCreationTokens += deltaCacheCreation;
+
       if (turnCostBasis) this._stats.costBasis = turnCostBasis;
-      if (cumulativeThinking !== undefined) {
-        // modelUsage is a running total for this query() (each result carries
-        // the total so far), so add only the growth since the previous result.
-        // A smaller total means the SDK reset it (/clear, restart): count it whole.
-        const delta =
-          cumulativeThinking >= this._lastCumulativeThinking
-            ? cumulativeThinking - this._lastCumulativeThinking
-            : cumulativeThinking;
-        this._lastCumulativeThinking = cumulativeThinking;
-        if (delta > 0) this._stats.reasoningTokens = (this._stats.reasoningTokens ?? 0) + delta;
+      if (newThinking !== undefined) {
+        const deltaThinking =
+          newThinking >= this._lastCumulativeThinking
+            ? newThinking - this._lastCumulativeThinking
+            : newThinking;
+        this._lastCumulativeThinking = newThinking;
+        if (deltaThinking > 0)
+          this._stats.reasoningTokens = (this._stats.reasoningTokens ?? 0) + deltaThinking;
       }
       this.emit("stats", { ...this._stats });
     }
@@ -3123,22 +3162,15 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     },
   ): void {
     if (!usage.input_tokens && !usage.output_tokens) return;
-    const u = {
-      input_tokens: usage.input_tokens ?? 0,
-      output_tokens: usage.output_tokens ?? 0,
-      cache_creation_input_tokens: usage.cache_creation_input_tokens,
-      cache_read_input_tokens: usage.cache_read_input_tokens,
-    };
-    this._stats.inputTokens += u.input_tokens;
-    this._stats.outputTokens += u.output_tokens;
-    this._stats.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
-    this._stats.cacheReadTokens += u.cache_read_input_tokens ?? 0;
-    // Latest root frame wins, so a mid-session model switch is reflected
-    // (matching transcript replay). CLI-generated frames use "<synthetic>".
+    // Token totals come from modelUsage deltas in handleResult (the running
+    // total per query), which covers all models including background Haiku
+    // calls. Only update the model name here — latest root frame wins, so a
+    // mid-session model switch is reflected (matching transcript replay).
+    // CLI-generated frames use "<synthetic>".
     if (model !== "<synthetic>") {
       this._stats.model = model;
+      this.emit("stats", { ...this._stats });
     }
-    this.emit("stats", { ...this._stats });
 
     // Fetch accurate context usage from the SDK (async, non-blocking).
     // This replaces the old manual estimate (input + cached tokens).
