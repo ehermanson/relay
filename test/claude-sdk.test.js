@@ -1851,6 +1851,42 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
 
+    it("reads MCP resource links from tool_use_result", async () => {
+      const harness = makeHarness();
+      const session = await createTestSession(harness);
+      const activities = collectEvents(session, "activity");
+      harness.fakeQuery.emit({
+        type: "assistant",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-8",
+          content: [{ type: "tool_use", id: "toolu_mcp", name: "mcp__files__export", input: {} }],
+        },
+      });
+      harness.fakeQuery.emit({
+        type: "user",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        tool_use_result: {
+          resourceLinks: [
+            { uri: "file:///tmp/report.csv", name: "report.csv" },
+            { name: "no uri" },
+          ],
+        },
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_mcp", content: "Exported" }],
+        },
+      });
+      await tick();
+      const result = activities.map(([a]) => a).find((a) => a.activity === "tool_result");
+      assert.deepEqual(result?.resourceLinks, [
+        { uri: "file:///tmp/report.csv", name: "report.csv" },
+      ]);
+      session.close();
+    });
+
     it("maps sync and async Agent results from tool_use_result", async () => {
       const harness = makeHarness();
       const session = await createTestSession(harness);

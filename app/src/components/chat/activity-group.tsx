@@ -221,6 +221,7 @@ export function ActivityGroup({
                 resultStatus={act.mergedResultStatus}
                 resultDetail={act.mergedResultDetail}
                 toolResultMeta={act.toolResultMeta}
+                resourceLinks={act.resourceLinks}
                 {...(act.tool === "AskUserQuestion" || act.tool === "ExitPlanMode"
                   ? {
                       onSendMessage,
