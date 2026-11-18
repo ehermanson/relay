@@ -83,7 +83,11 @@ export function ReviewSetupPanel({
     defaultModel,
   } = useProviderModels(provider);
   const defaultModelId = defaultModel?.id;
-  const effortLevels = capabilities.reasoningEffortLevels ?? [];
+  const selectedModelOption = visibleModels.find(
+    (option) => option.id === (model ?? defaultModelId),
+  );
+  const effortLevels =
+    (selectedModelOption?.resolvedCapabilities ?? capabilities).reasoningEffortLevels ?? [];
   const sessionFilesUnavailable = sourceFileCount === 0;
 
   useEffect(() => {

@@ -1,7 +1,11 @@
 import type { Hono } from "hono";
 import { DEFAULT_ACCOUNT_ID, type ProviderKind, type ProviderModelsResponse } from "#core/types.js";
 import { mergeCapabilities, resolveProviderDefaultModelOption } from "#core/provider-catalog.js";
-import { refreshProviderVersionAdvisories, runProviderUpdate } from "#core/provider-registry.js";
+import {
+  applyModelEffortCaps,
+  refreshProviderVersionAdvisories,
+  runProviderUpdate,
+} from "#core/provider-registry.js";
 import { addMcpServer, listClaudeProjectMcpServers } from "#core/mcp-management.js";
 import { resolveAccountConfigDir } from "#core/account-scope.js";
 import { resolveClaudeGlobalConfigPath } from "#core/providers/claude-cli.js";
@@ -27,7 +31,7 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       return c.json({ error: "Invalid provider" }, 400);
     }
     try {
-      const capabilities = deps.getProviderCapabilities(provider);
+      const providerCapabilities = deps.getProviderCapabilities(provider);
       // The default account keeps the shared 60s route cache; another
       // account's list comes straight from the manager, whose per-dir SDK
       // discovery cache (30-min TTL) already makes repeat calls cheap.
@@ -35,10 +39,17 @@ export function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
       const rawModels = configDir
         ? await deps.instanceManager.getProviderModels(provider, configDir)
         : await deps.getProviderModels(provider);
-      const models = rawModels.map((model) => ({
-        ...model,
-        resolvedCapabilities: mergeCapabilities(capabilities, model.capabilities),
-      }));
+      // Effort caps come from the login's settings, read on every request so
+      // an edit shows up without waiting out the model cache.
+      const { capabilities, models } = applyModelEffortCaps(
+        provider,
+        configDir,
+        providerCapabilities,
+        rawModels.map((model) => ({
+          ...model,
+          resolvedCapabilities: mergeCapabilities(providerCapabilities, model.capabilities),
+        })),
+      );
       const defaultModel = resolveProviderDefaultModelOption(provider, models);
       const response: ProviderModelsResponse = {
         provider,

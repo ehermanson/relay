@@ -384,3 +384,40 @@ export function mergeCapabilities(
   if (!modelCapabilities) return providerCapabilities;
   return { ...providerCapabilities, ...modelCapabilities };
 }
+
+/**
+ * Rank of each known effort level, lowest first. `ultracode` runs at `xhigh`.
+ * Unknown levels have no rank and are never hidden by a cap.
+ */
+const EFFORT_RANK: Record<string, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  xhigh: 3,
+  ultracode: 3,
+  max: 4,
+};
+
+export function effortRank(effort: ReasoningEffort): number | undefined {
+  return EFFORT_RANK[effort];
+}
+
+/** The lower of two effort caps; `undefined` means uncapped. */
+export function lowerEffortCap(
+  a: ReasoningEffort | undefined,
+  b: ReasoningEffort | undefined,
+): ReasoningEffort | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return (effortRank(b) ?? Infinity) < (effortRank(a) ?? Infinity) ? b : a;
+}
+
+/** Drop effort levels above `cap`. An absent or unknown cap leaves `levels` as is. */
+export function capReasoningEffortLevels<T extends { effort: ReasoningEffort }>(
+  levels: T[] | undefined,
+  cap: ReasoningEffort | undefined,
+): T[] | undefined {
+  const capRank = cap === undefined ? undefined : effortRank(cap);
+  if (!levels || capRank === undefined) return levels;
+  return levels.filter((level) => (effortRank(level.effort) ?? -Infinity) <= capRank);
+}
