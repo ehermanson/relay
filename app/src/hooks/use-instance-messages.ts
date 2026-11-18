@@ -13,7 +13,13 @@ import type {
   InstanceStatus,
   UserMessage,
 } from "@shared/types";
-import type { ChatItem, LiveActivity, MergedActivity, UserChatItem } from "@/lib/chat-types";
+import type {
+  ChatItem,
+  LiveActivity,
+  MergedActivity,
+  SystemChatItem,
+  UserChatItem,
+} from "@/lib/chat-types";
 import { classifyLargeUserText } from "@/lib/message-rendering";
 import { hasAnchorInItems, isMainStreamAgent } from "@/lib/agents";
 import { mergeAgentInfo } from "@shared/agent-info";
@@ -38,6 +44,35 @@ function mergeFileLists(existing: FileChange[] | null, incoming: FileChange[]): 
 
 const IMAGE_ONLY_PATTERN = /^\s*(\[Image: source: [^\]]+\]\s*)+$/;
 const SESSION_WRITES_LOST_TEXT = "Session writes lost — history may not be saved on restart";
+
+/**
+ * Chat item for an SDK `informational` notice, or null when it has no text.
+ * Notices sharing a tool use are progress updates of one notice.
+ */
+function informationalItem(payload: Record<string, unknown> | undefined): SystemChatItem | null {
+  const content = typeof payload?.content === "string" ? payload.content.trim() : "";
+  if (!content) return null;
+  const toolUseId = typeof payload?.toolUseId === "string" ? payload.toolUseId : undefined;
+  return {
+    kind: "system",
+    text: content,
+    ...(toolUseId ? { dedupeKey: `informational:${toolUseId}` } : {}),
+  };
+}
+
+/** Replace the latest item with the same dedupe key in place, else append. Mutates `items`. */
+function upsertSystemItem(items: ChatItem[], item: SystemChatItem): void {
+  if (item.dedupeKey) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const existing = items[i];
+      if (existing.kind === "system" && existing.dedupeKey === item.dedupeKey) {
+        items[i] = item;
+        return;
+      }
+    }
+  }
+  items.push(item);
+}
 
 const GENERIC_LIVE_STRIP_TOOLS = new Set(["Edit", "Write", "Read", "Grep", "Glob"]);
 
@@ -307,6 +342,8 @@ interface ReplayStream {
   activity(msg: ActivityMessage): void;
   /** Flush pending text/activities and push a standalone item. */
   push(item: ChatItem): void;
+  /** Like push, but a system item with a dedupe key replaces its earlier copy. */
+  upsertSystem(item: SystemChatItem): void;
   /**
    * Flush pending text/activities without pushing anything. A process exit
    * (clean or not) ends whatever was streaming; without this, a restarted
@@ -424,6 +461,11 @@ function createReplayStream(): ReplayStream {
       flushActivities();
       flushAssistant();
       items.push(item);
+    },
+    upsertSystem(item) {
+      flushActivities();
+      flushAssistant();
+      upsertSystemItem(items, item);
     },
     flush() {
       flushActivities();
@@ -544,6 +586,9 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
             text: SESSION_WRITES_LOST_TEXT,
             isError: true,
           });
+        } else if (msg.event === "informational") {
+          const item = informationalItem(msg.payload);
+          if (item) main.upsertSystem(item);
         }
         break;
       }
@@ -1190,6 +1235,13 @@ function coreReducer(state: State, action: Action): State {
         if (!view) return state;
         // Like a page: never ends the turn. An update replaces the view in place.
         return { ...state, items: upsertUiViewItem(state.items, view, Date.now()) };
+      }
+      if (action.message.event === "informational") {
+        const item = informationalItem(action.message.payload);
+        if (!item) return state;
+        const items = [...state.items];
+        upsertSystemItem(items, item);
+        return { ...state, items };
       }
       if (action.message.event === "session_writes_lost") {
         return {
