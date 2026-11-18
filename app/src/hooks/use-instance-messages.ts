@@ -37,6 +37,8 @@ function mergeFileLists(existing: FileChange[] | null, incoming: FileChange[]): 
 }
 
 const IMAGE_ONLY_PATTERN = /^\s*(\[Image: source: [^\]]+\]\s*)+$/;
+const SESSION_WRITES_LOST_TEXT = "Session writes lost — history may not be saved on restart";
+
 const GENERIC_LIVE_STRIP_TOOLS = new Set(["Edit", "Write", "Read", "Grep", "Glob"]);
 
 function isImageOnly(text: string): boolean {
@@ -539,7 +541,7 @@ export function replayHistory(history: HistoryEntry[]): ReplayResult {
         } else if (msg.event === "session_writes_lost") {
           main.push({
             kind: "system",
-            text: "Session writes lost — history may not be saved on restart",
+            text: SESSION_WRITES_LOST_TEXT,
             isError: true,
           });
         }
@@ -1190,13 +1192,13 @@ function coreReducer(state: State, action: Action): State {
         return { ...state, items: upsertUiViewItem(state.items, view, Date.now()) };
       }
       if (action.message.event === "session_writes_lost") {
-        const items = [...state.items];
-        items.push({
-          kind: "system",
-          text: "Session writes lost — history may not be saved on restart",
-          isError: true,
-        });
-        return { ...state, items };
+        return {
+          ...state,
+          items: [
+            ...state.items,
+            { kind: "system", text: SESSION_WRITES_LOST_TEXT, isError: true },
+          ],
+        };
       }
       if (action.message.event !== "compact_boundary") return state;
       const items = [...state.items];
