@@ -1952,6 +1952,13 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       case "task_updated":
         this.handleTaskEvent(subtype, msg);
         break;
+      case "session_writes_lost":
+        this.emit("systemEvent", {
+          type: "system_event",
+          event: "session_writes_lost",
+          raw: msg,
+        } satisfies SystemEventMessage);
+        break;
       default:
         this.logger.debug(`[SdkSession] Unhandled system subtype: ${subtype}`);
     }

@@ -1226,7 +1226,9 @@ export type SystemEventType =
   | "model_switched"
   /** A page an agent showed with `html_render`; payload is an `HtmlRenderReference`. */
   | "html_render"
-  | "ui_render";
+  | "ui_render"
+  /** Full-disk or storage-quota error prevented saving the transcript or ~/.claude.json. */
+  | "session_writes_lost";
 
 export interface SystemEventMessage {
   type: "system_event";
