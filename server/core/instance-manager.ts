@@ -65,6 +65,7 @@ import {
   getSdkDiscoveredModels,
   getSdkDiscoveredRateLimits,
   readMcpResourceLinks,
+  readToolResultResourceLinks,
 } from "#core/providers/claude-sdk.js";
 import type { ClaudeSdkSession } from "#core/providers/claude-sdk.js";
 import {
@@ -8353,7 +8354,7 @@ export class InstanceManager extends EventEmitter {
           });
         }
       }
-      const resourceLinks = readMcpResourceLinks(block.resourceLinks);
+      const resourceLinks = readToolResultResourceLinks(block, toolUseResult);
       results.push({
         timestamp,
         message: buildToolResultActivity(

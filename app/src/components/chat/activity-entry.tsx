@@ -304,6 +304,14 @@ export function ActivityEntry({
   );
 }
 
+function safeDecodeUri(value: string): string {
+  try {
+    return decodeURI(value);
+  } catch {
+    return value;
+  }
+}
+
 function ResourceLinkChip({ link }: { link: McpResourceLink }) {
   const isUrl = link.uri.startsWith("http://") || link.uri.startsWith("https://");
   const isFile =
@@ -328,7 +336,9 @@ function ResourceLinkChip({ link }: { link: McpResourceLink }) {
     );
   }
   if (isFile) {
-    const displayPath = link.uri.startsWith("file://") ? link.uri.slice(7) : link.uri;
+    const displayPath = link.uri.startsWith("file://")
+      ? safeDecodeUri(link.uri.slice(7))
+      : link.uri;
     return (
       <span
         title={title}

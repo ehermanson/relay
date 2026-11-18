@@ -2965,7 +2965,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // For non-task tools, emit a tool_result activity
     const meta = this.pendingToolResultMeta.get(toolUseId);
     this.pendingToolResultMeta.delete(toolUseId);
-    const resourceLinks = readMcpResourceLinks(block.resourceLinks);
+    const resourceLinks = readToolResultResourceLinks(block, toolUseResult);
     const activity = buildToolResultActivity(
       isError,
       toolName,
@@ -3172,6 +3172,22 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
  * Parse a raw `resource_links` / `resourceLinks` array from an SDK message
  * into typed `McpResourceLink[]`. Returns `undefined` if there are no valid links.
  */
+/**
+ * Resource links for a foreground tool result. The CLI reports them on the
+ * message's structured `tool_use_result.resourceLinks`, not on the content
+ * block; the block is checked too in case a future shape inlines them.
+ */
+export function readToolResultResourceLinks(
+  block: { resourceLinks?: unknown },
+  toolUseResult: unknown,
+): McpResourceLink[] | undefined {
+  const structured =
+    toolUseResult && typeof toolUseResult === "object" && !Array.isArray(toolUseResult)
+      ? (toolUseResult as Record<string, unknown>).resourceLinks
+      : undefined;
+  return readMcpResourceLinks(structured) ?? readMcpResourceLinks(block.resourceLinks);
+}
+
 export function readMcpResourceLinks(raw: unknown): McpResourceLink[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const links: McpResourceLink[] = [];
