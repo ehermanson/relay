@@ -1179,6 +1179,8 @@ export async function createSdkSession(
   return new ClaudeSdkSessionImpl(options, queryFn);
 }
 
+const COST_BASIS_RANK = { list: 0, managed: 1, unknown: 2 } as const;
+
 class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
   private _isProcessing = false;
   private _lastMessageHadToolUse = false;
@@ -2297,6 +2299,8 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
             canonicalModel?: string;
             /** API provider that served this model (SDK >= 0.3.218). */
             provider?: string;
+            /** Which price table was used: 'list', 'managed', or 'unknown' (SDK >= 0.3.246). */
+            costBasis?: "list" | "managed" | "unknown";
           }
         >
       | undefined;
@@ -2306,12 +2310,22 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       // Code's background Haiku calls (session titling, summaries) and
       // subagents, so its first key is often not the model the chat runs on.
       // The chat model comes from root assistant frames (accumulateUsage).
+      let turnCostBasis: "list" | "managed" | "unknown" | undefined;
       for (const usage of Object.values(modelUsage)) {
         this._stats.inputTokens += usage.inputTokens || 0;
         this._stats.outputTokens += usage.outputTokens || 0;
         this._stats.cacheReadTokens += usage.cacheReadInputTokens || 0;
         this._stats.cacheCreationTokens += usage.cacheCreationInputTokens || 0;
+        // costBasis across models: unknown > managed > list, so the most
+        // consequential basis wins regardless of model order.
+        if (
+          usage.costBasis &&
+          COST_BASIS_RANK[usage.costBasis] > (turnCostBasis ? COST_BASIS_RANK[turnCostBasis] : -1)
+        ) {
+          turnCostBasis = usage.costBasis;
+        }
       }
+      if (turnCostBasis) this._stats.costBasis = turnCostBasis;
       this.emit("stats", { ...this._stats });
     }
 
