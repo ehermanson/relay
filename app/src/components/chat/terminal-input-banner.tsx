@@ -1,3 +1,4 @@
+import { getProviderDisplayName } from "@shared/provider-catalog";
 import { useState } from "react";
 import { Terminal } from "lucide-react";
 import type { ProviderKind, ProviderRequest } from "@shared/types";
@@ -32,7 +33,8 @@ export function TerminalInputBanner({
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[0.8125rem] font-medium text-text-bright">
-                {provider === "codex" ? "Codex" : "Agent"} needs terminal input
+                {provider === "claude" ? "Agent" : getProviderDisplayName(provider)} needs terminal
+                input
               </p>
               <p className="mt-0.5 text-[0.75rem] text-muted">{prompt}</p>
               {command ? (

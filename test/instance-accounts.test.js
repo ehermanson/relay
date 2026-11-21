@@ -213,6 +213,7 @@ describe("accounts", () => {
     assert.deepEqual(manager.getProviderContext().providerRoots, {
       claude: [defaultRoot, workRoot],
       codex: [codexDir],
+      antigravity: manager.getProviderRoots("antigravity"),
     });
   });
 

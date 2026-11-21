@@ -4,7 +4,7 @@ Relay gives you a browser UI for the coding agents already running on your machi
 
 Run Relay on your dev machine, open it from your laptop or phone, and keep up with your local agent chats without staying in the terminal the whole time.
 
-- Watch Claude Code and Codex chats in one place
+- Watch Claude Code, Codex and Antigravity (Gemini) chats in one place
 - Pick up terminal-started chats from the web UI
 - Organize work by project and chat
 - Start new chats, switch models, and manage runtime settings
@@ -25,6 +25,7 @@ Right now, the main supported providers are:
 
 - Claude Code
 - Codex CLI
+- Antigravity CLI (`agy`): Gemini and the other models your Google account offers
 
 ## A Few Terms
 
@@ -264,6 +265,8 @@ Common environment variables:
 | `CLAUDE_DIR`         | `$CLAUDE_CONFIG_DIR`                  | Relay-only override of the Claude data directory                                                                             |
 | `CODEX_HOME`         | `~/.codex`                            | Codex home (login, config, rollouts) Relay runs and indexes by default. More logins: add their homes as accounts in Settings |
 | `CODEX_DIR`          | `$CODEX_HOME`                         | Relay-only override of the Codex home                                                                                        |
+| `GEMINI_HOME`        | `~/.gemini`                           | Antigravity CLI home (login, settings, conversations under `antigravity-cli/`) Relay runs and indexes                        |
+| `ANTIGRAVITY_DIR`    | `$GEMINI_HOME`                        | Relay-only override of the Antigravity home                                                                                  |
 | `DB_PATH`            | `~/.relay/sessions.db`                | Relay SQLite path                                                                                                            |
 | `SESSION_FILE`       | `~/.relay/sessions.json`              | Auth session file                                                                                                            |
 

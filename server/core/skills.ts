@@ -12,6 +12,7 @@ import { readdirSync, existsSync, statSync, openSync, readSync, closeSync } from
 import { join } from "path";
 import { homedir } from "os";
 import type { ProviderKind, SkillInfo } from "#core/types.js";
+import { resolveAntigravityHomeDir } from "#core/providers/antigravity-cli.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 
 const SKILL_FILENAME = "SKILL.md";
@@ -158,7 +159,8 @@ function scanDirectory(
  * - ~/.claude/skills/, <project>/.claude/skills/ → claude
  * - ~/.codex/skills/ (incl. .system/) → codex
  * - ~/.agents/skills/ → codex (and other non-Claude providers)
- * - <project>/.agents/skills/ → claude + codex (shared, cross-provider convention)
+ * - <project>/.agents/skills/ → every provider (shared, cross-provider convention)
+ * - <project>/_agents/skills/, ~/.gemini/config/skills/ → antigravity
  *
  * When the same skill name appears in multiple directories, the highest-priority
  * entry's path/source is kept, but providers are merged (union).
@@ -198,8 +200,16 @@ export function discoverSkills(
   // 1. Project-level skills (highest priority)
   if (projectDir) {
     addSkills(scanDirectory(join(projectDir, ".claude", "skills"), "project", ["claude"]));
-    // .agents/skills is a shared, cross-provider convention — scanned by Claude and Codex alike.
-    addSkills(scanDirectory(join(projectDir, ".agents", "skills"), "project", ["claude", "codex"]));
+    // .agents/skills is a shared, cross-provider convention — scanned by every provider.
+    addSkills(
+      scanDirectory(join(projectDir, ".agents", "skills"), "project", [
+        "claude",
+        "codex",
+        "antigravity",
+      ]),
+    );
+    // Antigravity also reads `_agents/skills` (for tools that hide dot-folders).
+    addSkills(scanDirectory(join(projectDir, "_agents", "skills"), "project", ["antigravity"]));
   }
 
   // 2. User-level Claude skills
@@ -210,6 +220,11 @@ export function discoverSkills(
 
   // 4. Agents-level (shared — scanned by codex and other non-Claude providers)
   addSkills(scanDirectory(join(home, ".agents", "skills"), "user", ["codex"]));
+
+  // 5. User-level Antigravity skills (`<GEMINI_HOME>/config/skills`)
+  addSkills(
+    scanDirectory(join(resolveAntigravityHomeDir(), "config", "skills"), "user", ["antigravity"]),
+  );
 
   // Sort: project first, then user, then system; alphabetical within each group
   const sourceOrder = { project: 0, user: 1, system: 2 };

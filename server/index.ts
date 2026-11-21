@@ -194,6 +194,7 @@ export class Relay {
     // and account/rate-limit snapshot are both fetched via short-lived
     // `codex app-server` subprocesses; no need to await before serving HTTP.
     this.instanceManager.initCodexProvider();
+    this.instanceManager.initAntigravityProvider();
     this.instanceManager.restoreInstances(); // DB-only, fast
 
     // Initialize terminal support (non-fatal if node-pty is unavailable)

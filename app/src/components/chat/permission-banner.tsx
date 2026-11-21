@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Lock, X } from "lucide-react";
 import type { ProviderKind, ProviderRequest } from "@shared/types";
+import { getProviderDisplayName } from "@shared/provider-catalog";
 import { Button } from "../ui/button";
 import { Tooltip } from "../ui/tooltip";
 
 const FILE_WRITE_GROUP = ["Edit", "Write", "NotebookEdit"];
 
 function getProviderLabel(provider: ProviderKind): string {
-  return provider === "codex" ? "Codex" : "Claude";
+  return getProviderDisplayName(provider);
 }
 
 function getPermissionLabel(provider: ProviderKind, tool: string, agentId?: string): string {

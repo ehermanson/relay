@@ -10,6 +10,7 @@ import { defaultLogger } from "#core/logger.js";
 import type { UpdateService } from "#server/update-manager.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
+import { resolveAntigravityHomeDir } from "#core/providers/antigravity-cli.js";
 
 /**
  * Fully resolved server configuration (all fields required).
@@ -74,6 +75,7 @@ export function resolveConfig(options: RelayOptions): RelayConfig {
     providerDirs: options.providerDirs ?? {
       claude: resolveClaudeConfigDir(),
       codex: resolveCodexHomeDir(),
+      antigravity: resolveAntigravityHomeDir(),
     },
   };
 }

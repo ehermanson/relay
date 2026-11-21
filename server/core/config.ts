@@ -11,6 +11,7 @@ import { defaultLogger, type Logger } from "#core/logger.js";
 import type { ProviderKind, ProviderRuntimeMode } from "#core/types.js";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
+import { resolveAntigravityHomeDir } from "#core/providers/antigravity-cli.js";
 
 /**
  * Core configuration — the subset needed by ClaudeProcess and InstanceManager.
@@ -62,6 +63,7 @@ export function resolveCoreConfig(options: CoreOptions = {}): CoreConfig {
     providerDirs: options.providerDirs ?? {
       claude: resolveClaudeConfigDir(),
       codex: resolveCodexHomeDir(),
+      antigravity: resolveAntigravityHomeDir(),
     },
   };
 }

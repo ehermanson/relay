@@ -31,9 +31,13 @@ export function readAgentModelFromTranscript(
             ? entry.type === "turn_context" || entry.type === "session_meta"
               ? entry.payload?.model
               : undefined
-            : entry.type === "assistant"
-              ? entry.message?.model
-              : undefined;
+            : provider === "antigravity"
+              ? entry.type === "PLANNER_RESPONSE"
+                ? entry.model
+                : undefined
+              : entry.type === "assistant"
+                ? entry.message?.model
+                : undefined;
         if (typeof candidate === "string" && candidate.trim() && candidate !== "<synthetic>") {
           model = candidate;
           break;

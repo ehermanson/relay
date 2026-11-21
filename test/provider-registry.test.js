@@ -84,7 +84,7 @@ describe("provider registry", () => {
   });
 
   it("registers drivers for all known provider kinds", () => {
-    assert.deepEqual(getRegisteredProviders().sort(), ["claude", "codex"]);
+    assert.deepEqual(getRegisteredProviders().sort(), ["antigravity", "claude", "codex"]);
   });
 
   it("exposes fixed capability metadata for each driver", () => {

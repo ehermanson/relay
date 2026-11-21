@@ -73,10 +73,36 @@ import {
   convertCodexTranscriptEntry,
   extractCodexConversationMessage,
 } from "#core/providers/codex-transcript.js";
+import {
+  antigravityBrainDirFromTranscriptPath,
+  antigravitySessionIdFromTranscriptPath,
+  convertAntigravityTranscriptEntry,
+  seedAntigravityReplayContext,
+  parseAntigravityTranscript,
+  readAntigravityTranscriptTitle,
+  readFirstAntigravityUserMessage,
+  readLastAntigravityMessage,
+  readAntigravityConversationMetadata,
+  readAntigravityConversationWorkspaces,
+  listAntigravityChildConversationIds,
+  antigravityTranscriptPath,
+  type AntigravityReplayContext,
+  type AntigravityTranscriptStep,
+} from "#core/providers/antigravity-transcript.js";
 import { isSubagentSessionMeta } from "#core/providers/codex-discovery.js";
 import { fetchCodexProviderGlobalStateSnapshot } from "#core/providers/codex-app-server.js";
 import { getCachedCodexModels, prewarmCodexModels } from "#core/providers/codex-models.js";
 import { isCodexInstalled } from "#core/providers/codex-cli.js";
+import { readAgentModelFromTranscript } from "#core/agent-model.js";
+import {
+  antigravityDataDir,
+  isAntigravityInstalled,
+  resolveAntigravityHomeDir,
+} from "#core/providers/antigravity-cli.js";
+import {
+  getCachedAntigravityModels,
+  refreshAntigravityModelsIfStale,
+} from "#core/providers/antigravity-models.js";
 import {
   extractClaudeTitleRecord,
   mayBeClaudeTitleLine,
@@ -365,6 +391,8 @@ interface WatchState {
   codexAgentPaths: Map<string, string>;
   /** True once the codex maps above have been seeded from the pre-EOF transcript. */
   codexMappingsSeeded?: boolean;
+  /** Antigravity replay state (pending tool calls, subagents) across watched steps. */
+  antigravityCtx?: AntigravityReplayContext;
   stats: SessionStats;
 }
 
@@ -757,9 +785,27 @@ function providerLabel(provider?: ProviderKind): string {
       return "Claude";
     case "codex":
       return "Codex";
+    case "antigravity":
+      return "Antigravity";
     default:
       return "";
   }
+}
+
+/**
+ * The title a provider recorded for its own conversation: Claude's ai-title /
+ * custom-title transcript records, Antigravity's conversation metadata.
+ */
+function readRecordedTranscriptTitle(
+  provider: ProviderKind,
+  transcriptPath: string,
+): { title: string } | null {
+  if (provider === "claude") return readClaudeTranscriptTitle(transcriptPath);
+  if (provider === "antigravity") {
+    const title = readAntigravityTranscriptTitle(transcriptPath);
+    return title ? { title } : null;
+  }
+  return null;
 }
 
 /** Default title when no content is available to derive one from. */
@@ -1132,6 +1178,7 @@ function readLastMessage(
   provider: ProviderKind = "claude",
 ): LastMessagePreview | null {
   if (provider === "codex") return readLastCodexMessage(jsonlPath);
+  if (provider === "antigravity") return readLastAntigravityMessage(jsonlPath);
   try {
     const fd = openSync(jsonlPath, "r");
     try {
@@ -1730,6 +1777,7 @@ export class InstanceManager extends EventEmitter {
     this.providerDirs = {
       claude: config.providerDirs.claude ?? resolveClaudeConfigDir(),
       codex: config.providerDirs.codex ?? join(home, ".codex"),
+      antigravity: config.providerDirs.antigravity ?? resolveAntigravityHomeDir(),
     };
     // The search index files each chat under its login root; unbound rows go
     // under the server's own dir for their provider (the default account).
@@ -2201,6 +2249,32 @@ export class InstanceManager extends EventEmitter {
     // the UI on connect. Rate limits come from live sessions (the cold
     // app-server probe can't read them without a prior turn snapshot).
     void this.ensureProviderGlobalState("codex");
+  }
+
+  /** A provider's discovered model list, when it is cached (no probing). */
+  private cachedDiscoveredModels(
+    provider: ProviderKind,
+    configDir: string | undefined,
+  ): ProviderModelOption[] | undefined {
+    if (provider === "codex") {
+      return getCachedCodexModels(configDir ?? this.providerDirs.codex) ?? undefined;
+    }
+    if (provider === "antigravity") {
+      return getCachedAntigravityModels(configDir ?? this.providerDirs.antigravity) ?? undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Pre-warm Antigravity's model list (`agy models`) so the first picker open
+   * is instant. Fire-and-forget; skipped when `agy` isn't installed.
+   */
+  initAntigravityProvider(): void {
+    if (!isAntigravityInstalled()) return;
+    void refreshAntigravityModelsIfStale({
+      home: this.providerDirs.antigravity,
+      logger: this.baseConfig.logger,
+    });
   }
 
   /**
@@ -3017,19 +3091,52 @@ export class InstanceManager extends EventEmitter {
         .filter(Boolean),
     );
     for (let i = parent.history.length - 1; i >= 0; i--) {
-      const message = parent.history[i].message;
-      if (message.type !== "activity" || message.activity !== "tool_use" || message.agentId) {
-        continue;
-      }
-      const isDelegation =
-        message.tool === `${RELAY_MCP_CLAUDE_TOOL_PREFIX}delegate_task` ||
-        (message.mcp?.serverName === RELAY_MCP_SERVER_NAME &&
-          message.mcp.toolName === "delegate_task");
-      if (isDelegation && message.toolUseId && !anchored.has(message.toolUseId)) {
-        return message.toolUseId;
-      }
+      const toolUseId = delegationToolUseId(parent.history[i]);
+      if (toolUseId && !anchored.has(toolUseId)) return toolUseId;
     }
     return undefined;
+  }
+
+  /**
+   * A task whose recorded tool call isn't in the replayed history (a provider
+   * whose transcript ids differ from its live ones) re-anchors to the newest
+   * unclaimed `delegate_task` call at or before its creation, and the new id
+   * is stored so live updates keep pointing at it. Tasks whose call is
+   * present are untouched.
+   */
+  private reanchorDelegatedTasks(tasks: DelegatedTaskRecord[], history: HistoryEntry[]): void {
+    const calls: Array<{ id: string; timestamp: number }> = [];
+    for (const entry of history) {
+      const id = delegationToolUseId(entry);
+      if (id) calls.push({ id, timestamp: entry.timestamp });
+    }
+    if (calls.length === 0) return;
+    const present = new Set(calls.map((call) => call.id));
+    const claimed = new Set(
+      tasks
+        .map((task) => task.originToolUseId)
+        .filter((id): id is string => !!id && present.has(id)),
+    );
+    const orphans = tasks
+      .filter((task) => !task.originToolUseId || !present.has(task.originToolUseId))
+      .sort((a, b) => a.createdAt - b.createdAt);
+    for (const task of orphans) {
+      let match: string | undefined;
+      for (const call of calls) {
+        if (call.timestamp > task.createdAt + 1_000) break;
+        if (!claimed.has(call.id)) match = call.id;
+      }
+      if (!match) continue;
+      claimed.add(match);
+      task.originToolUseId = match;
+      try {
+        this.db.setDelegatedTaskOrigin(task.id, match);
+      } catch (err) {
+        this.baseConfig.logger.warn(
+          `[InstanceManager] Failed to re-anchor task ${task.id}: ${err}`,
+        );
+      }
+    }
   }
 
   /** Broadcast a task's state as a relay-origin agent on its parent (card + sidecar). */
@@ -3546,13 +3653,14 @@ export class InstanceManager extends EventEmitter {
   }
 
   /** Parent history entries for its tasks, rebuilt from the table (transcripts never hold them). */
-  private delegatedTaskHistoryEntries(parentId: string): HistoryEntry[] {
+  private delegatedTaskHistoryEntries(parentId: string, history: HistoryEntry[]): HistoryEntry[] {
     let tasks: DelegatedTaskRecord[];
     try {
       tasks = this.db.listDelegatedTasksForParent(parentId);
     } catch {
       return [];
     }
+    this.reanchorDelegatedTasks(tasks, history);
     return tasks.map((task) => ({
       timestamp: task.createdAt,
       message: {
@@ -3978,9 +4086,7 @@ export class InstanceManager extends EventEmitter {
         ? undefined
         : resolveProviderDefaultModelOption(
             provider,
-            provider === "codex"
-              ? (getCachedCodexModels(configDir ?? this.providerDirs.codex) ?? undefined)
-              : undefined,
+            this.cachedDiscoveredModels(provider, configDir),
           )?.id);
     // An aside continues the source conversation, so like a resume it gets no
     // re-injected project context — the fork already carries it.
@@ -4057,8 +4163,7 @@ export class InstanceManager extends EventEmitter {
         workingDirectory,
         configDir,
       });
-      const recorded =
-        provider === "claude" && resumePath ? readClaudeTranscriptTitle(resumePath) : null;
+      const recorded = resumePath ? readRecordedTranscriptTitle(provider, resumePath) : null;
       if (recorded) name = sanitiseForTitle(recorded.title) || recorded.title;
     }
     if (!name) name = "New Session";
@@ -6206,7 +6311,7 @@ export class InstanceManager extends EventEmitter {
     } catch {
       rows = [];
     }
-    const taskEntries = this.delegatedTaskHistoryEntries(instanceId);
+    const taskEntries = this.delegatedTaskHistoryEntries(instanceId, history);
     // Task wakes replay from the transcript as plain user text; restore their author.
     const replayed = history.some((entry) => isTaskWakeEntry(entry))
       ? history.map((entry) => (isTaskWakeEntry(entry) ? asTaskWakeNote(entry) : entry))
@@ -9341,9 +9446,14 @@ export class InstanceManager extends EventEmitter {
     );
   }
 
-  private shouldSkipWatcherEntry(instance: Instance, entry: { timestamp?: string }): boolean {
-    if (!instance.processHandledUntil || !entry.timestamp) return false;
-    const entryTime = new Date(entry.timestamp).getTime();
+  private shouldSkipWatcherEntry(
+    instance: Instance,
+    entry: { timestamp?: string; created_at?: string },
+  ): boolean {
+    // Antigravity steps carry `created_at`; the other providers `timestamp`.
+    const stamp = entry.timestamp ?? entry.created_at;
+    if (!instance.processHandledUntil || !stamp) return false;
+    const entryTime = new Date(stamp).getTime();
     if (Number.isNaN(entryTime)) return false;
     return entryTime <= instance.processHandledUntil;
   }
@@ -9392,6 +9502,31 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  /**
+   * The watcher's Antigravity replay state. Seeded once from the transcript
+   * before the first watched step (watching starts at EOF, so a call or a
+   * subagent launched before Relay attached must still resolve), and pointed
+   * at the chat's current task/file/stat maps on every step: hydrate replaces
+   * them, and a stale reference would freeze Files and token stats.
+   */
+  private antigravityWatcherContext(
+    instance: Instance,
+    step: AntigravityTranscriptStep,
+  ): AntigravityReplayContext {
+    const ws = instance.watchState!;
+    const cwd = instance.actualCwd || instance.info.workingDirectory;
+    const ctx = (ws.antigravityCtx ??= seedAntigravityReplayContext(ws.jsonlPath, step.step_index, {
+      sessionId: antigravitySessionIdFromTranscriptPath(ws.jsonlPath),
+      brainDir: antigravityBrainDirFromTranscriptPath(ws.jsonlPath),
+      cwd,
+    }));
+    ctx.cwd = cwd;
+    ctx.tasks = instance.tasks!;
+    ctx.files = instance.files!;
+    ctx.stats = ws.stats;
+    return ctx;
+  }
+
   private applyWatcherEntry(
     instanceId: string,
     instance: Instance,
@@ -9438,30 +9573,35 @@ export class InstanceManager extends EventEmitter {
 
     const prevStats = { ...instance.watchState.stats };
     const converted =
-      instance.info.provider === "codex"
-        ? convertCodexTranscriptEntry(entry as Record<string, unknown>, {
-            pendingCalls: instance.watchState.pendingProviderCalls,
-            commandIds: (instance.watchState.providerCommandIds ??= new Set()),
-            // Persist collab dedup + agent-path state across watched entries;
-            // spawn tool_use and its result (or a child report and the agent
-            // path that resolves its author) arrive on separate JSONL lines.
-            collabIds: (instance.watchState.codexCollabIds ??= new Set()),
-            collabResultIds: (instance.watchState.codexCollabResultIds ??= new Set()),
-            agentPaths: (instance.watchState.codexAgentPaths ??= new Map()),
-            tasks: instance.tasks,
-            files: instance.files,
-            stats: instance.watchState.stats,
-            cwd: instance.actualCwd || instance.info.workingDirectory,
-          })
-        : this.convertJsonlEntry(entry, {
-            pendingTools: instance.watchState.pendingTools,
-            pendingTaskCreates: instance.watchState.pendingTaskCreates,
-            tasks: instance.tasks,
-            files: instance.files,
-            stats: instance.watchState.stats,
-            cwd: instance.actualCwd || instance.info.workingDirectory,
-            agents: instance.agents,
-          });
+      instance.info.provider === "antigravity"
+        ? convertAntigravityTranscriptEntry(
+            entry as AntigravityTranscriptStep,
+            this.antigravityWatcherContext(instance, entry as AntigravityTranscriptStep),
+          )
+        : instance.info.provider === "codex"
+          ? convertCodexTranscriptEntry(entry as Record<string, unknown>, {
+              pendingCalls: instance.watchState.pendingProviderCalls,
+              commandIds: (instance.watchState.providerCommandIds ??= new Set()),
+              // Persist collab dedup + agent-path state across watched entries;
+              // spawn tool_use and its result (or a child report and the agent
+              // path that resolves its author) arrive on separate JSONL lines.
+              collabIds: (instance.watchState.codexCollabIds ??= new Set()),
+              collabResultIds: (instance.watchState.codexCollabResultIds ??= new Set()),
+              agentPaths: (instance.watchState.codexAgentPaths ??= new Map()),
+              tasks: instance.tasks,
+              files: instance.files,
+              stats: instance.watchState.stats,
+              cwd: instance.actualCwd || instance.info.workingDirectory,
+            })
+          : this.convertJsonlEntry(entry, {
+              pendingTools: instance.watchState.pendingTools,
+              pendingTaskCreates: instance.watchState.pendingTaskCreates,
+              tasks: instance.tasks,
+              files: instance.files,
+              stats: instance.watchState.stats,
+              cwd: instance.actualCwd || instance.info.workingDirectory,
+              agents: instance.agents,
+            });
     if (statsChanged(prevStats, instance.watchState.stats)) {
       instance.info.stats = { ...instance.watchState.stats };
       this.emitInstanceStatus(instance);
@@ -9666,6 +9806,7 @@ export class InstanceManager extends EventEmitter {
     if (!existsSync(transcriptPath)) return undefined;
     if (provider === "claude") return readClaudeStatsFromJsonl(transcriptPath);
     if (provider === "codex") return readCodexStatsFromJsonl(transcriptPath);
+    if (provider === "antigravity") return parseAntigravityTranscript(transcriptPath).stats;
     return undefined;
   }
 
@@ -9761,6 +9902,8 @@ export class InstanceManager extends EventEmitter {
 
     // --- Scan Codex sessions (~/.codex/sessions/) ---
     this.scanCodexSessions(knownPaths, diskPaths, managedKeys);
+    // --- Scan Antigravity conversations (~/.gemini/antigravity-cli/brain/) ---
+    this.scanAntigravitySessions(knownPaths, diskPaths, managedKeys);
 
     if (existingProjectsDirs.length === 0) return;
 
@@ -9973,7 +10116,20 @@ export class InstanceManager extends EventEmitter {
     // Only consider paths under directories we actually scanned — don't archive
     // sessions from unregistered projects that were simply skipped.
     const codexSessionsDir = join(this.providerDirs.codex, "sessions");
+    const antigravityBrainRoots = this.getProviderRoots("antigravity").map((home) =>
+      join(antigravityDataDir(home), "brain"),
+    );
     for (const knownPath of knownPaths) {
+      if (antigravityBrainRoots.some((root) => knownPath.startsWith(`${root}/`))) {
+        if (!diskPaths.has(knownPath)) {
+          const row = this.db.getByJsonlPath(knownPath);
+          if (row && !row.archived) {
+            this.db.archive(row.session_id);
+            archived++;
+          }
+        }
+        continue;
+      }
       // Codex sessions: always check
       if (knownPath.startsWith(codexSessionsDir)) {
         if (!diskPaths.has(knownPath)) {
@@ -10181,6 +10337,122 @@ export class InstanceManager extends EventEmitter {
   }
 
   /**
+   * Index Antigravity conversations: each `brain/<id>` folder with a
+   * transcript is one chat. Subagent conversations belong to their parent and
+   * are skipped. The workspace comes from agy's metadata cache or, when that
+   * doesn't list the conversation, its own database.
+   */
+  private scanAntigravitySessions(
+    knownPaths: Set<string>,
+    diskPaths: Set<string>,
+    managedKeys: { providerSessionIds: Set<string>; transcriptPaths: Set<string> },
+  ): void {
+    for (const home of this.getProviderRoots("antigravity")) {
+      const dataDir = antigravityDataDir(home);
+      const brainDir = join(dataDir, "brain");
+      if (!existsSync(brainDir)) continue;
+      let ids: string[];
+      try {
+        ids = readdirSync(brainDir);
+      } catch {
+        continue;
+      }
+      const metadata = readAntigravityConversationMetadata(dataDir);
+      const children = listAntigravityChildConversationIds(dataDir);
+      const rows: SessionRow[] = [];
+      let archivedShadows = 0;
+      for (const sessionId of ids) {
+        const fullPath = antigravityTranscriptPath(home, sessionId);
+        let stat;
+        try {
+          stat = statSync(fullPath);
+        } catch {
+          continue;
+        }
+        diskPaths.add(fullPath);
+        const meta = metadata.get(sessionId);
+        if (children.has(sessionId) || meta?.internal) continue;
+        const managed =
+          managedKeys.providerSessionIds.has(sessionId) ||
+          managedKeys.transcriptPaths.has(fullPath);
+        if (knownPaths.has(fullPath)) {
+          const existing = this.db.getByJsonlPath(fullPath);
+          if (managed && existing?.type === "external" && !existing.archived) {
+            this.db.archive(existing.session_id);
+            archivedShadows++;
+          } else if (
+            existing &&
+            meta?.title &&
+            !existing.custom_title &&
+            existing.name !== meta.title
+          ) {
+            // agy's recorded title is authoritative, like Claude's ai-title.
+            this.db.updateName(existing.session_id, meta.title, false);
+          }
+          continue;
+        }
+        if (managed) continue;
+        const cwd =
+          meta?.workspaces[0] ?? readAntigravityConversationWorkspaces(dataDir, sessionId)[0];
+        if (!cwd || !existsSync(cwd)) continue;
+        const firstUserMessage = meta?.title
+          ? undefined
+          : readFirstAntigravityUserMessage(fullPath);
+        const lastMsg = readLastMessage(fullPath, "antigravity");
+        const projectDirectory = normalizeProjectDirectory(cwd);
+        rows.push({
+          session_id: sessionId,
+          instance_id: randomUUID(),
+          provider_name: "antigravity",
+          name:
+            meta?.title ??
+            (firstUserMessage
+              ? generateTitle(firstUserMessage, "antigravity")
+              : defaultSessionTitle("antigravity")),
+          working_directory: cwd,
+          jsonl_path: fullPath,
+          created_at: Math.floor(stat.birthtimeMs || stat.mtimeMs),
+          last_activity_at: Math.floor(meta?.updatedAt ?? stat.mtimeMs),
+          type: "external",
+          archived: 0,
+          custom_title: 0,
+          pinned: 0,
+          done_at: null,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 0,
+          summary: meta?.title ?? null,
+          first_prompt: null,
+          git_branch: null,
+          message_count: 0,
+          allowed_tools: "[]",
+          worktree_path: null,
+          original_directory: null,
+          parent_session_id: null,
+          preferred_model: null,
+          reasoning_budget: null,
+          runtime_mode: null,
+          last_message_text: lastMsg?.text ?? null,
+          last_message_from: lastMsg?.from ?? null,
+          last_message_at: lastMsg?.timestamp ?? null,
+          git_info_branch: null,
+          git_info_is_worktree: null,
+          project_id: this._projectManager.getProjectByDirectory(projectDirectory)?.id ?? null,
+          model: readAgentModelFromTranscript(fullPath, "antigravity") ?? null,
+        });
+      }
+      if (rows.length > 0) this.db.upsertMany(rows);
+      if (rows.length > 0 || archivedShadows > 0) {
+        this.baseConfig.logger.info(
+          `[InstanceManager] Antigravity scan: discovered ${rows.length} session(s)` +
+            (archivedShadows > 0 ? `, archived ${archivedShadows} managed shadow(s)` : ""),
+        );
+      }
+    }
+  }
+
+  /**
    * Read session_meta + first user message from a Codex JSONL file.
    *
    * Reads the head in chunks rather than a fixed 64KB slice: a 0.153+ rollout
@@ -10302,6 +10574,10 @@ export class InstanceManager extends EventEmitter {
     if (provider === "claude" && entry.jsonl_path?.includes("/.codex/")) {
       provider = "codex";
       this.db.updateProvider(entry.session_id, "codex");
+    }
+    if (provider === "claude" && entry.jsonl_path?.includes("/antigravity-cli/brain/")) {
+      provider = "antigravity";
+      this.db.updateProvider(entry.session_id, "antigravity");
     }
 
     const restoredState = buildExternalRestoreState({
@@ -10867,7 +11143,9 @@ export class InstanceManager extends EventEmitter {
           live.info.runtimeMode === "plan" &&
           message.activity === "tool_use" &&
           (message.tool === "Edit" || message.tool === "Write") &&
-          message.input
+          message.input &&
+          // An agent's own scratch artifact (a todo list, notes) is not the plan.
+          (message.input as Record<string, unknown>).artifact !== true
         ) {
           const filePath = (message.input as Record<string, unknown>).file_path as
             | string
@@ -11525,20 +11803,21 @@ export class InstanceManager extends EventEmitter {
   }
 
   /** The title Claude Code recorded in this instance's transcript, if any. */
-  private readInstanceTranscriptTitle(instance: Instance) {
-    if (instance.info.provider !== "claude") return null;
+  private readInstanceTranscriptTitle(instance: Instance): { title: string } | null {
+    const provider = instance.info.provider;
+    if (provider !== "claude" && provider !== "antigravity") return null;
     const sessionId = instance.sessionId || instance.info.sessionId;
     const path =
       instance.jsonlPath ||
       instance.providerBinding?.transcriptPath ||
       (sessionId
-        ? this.resolveManagedTranscriptPath("claude", {
+        ? this.resolveManagedTranscriptPath(provider, {
             sessionId,
             workingDirectory: instance.info.workingDirectory,
             configDir: instance.info.configDir,
           })
         : undefined);
-    return path ? readClaudeTranscriptTitle(path) : null;
+    return path ? readRecordedTranscriptTitle(provider, path) : null;
   }
 
   /**
@@ -11921,9 +12200,7 @@ export class InstanceManager extends EventEmitter {
             ? undefined
             : resolveProviderDefaultModelOption(
                 provider,
-                provider === "codex"
-                  ? (getCachedCodexModels(login.configDir ?? this.providerDirs.codex) ?? undefined)
-                  : undefined,
+                this.cachedDiscoveredModels(provider, login.configDir),
               )?.id),
         modelOptions,
         instanceId: id,
@@ -12084,8 +12361,11 @@ export class InstanceManager extends EventEmitter {
    * background task finishes), so no dispatch took a baseline for it.
    */
   private async trackSelfStartedTurn(live: Instance): Promise<void> {
-    if (live.info.status !== "idle" || live.turnWorktreeBaseline !== undefined) return;
-    if (live.info.aside) return;
+    if (live.info.status !== "idle") return;
+    // A delegated child that starts a turn on its own (its subagent reported
+    // back) isn't finished: the reply its task published was only "waiting".
+    this.reopenDelegatedTask(live);
+    if (live.turnWorktreeBaseline !== undefined || live.info.aside) return;
     await this.captureTurnBaseline(live);
   }
 
@@ -12381,4 +12661,16 @@ export class InstanceManager extends EventEmitter {
       }
     }
   }
+}
+
+/** The id of a root `delegate_task` call to Relay's own server, if `entry` is one. */
+function delegationToolUseId(entry: HistoryEntry): string | undefined {
+  const message = entry.message;
+  if (message.type !== "activity" || message.activity !== "tool_use" || message.agentId) {
+    return undefined;
+  }
+  const isDelegation =
+    message.tool === `${RELAY_MCP_CLAUDE_TOOL_PREFIX}delegate_task` ||
+    (message.mcp?.serverName === RELAY_MCP_SERVER_NAME && message.mcp.toolName === "delegate_task");
+  return isDelegation ? message.toolUseId : undefined;
 }

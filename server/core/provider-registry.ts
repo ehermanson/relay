@@ -56,6 +56,24 @@ import {
 import { readClaudeWorktreeState } from "#core/providers/claude-worktree-state.js";
 import { findCodexBinary, isCodexInstalled } from "#core/providers/codex-cli.js";
 import {
+  antigravityDataDir,
+  findAntigravityBinary,
+  resolveAntigravityHomeDir,
+  isAntigravityInstalled,
+} from "#core/providers/antigravity-cli.js";
+import { AntigravityAcpSession } from "#core/providers/antigravity-session.js";
+import {
+  getCachedAntigravityModels,
+  refreshAntigravityModelsIfStale,
+} from "#core/providers/antigravity-models.js";
+import {
+  antigravitySessionIdFromTranscriptPath,
+  antigravityTranscriptPath,
+  parseAntigravityTranscript,
+  readAntigravityAgentHistory,
+  readAntigravityConversationMetadata,
+} from "#core/providers/antigravity-transcript.js";
+import {
   buildVersionAdvisory,
   compareSemver,
   executeUpdateCommand,
@@ -659,6 +677,63 @@ async function discoverCodexExternalSessions(
   }));
 }
 
+/**
+ * Terminal `agy` sessions: an `agy` process in a registered cwd, paired with
+ * that cwd's conversations. `last_conversations.json` names the one the CLI
+ * resumes there; other recent conversations in the same workspace fill in
+ * when several processes share a cwd.
+ *
+ * Nothing ties an `agy` process to its conversation (it holds no transcript
+ * open), so a PID is attached only when one process runs in the cwd. With
+ * several, the sessions are listed without PIDs: takeover signals a PID, and
+ * a guessed pairing could stop someone else's terminal chat.
+ */
+export async function discoverAntigravityExternalSessions(
+  context: ProviderExternalDiscoveryContext,
+): Promise<DiscoveredExternalSession[]> {
+  const cwdInfoMap =
+    context.runningProcessCwds?.get("agy") ??
+    (await findRunningProcessCwdsAsync("agy", context.excludePids));
+  if (cwdInfoMap.size === 0) return [];
+  const home = context.providerDirs.antigravity;
+  const dataDir = antigravityDataDir(home);
+  const metadata = readAntigravityConversationMetadata(dataDir);
+  let lastByCwd: Record<string, string> = {};
+  try {
+    lastByCwd = JSON.parse(
+      readFileSync(join(dataDir, "cache", "last_conversations.json"), "utf-8"),
+    ) as Record<string, string>;
+  } catch {
+    // no conversation started from the terminal yet
+  }
+  const sessions: DiscoveredExternalSession[] = [];
+  for (const [cwd, info] of cwdInfoMap) {
+    if (!isRegisteredDiscoveryDirectory(cwd, context.registeredDirectories)) continue;
+    const ids: string[] = [];
+    const last = lastByCwd[cwd];
+    if (typeof last === "string") ids.push(last);
+    const recent = [...metadata.values()]
+      .filter((meta) => !meta.internal && meta.workspaces[0] === cwd && meta.id !== last)
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    for (const meta of recent) ids.push(meta.id);
+    let index = 0;
+    for (const sessionId of ids) {
+      if (index >= info.count) break;
+      const transcriptPath = antigravityTranscriptPath(home, sessionId);
+      if (!existsSync(transcriptPath)) continue;
+      sessions.push({
+        provider: "antigravity",
+        cwd,
+        transcriptPath,
+        sessionId,
+        ...(info.count === 1 && info.pids.length === 1 ? { pid: info.pids[0] } : {}),
+      });
+      index++;
+    }
+  }
+  return sessions;
+}
+
 function createClaudeSession(
   config: CoreConfig,
   options: ProviderSessionOptions | undefined,
@@ -1113,6 +1188,99 @@ const PROVIDER_DRIVERS: Record<ProviderKind, ProviderDriver> = {
       return getCodexAccountIdentitySnapshot(configDir);
     },
   },
+  antigravity: {
+    kind: "antigravity",
+    capabilities: DEFAULT_PROVIDER_CAPABILITIES.antigravity,
+    isAvailable() {
+      return isAntigravityInstalled();
+    },
+    createSession(config, options) {
+      if (options?.forkFrom) {
+        throw new Error("Antigravity can't fork a conversation");
+      }
+      return new AntigravityAcpSession({
+        home: config.providerDirs.antigravity ?? resolveAntigravityHomeDir(),
+        cwd: config.workingDirectory,
+        model: options?.model,
+        runtimeMode: options?.runtimeMode ?? config.defaultRuntimeMode,
+        modelOptions: options?.modelOptions,
+        resumeSessionId: options?.resumeSessionId,
+        readOnly: options?.readOnly,
+        bootstrapContext: options?.bootstrapContext,
+        relayMcp: options?.relayMcp,
+        additionalDirectories: options?.additionalDirectories,
+        initialStats: options?.initialStats,
+        logger: config.logger,
+        processTimeout: config.processTimeout,
+      });
+    },
+    async getModels(context) {
+      // `agy models` is quick but still a process; serve the cache and
+      // re-probe in the background once it is stale.
+      const home = context.providerDirs.antigravity;
+      if (getCachedAntigravityModels(home)) {
+        void refreshAntigravityModelsIfStale({ home, logger: context.logger });
+      } else {
+        await refreshAntigravityModelsIfStale({ home, logger: context.logger });
+      }
+      const discovered = getCachedAntigravityModels(home) ?? [];
+      return discovered.length > 0 ? discovered : getBuiltinProviderModels("antigravity");
+    },
+    parseTranscript(filePath) {
+      const parsed = parseAntigravityTranscript(filePath);
+      return {
+        cwd: parsed.cwd,
+        createdAt: parsed.createdAt,
+        history: parsed.history,
+        tasks: parsed.tasks,
+        files: parsed.files,
+        stats: parsed.stats,
+      };
+    },
+    async readAgentHistory(context) {
+      const childId = context.providerAgentId;
+      if (!childId) return null;
+      return readAntigravityAgentHistory(
+        context.providerDirs.antigravity,
+        childId,
+        context.agentId,
+      );
+    },
+    readAgentModel(context) {
+      const path = this.resolveAgentTranscriptPath!(context);
+      return path ? readAgentModelFromTranscript(path, "antigravity") : undefined;
+    },
+    resolveAgentTranscriptPath(context) {
+      const childId = context.providerAgentId;
+      if (!childId || !/^[A-Za-z0-9-]+$/.test(childId)) return undefined;
+      const path = antigravityTranscriptPath(context.providerDirs.antigravity, childId);
+      return existsSync(path) ? path : undefined;
+    },
+    resolveManagedTranscriptPath(options) {
+      if (options.transcriptPath && existsSync(options.transcriptPath)) {
+        return options.transcriptPath;
+      }
+      if (!options.sessionId) return options.transcriptPath;
+      return antigravityTranscriptPath(options.providerDirs.antigravity, options.sessionId);
+    },
+    captureManagedSession(context) {
+      const binding = context.binding ?? context.proc.getRuntimeBinding();
+      const sessionId =
+        binding.providerSessionId ??
+        (binding.transcriptPath
+          ? antigravitySessionIdFromTranscriptPath(binding.transcriptPath)
+          : undefined) ??
+        context.fallbackSessionId;
+      if (!sessionId) return null;
+      return {
+        sessionId,
+        transcriptPath: antigravityTranscriptPath(context.providerDirs.antigravity, sessionId),
+      };
+    },
+    discoverExternalSessions(context) {
+      return discoverAntigravityExternalSessions(context);
+    },
+  },
 };
 
 export function getProviderDriver(provider: ProviderKind): ProviderDriver {
@@ -1148,6 +1316,7 @@ const probeGenerations = new Map<ProviderKind, number>();
 const PROVIDER_BINARY_LOCATORS: Partial<Record<ProviderKind, () => string | null>> = {
   claude: findClaudeBinary,
   codex: findCodexBinary,
+  antigravity: findAntigravityBinary,
 };
 
 export function getCachedVersionAdvisory(
@@ -1519,6 +1688,7 @@ export async function discoverLiveExternalSessions(
   const processCommands = activeProviders.flatMap((provider) => {
     if (provider === "claude") return ["claude"];
     if (provider === "codex") return ["codex"];
+    if (provider === "antigravity") return ["agy"];
     return [];
   });
   const runningProcessCwds = await findRunningProcessCwdsByCommandAsync(

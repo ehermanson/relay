@@ -32,6 +32,13 @@ export interface ProviderPackageMetadata {
   homebrewFormula: string | null;
   /** If the binary supports `<bin> update` as a native self-update */
   nativeUpdate: { command: string; matches: (realpath: string) => boolean } | null;
+  /**
+   * A provider not published to npm: the URL of its release manifest (JSON
+   * with a `version` field) for this machine, or null when the platform has
+   * none. Replaces the npm lookup, and the npm recommendation for manual
+   * installs becomes `nativeUpdate.command`.
+   */
+  releaseManifestUrl?: () => string | null;
 }
 
 const CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code";
@@ -55,7 +62,31 @@ export const PROVIDER_PACKAGE_METADATA: Partial<Record<ProviderKind, ProviderPac
     homebrewFormula: "codex",
     nativeUpdate: null,
   },
+  antigravity: {
+    // Not on npm: a self-updating native binary with its own release feed.
+    npmPackageName: "antigravity-cli",
+    homebrewFormula: null,
+    nativeUpdate: {
+      command: "agy update",
+      matches: (realpath) => normalizeCommandPath(realpath).endsWith("/agy"),
+    },
+    releaseManifestUrl: antigravityReleaseManifestUrl,
+  },
 };
+
+const ANTIGRAVITY_RELEASE_FEED =
+  "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app";
+
+/** The `agy` release manifest for this OS/architecture (what `agy update` reads). */
+export function antigravityReleaseManifestUrl(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string | null {
+  const os = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : null;
+  const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "amd64" : null;
+  if (!os || !cpu) return null;
+  return `${ANTIGRAVITY_RELEASE_FEED}/manifests/${os}_${cpu}.json`;
+}
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
@@ -139,7 +170,9 @@ export function buildUpdateCommand(
     case "npm":
       return `npm install -g ${pkg}@latest`;
     case "manual":
-      // No detected install method — recommend npm as the most portable option
+      // A provider with its own release feed updates itself; otherwise
+      // recommend npm as the most portable option.
+      if (metadata.releaseManifestUrl) return metadata.nativeUpdate?.command ?? null;
       return `npm install -g ${pkg}@latest`;
   }
 }
@@ -198,6 +231,26 @@ export async function fetchNpmLatest(
   packageName: string,
   options: { force?: boolean } = {},
 ): Promise<string | null> {
+  return fetchJsonVersion(
+    packageName,
+    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
+    options,
+  );
+}
+
+/** Latest version from a release manifest (`{ "version": "…" }`); same caching as npm. */
+export function fetchManifestLatest(
+  url: string,
+  options: { force?: boolean } = {},
+): Promise<string | null> {
+  return fetchJsonVersion(`manifest:${url}`, url, options);
+}
+
+async function fetchJsonVersion(
+  packageName: string,
+  url: string,
+  options: { force?: boolean },
+): Promise<string | null> {
   const now = Date.now();
   if (!options.force) {
     const cached = npmLatestCache.get(packageName);
@@ -206,7 +259,6 @@ export async function fetchNpmLatest(
     }
   }
 
-  const url = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NPM_LATEST_TIMEOUT_MS);
 
@@ -384,6 +436,17 @@ export interface BuildVersionAdvisoryInput {
  * Missing installed/npm versions produce an unknown advisory; Homebrew
  * lookup failures leave availableVersion null and disable automatic updates.
  */
+function latestVersionFor(
+  metadata: ProviderPackageMetadata,
+  force: boolean | undefined,
+): Promise<string | null> {
+  if (metadata.releaseManifestUrl) {
+    const url = metadata.releaseManifestUrl();
+    return url ? fetchManifestLatest(url, { force }) : Promise.resolve(null);
+  }
+  return fetchNpmLatest(metadata.npmPackageName, { force });
+}
+
 export async function buildVersionAdvisory(
   input: BuildVersionAdvisoryInput,
 ): Promise<ProviderVersionAdvisory> {
@@ -407,7 +470,7 @@ export async function buildVersionAdvisory(
   const installMethod = classifyInstallMethod(realpath, metadata);
   const [currentVersion, latestVersion, brewVersion] = await Promise.all([
     getInstalledVersion(input.binaryPath),
-    fetchNpmLatest(metadata.npmPackageName, { force: input.force }),
+    latestVersionFor(metadata, input.force),
     installMethod === "brew" && metadata.homebrewFormula
       ? fetchHomebrewLatest(
           metadata.homebrewFormula,

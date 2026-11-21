@@ -178,7 +178,14 @@ export function loginRootForTranscriptPath(
   jsonlPath: string | null | undefined,
 ): string | undefined {
   if (!jsonlPath) return undefined;
-  const marker = provider === "claude" ? "/projects/" : provider === "codex" ? "/sessions/" : null;
+  const marker =
+    provider === "claude"
+      ? "/projects/"
+      : provider === "codex"
+        ? "/sessions/"
+        : provider === "antigravity"
+          ? "/antigravity-cli/brain/"
+          : null;
   if (!marker) return undefined;
   const idx = jsonlPath.lastIndexOf(marker);
   if (idx <= 0) return undefined;

@@ -311,7 +311,7 @@ const chatRead: Tool = {
   },
 };
 
-const PROVIDERS: ProviderKind[] = ["claude", "codex"];
+const PROVIDERS: ProviderKind[] = ["claude", "codex", "antigravity"];
 const RUNTIME_MODES: ProviderRuntimeMode[] = [
   "plan",
   "approval-required",

@@ -1,3 +1,4 @@
+import { getProviderDisplayName } from "@shared/provider-catalog";
 import { memo, useMemo } from "react";
 import { Tooltip } from "../ui/tooltip";
 import { Popover } from "../ui/popover";
@@ -278,7 +279,7 @@ function InstanceContext({
         <div className="sidecar-stats-grid grid gap-x-4 gap-y-3">
           <StatRow
             label="Provider"
-            value={provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : "—"}
+            value={provider ? getProviderDisplayName(provider as ProviderKind) : "—"}
           />
           {contextUsage.contextWindow > 0 && (
             <>
@@ -414,11 +415,7 @@ function ProviderStatusBlock({
       <div className="flex items-center gap-2">
         <ProviderLogo provider={provider as ProviderKind} className="h-3.5 w-3.5 shrink-0" />
         <span className="text-[0.8125rem] font-medium text-text-bright">
-          {provider === "codex"
-            ? "Codex"
-            : provider === "claude"
-              ? "Claude Code"
-              : provider.charAt(0).toUpperCase() + provider.slice(1)}
+          {provider === "claude" ? "Claude Code" : getProviderDisplayName(provider as ProviderKind)}
         </span>
         {globalState?.account?.plan ? (
           <>

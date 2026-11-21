@@ -14,6 +14,12 @@ const SUPPORTED_PROVIDERS = [
     description: "OpenAI's open-source coding agent for the terminal.",
     url: "https://developers.openai.com/codex/cli",
   },
+  {
+    provider: "antigravity" as const,
+    name: "Antigravity CLI",
+    description: "Google's agentic coding CLI, with Gemini and other models.",
+    url: "https://antigravity.google/docs/cli",
+  },
 ];
 
 export function NoProvidersLanding() {

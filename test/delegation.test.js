@@ -604,6 +604,65 @@ describe("delegated tasks", () => {
     assert.equal(third.originToolUseId, undefined, "no call left: the reducer inserts a card");
   });
 
+  it("re-anchors a card whose recorded call isn't in the replayed history", async () => {
+    const { manager, sessions, parent } = setup();
+    const proc = sessions.get(parent.id);
+    proc.emit("activity", {
+      type: "activity",
+      activity: "tool_use",
+      tool: "delegate_task",
+      toolUseId: "live-call-1",
+      mcp: { serverId: "agy:relay", serverName: "relay", toolName: "delegate_task" },
+    });
+    const task = await manager.delegateTask(parent.id, { task: "a" });
+    assert.equal(task.originToolUseId, "live-call-1");
+
+    // After a restart the transcript replays the same call under another id.
+    const replayedCall = {
+      timestamp: task.createdAt - 5,
+      message: {
+        type: "activity",
+        activity: "tool_use",
+        tool: "delegate_task",
+        toolUseId: "replay-call-1",
+        mcp: { serverId: "agy:relay", serverName: "relay", toolName: "delegate_task" },
+      },
+    };
+    const merged = manager.mergeSessionEvents(parent.id, [replayedCall]);
+    const card = merged.find((entry) => entry.message.type === "agent_update");
+    assert.equal(card.message.agent.originToolUseId, "replay-call-1");
+    assert.equal(
+      manager.getDelegatedTask(task.id).originToolUseId,
+      "replay-call-1",
+      "stored, so later live updates keep the anchor",
+    );
+
+    // A card whose call is present is left alone.
+    const again = manager.mergeSessionEvents(parent.id, [replayedCall]);
+    assert.equal(
+      again.find((entry) => entry.message.type === "agent_update").message.agent.originToolUseId,
+      "replay-call-1",
+    );
+  });
+
+  it("a turn the child starts on its own reopens its task", async () => {
+    const { manager, sessions, parent } = setup();
+    const task = await manager.delegateTask(parent.id, { task: "Count", title: "Count" });
+    const childId = task.childInstanceId;
+    const childProc = sessions.get(childId);
+    await endTurn(manager, childProc, childId, "Waiting for my subagent.");
+    assert.equal(manager.getDelegatedTask(task.id).status, "completed");
+
+    // The child's subagent reports back and the provider replies unprompted.
+    childProc.isProcessing = true;
+    childProc.emit("output", { type: "output", text: "It has 3 lines.", isWaiting: false });
+    await waitFor(() => manager.getDelegatedTask(task.id).status === "running", "the reopen");
+    await endTurn(manager, childProc, childId);
+    const ended = manager.getDelegatedTask(task.id);
+    assert.equal(ended.status, "completed");
+    assert.match(ended.result, /It has 3 lines\.$/, "the real answer, not just the waiting note");
+  });
+
   it("returns the result inline in wait mode, without a wake", async () => {
     const { manager, sessions, parent } = setup();
     const task = await manager.delegateTask(parent.id, { task: "quick" });

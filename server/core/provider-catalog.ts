@@ -8,6 +8,7 @@ import type {
 export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 const REASONING_LEVEL_DEFS: Record<ReasoningEffort, { label: string; description: string }> = {
@@ -52,6 +53,28 @@ const EXTENDED_EFFORTS = reasoningLevels(
   "max",
   "ultracode",
 );
+
+// Antigravity thinking levels (`thought_level`); `xhigh` only on some models.
+const ANTIGRAVITY_EFFORTS = reasoningLevels("high", "low", "medium", "high");
+const ANTIGRAVITY_EFFORTS_EXTENDED = reasoningLevels("high", "low", "medium", "high", "xhigh");
+
+/** `gemini-4-neon` → "Gemini 4 Neon"; `claude-opus-5-5` → "Claude Opus 5.5". */
+function formatAntigravityModelLabel(modelId: string): string {
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/i.exec(modelId);
+  if (claude) {
+    return `Claude ${toTitleCaseToken(claude[1])} ${claude[3] ? `${claude[2]}.${claude[3]}` : claude[2]}`;
+  }
+  return modelId
+    .split("-")
+    .map((part) =>
+      /^gpt$/i.test(part) || /^oss$/i.test(part)
+        ? part.toUpperCase()
+        : /^\d/.test(part)
+          ? part.toUpperCase()
+          : toTitleCaseToken(part),
+    )
+    .join(" ");
+}
 
 function toTitleCaseToken(token: string): string {
   return token
@@ -215,6 +238,29 @@ export const BUILTIN_PROVIDER_MODELS: Record<ProviderKind, readonly ProviderMode
       label: "GPT-5.2",
     },
   ],
+  // `agy models` is canonical (the list depends on the account's tier); these
+  // render only until discovery answers.
+  antigravity: [
+    {
+      provider: "antigravity",
+      id: "gemini-4-neon",
+      label: "Gemini 4 Neon",
+      isDefault: true,
+      capabilities: { reasoningEffortLevels: ANTIGRAVITY_EFFORTS_EXTENDED },
+    },
+    {
+      provider: "antigravity",
+      id: "gemini-4-argon",
+      label: "Gemini 4 Argon",
+      capabilities: { reasoningEffortLevels: ANTIGRAVITY_EFFORTS },
+    },
+    {
+      provider: "antigravity",
+      id: "gemini-3.8-flash",
+      label: "Gemini 3.8 Flash",
+      capabilities: { reasoningEffortLevels: ANTIGRAVITY_EFFORTS },
+    },
+  ],
 };
 
 export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabilities> = {
@@ -319,6 +365,38 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<ProviderKind, ProviderCapabil
       },
     },
   },
+  antigravity: {
+    supportsResume: true,
+    supportsTranscriptReplay: true,
+    supportsApprovals: true,
+    supportsUserInputRequests: true,
+    supportsReasoningEffort: true,
+    supportsFastMode: false,
+    supportsModelSelection: true,
+    supportsTitleUpdates: true,
+    reasoningEffortLevels: ANTIGRAVITY_EFFORTS_EXTENDED,
+    composerHints: { helpText: "Use @ for files and / for commands and skills" },
+    supportsAgentActivity: true,
+    supportsRelayOrchestration: true,
+    runtimeModes: {
+      "approval-required": {
+        label: "Ask Permission",
+        description: "Ask before running commands or editing files",
+      },
+      auto: {
+        label: "Auto",
+        description: "Approve edits and safe commands; ask before irreversible actions",
+      },
+      "full-access": {
+        label: "Full access",
+        description: "Run commands and edit files without asking",
+      },
+      plan: {
+        label: "Plan",
+        description: "Stay in planning mode for this chat",
+      },
+    },
+  },
 };
 
 export function getProviderDisplayName(provider: ProviderKind): string {
@@ -364,6 +442,7 @@ export function findProviderModelLabel(provider: ProviderKind, modelId: string):
   if (known) return known;
   if (provider === "claude") return formatClaudeModelLabel(modelId);
   if (provider === "codex") return formatCodexModelLabel(modelId);
+  if (provider === "antigravity") return formatAntigravityModelLabel(modelId);
   return null;
 }
 

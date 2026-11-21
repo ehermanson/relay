@@ -111,7 +111,7 @@ export interface ResolvedSuggestion {
 // =============================================================================
 
 export type InstanceStatus = "idle" | "processing" | "error" | "stopped";
-export type ProviderKind = "claude" | "codex";
+export type ProviderKind = "claude" | "codex" | "antigravity";
 export type ProviderRuntimeMode =
   | "approval-required"
   | "full-access"

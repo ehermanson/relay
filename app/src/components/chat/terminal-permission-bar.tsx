@@ -1,3 +1,4 @@
+import { getProviderDisplayName } from "@shared/provider-catalog";
 import { Terminal } from "lucide-react";
 import type { ProviderKind } from "@shared/types";
 
@@ -19,8 +20,8 @@ export function TerminalPermissionBar({
             Waiting for your response in the terminal
           </p>
           <p className="text-[0.75rem] text-muted">
-            {provider === "codex" ? "Codex" : "Claude"} is waiting for approval to use {pendingTool}
-            . Switch to your terminal to respond.
+            {getProviderDisplayName(provider)} is waiting for approval to use {pendingTool}. Switch
+            to your terminal to respond.
           </p>
         </div>
         <span className="relative flex h-2.5 w-2.5 shrink-0">

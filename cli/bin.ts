@@ -13,6 +13,7 @@ import { readTunnelSettings } from "#server/tunnel-settings.js";
 import { readFile } from "node:fs/promises";
 import { resolveClaudeConfigDir } from "#core/providers/claude-cli.js";
 import { resolveCodexHomeDir } from "#core/providers/codex-cli.js";
+import { resolveAntigravityHomeDir } from "#core/providers/antigravity-cli.js";
 
 const CLI_CHILD_MODE_ENV_VAR = "RELAY_CLI_CHILD_MODE";
 const CLI_UPDATE_RESTART_EXIT_CODE = 75;
@@ -198,6 +199,7 @@ async function startServer(cliArgs: string[]): Promise<number> {
     providerDirs: {
       claude: resolveClaudeConfigDir(),
       codex: resolveCodexHomeDir(),
+      antigravity: resolveAntigravityHomeDir(),
     },
     updateManager,
     getTunnelUrl: () => tunnelUrl,
