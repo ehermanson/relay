@@ -68,6 +68,7 @@ import {
 import {
   antigravityExitCode,
   antigravityReadPreview,
+  antigravityRelayToolRequest,
   antigravityToolUseActivity,
   antigravityWorkspacePath,
   cleanAntigravityToolOutput,
@@ -75,6 +76,12 @@ import {
   describeAntigravityTool,
   type AntigravityToolView,
 } from "#core/providers/antigravity-tools.js";
+import {
+  classifyAntigravityTurn,
+  hasAntigravityPendingReply,
+  readAntigravityLastStepIndex,
+  readAntigravityTurnErrorStep,
+} from "#core/providers/antigravity-turn-outcome.js";
 import {
   antigravityBrainDir,
   antigravityTranscriptPath,
@@ -287,6 +294,8 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
   private readonly openTools = new Set<string>();
   /** Stop ended an unprompted reply: drop its stragglers until this time (or its usage update). */
   private dropUnpromptedUntil = 0;
+  /** When the turn started waiting on a queued reply; 0 when it isn't. */
+  private pendingReplySince = 0;
   private interrupted = false;
   private unpromptedTimer: NodeJS.Timeout | null = null;
   private turnTimeout: NodeJS.Timeout | null = null;
@@ -581,10 +590,13 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
       this.assertModeNotLooser();
       const connection = this.connection;
       if (!connection || !this._sessionId) throw new Error("Antigravity session is not running");
+      const sessionId = this._sessionId;
+      // Where this prompt's steps start in agy's conversation log.
+      const firstStepAfter = readAntigravityLastStepIndex(this.home, sessionId);
       dispatched = true;
       this.dispatchedPrompts++;
       const request = connection.request<Json>("session/prompt", {
-        sessionId: this._sessionId,
+        sessionId,
         prompt: this.buildPromptBlocks(message),
       });
       const result = await request.finally(() => {
@@ -594,13 +606,22 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
       const stopReason = getString(result?.stopReason);
       this.promptsInFlight = Math.max(0, this.promptsInFlight - 1);
       if (this.promptsInFlight > 0) return; // steered: the turn continues
-      if (stopReason === "refusal") {
-        this.emit(
-          "providerError",
-          "Antigravity refused the request (this can mean the account's usage limit was reached).",
+      const aborted = this.interrupted || stopReason === "cancelled";
+      if (!aborted) {
+        // agy reports an API failure (quota, rate limit, 5xx) as a normal end_turn.
+        const failure = classifyAntigravityTurn(
+          stopReason,
+          readAntigravityTurnErrorStep(this.home, sessionId, firstStepAfter),
         );
+        if (failure) {
+          this.logger.warn(`[Antigravity] Turn failed (${failure.code ?? failure.kind})`);
+          this.emit("providerError", failure.message);
+        } else if (this.awaitingPendingReply()) {
+          // A subagent's report is queued: agy replies to it next, in this turn.
+          return;
+        }
       }
-      this.finishTurn({ aborted: this.interrupted || stopReason === "cancelled" });
+      this.finishTurn({ aborted });
     } catch (error) {
       // Stop already settled a prompt that never left setup.
       if (!dispatched && generation !== this.promptGeneration) return;
@@ -615,6 +636,7 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
 
   private finishTurn(options: { aborted?: boolean } = {}): void {
     this.clearUnpromptedTimer();
+    this.pendingReplySince = 0;
     this.clearTurnTimeout();
     this.flushThought();
     if (!this._isProcessing) {
@@ -651,6 +673,7 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
     if (this.promptsInFlight > 0) return true;
     if (this.dropUnpromptedUntil > Date.now()) return false;
     this.dropUnpromptedUntil = 0;
+    this.pendingReplySince = 0;
     if (!this._isProcessing) this.beginTurn();
     // Ongoing output: only the fallback end applies until the trailing usage update.
     this.armUnpromptedTimer(UNPROMPTED_IDLE_MS);
@@ -670,8 +693,22 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
         this.armUnpromptedTimer(UNPROMPTED_IDLE_MS);
         return;
       }
+      if (this.awaitingPendingReply()) return;
       this.finishTurn();
     }, delayMs);
+  }
+
+  /**
+   * Keep the turn open while agy has a reply queued (an unread subagent
+   * report). Polls at the settle interval, for at most the idle fallback.
+   */
+  private awaitingPendingReply(): boolean {
+    const now = Date.now();
+    if (!this.pendingReplySince) this.pendingReplySince = now;
+    if (now - this.pendingReplySince >= UNPROMPTED_IDLE_MS) return false;
+    if (!this._sessionId || !hasAntigravityPendingReply(this.home, this._sessionId)) return false;
+    this.armUnpromptedTimer(UNPROMPTED_SETTLE_MS);
+    return true;
   }
 
   private clearUnpromptedTimer(): void {
@@ -1508,7 +1545,12 @@ export class AntigravityAcpSession extends EventEmitter implements ProviderSessi
     }
 
     const kind = getString(toolCall.kind);
-    const autoAnswer = this.autoPermissionAnswer(kind);
+    // Relay's own tools run in every mode, as for the other providers; a chat
+    // without the server (read-only) never gets this far for them.
+    const autoAnswer =
+      this.relayMcp && antigravityRelayToolRequest(toolCall)
+        ? "allow"
+        : this.autoPermissionAnswer(kind);
     if (autoAnswer) {
       const option = this.pickOption(options, autoAnswer);
       return option

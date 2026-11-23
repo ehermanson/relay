@@ -17,7 +17,7 @@ import { closeSync, openSync, readSync, realpathSync, statSync } from "fs";
 import { isAbsolute, join, relative } from "path";
 import { isPathWithinWorkspace } from "#core/workspace-paths.js";
 import { mcpServerId } from "#core/mcp.js";
-import { RELAY_MCP_SERVER_NAME } from "#core/orchestration/instructions.js";
+import { RELAY_MCP_SERVER_NAME, RELAY_TOOL_NAMES } from "#core/orchestration/instructions.js";
 import type { ActivityMessage, FileChange, TaskItem } from "#core/types.js";
 
 export interface AntigravityToolView {
@@ -67,6 +67,34 @@ export function splitAntigravityMcpToolName(
   const index = rest.indexOf("_");
   if (index <= 0 || index === rest.length - 1) return undefined;
   return { serverName: rest.slice(0, index), toolName: rest.slice(index + 1) };
+}
+
+/**
+ * The Relay tool a permission request asks to run, when it is one: agy 1.5.8+
+ * names the server and tool in `rawInput`, older versions only in the call's
+ * name or title (`Run mcp_relay_<tool>`). A request that also carries a shell
+ * command is never a Relay call.
+ */
+export function antigravityRelayToolRequest(toolCall: Record<string, unknown>): string | undefined {
+  const raw =
+    toolCall.rawInput && typeof toolCall.rawInput === "object"
+      ? (toolCall.rawInput as Record<string, unknown>)
+      : {};
+  if (raw.CommandLine !== undefined || raw.commandLine !== undefined) return undefined;
+  const known = (tool: unknown): string | undefined =>
+    typeof tool === "string" && (RELAY_TOOL_NAMES as readonly string[]).includes(tool)
+      ? tool
+      : undefined;
+  if (typeof raw.ServerName === "string" || typeof raw.ToolName === "string") {
+    return raw.ServerName === RELAY_MCP_SERVER_NAME ? known(raw.ToolName) : undefined;
+  }
+  for (const candidate of [toolCall.name, toolCall.title]) {
+    if (typeof candidate !== "string") continue;
+    const name = candidate.trim().replace(/^Run(?:ning)?\s+|\?$/g, "");
+    const mcp = splitAntigravityMcpToolName(name);
+    if (mcp) return mcp.serverName === RELAY_MCP_SERVER_NAME ? known(mcp.toolName) : undefined;
+  }
+  return undefined;
 }
 
 type Args = Record<string, unknown>;

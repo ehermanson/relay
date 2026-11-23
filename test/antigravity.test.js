@@ -17,6 +17,7 @@ import {
 } from "../dist/server/core/providers/antigravity-models.js";
 import {
   antigravityReadPreview,
+  antigravityRelayToolRequest,
   antigravityToolUseActivity,
   cleanAntigravityToolOutput,
   describeAntigravityTool,
@@ -46,6 +47,13 @@ import {
   antigravityModeFor,
   extractImagePaths,
 } from "../dist/server/core/providers/antigravity-session.js";
+import {
+  classifyAntigravityTurn,
+  formatAntigravityResetDelay,
+  hasAntigravityPendingReply,
+  readAntigravityLastStepIndex,
+  readAntigravityTurnErrorStep,
+} from "../dist/server/core/providers/antigravity-turn-outcome.js";
 import { antigravityReleaseManifestUrl } from "../dist/server/core/provider-versions.js";
 import { loginRootForTranscriptPath } from "../dist/server/core/accounts.js";
 
@@ -663,8 +671,10 @@ async function handle(message) {
         setTimeout(() => {
           fs.appendFileSync(process.env.STUB_TRANSCRIPT, JSON.stringify({ step_index: 9, source: "SYSTEM", type: "SYSTEM_MESSAGE",
             created_at: new Date().toISOString(),
-            content: "<SYSTEM_MESSAGE>\n[Message] timestamp=t sender=c0ffee00-0000-4000-8000-000000000001 priority=HIGH content=It has 3 lines.\n</SYSTEM_MESSAGE>" }) + "\n");
+            content: "<SYSTEM_MESSAGE>\n[Message] timestamp=t sender=c0ffee00-0000-4000-8000-000000000001 priority=MESSAGE_PRIORITY_HIGH content=It has 3 lines.\n</SYSTEM_MESSAGE>" }) + "\n");
           update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "The child says 3." } });
+          fs.appendFileSync(process.env.STUB_TRANSCRIPT, JSON.stringify({ step_index: 10, source: "MODEL", type: "PLANNER_RESPONSE",
+            created_at: new Date().toISOString(), content: "The child says 3." }) + "\n");
           update(sid, { sessionUpdate: "usage_update", used: 50, size: 100 });
         }, 200);
         return;
@@ -715,6 +725,37 @@ async function handle(message) {
         const answer = await ask("session/request_permission", { sessionId: sid, toolCall,
           options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
         log({ permission: answer });
+        return;
+      }
+      if (text === "mcp") {
+        const toolCall = { toolCallId: "m1", name: "mcp_" + process.env.STUB_MCP_SERVER + "_ui_render", kind: "other",
+          status: "pending", rawInput: { ServerName: process.env.STUB_MCP_SERVER, ToolName: "ui_render" } };
+        update(sid, { sessionUpdate: "tool_call", ...toolCall, status: "in_progress" });
+        const answer = await ask("session/request_permission", { sessionId: sid, toolCall,
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
+        log({ permission: answer });
+        update(sid, { sessionUpdate: "tool_call_update", toolCallId: "m1", status: "completed",
+          content: [{ type: "content", content: { type: "text", text: "shown" } }] });
+        return reply({ stopReason: "end_turn" });
+      }
+      if (text === "api-error") {
+        // agy logs the failed model call as an error step and ends the turn normally.
+        const { DatabaseSync } = require("node:sqlite");
+        const db = new DatabaseSync(process.env.STUB_DB);
+        db.prepare("INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)").run(1, 14, Buffer.from("user"));
+        db.prepare("INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)").run(2, 17,
+          Buffer.from("model call failed: Error 429, Message: Resource has been exhausted (e.g. check quota)., Status: RESOURCE_EXHAUSTED, Details: [reason:QUOTA_EXHAUSTED quotaResetDelay:2h5m0s]"));
+        db.close();
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Something went wrong." } });
+        return reply({ stopReason: "end_turn" });
+      }
+      if (text === "queued-report") {
+        // A subagent's report waits unread in the inbox when the prompt ends.
+        reply({ stopReason: "end_turn" });
+        await sleep(300);
+        fs.writeFileSync(process.env.STUB_INBOX + "/read.json", JSON.stringify({ "msg-1": true }));
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "The report says 3." } });
+        update(sid, { sessionUpdate: "usage_update", used: 30, size: 100 });
         return;
       }
       if (text === "slow") {
@@ -1128,6 +1169,77 @@ describe("AntigravityAcpSession (stub agent)", () => {
     assert.equal(uses[0].payload.input.file_path, join(realpathSync(dir), "a.txt"));
   });
 
+  const relayMcp = { url: "http://127.0.0.1:9/mcp", token: "test-token" };
+
+  it("runs Relay's own tools without asking, in every mode", async () => {
+    const session = createSession({ relayMcp, env: { STUB_MCP_SERVER: "relay" } });
+    const events = collect(session);
+    const done = turnEnd(session);
+    session.send("mcp");
+    await done;
+    assert.equal(events.filter((event) => event.name === "permissionRequest").length, 0);
+    assert.equal(readLog().find((entry) => entry.permission)?.permission.outcome.optionId, "allow");
+  });
+
+  it("still asks before another server's MCP tool", async () => {
+    const session = createSession({ relayMcp, env: { STUB_MCP_SERVER: "github" } });
+    const request = new Promise((resolve) => session.once("permissionRequest", resolve));
+    const done = turnEnd(session);
+    session.send("mcp");
+    const pending = await request;
+    assert.equal(session.respondToRequest(pending.requestId, "decline"), true);
+    await done;
+    assert.equal(readLog().find((entry) => entry.permission)?.permission.outcome.optionId, "deny");
+  });
+
+  it("reports an API failure agy ended as a normal turn", async () => {
+    const home = join(dir, "gemini-home-error");
+    const conversations = join(home, "antigravity-cli", "conversations");
+    mkdirSync(conversations, { recursive: true });
+    const dbPath = join(conversations, "sess-1.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)");
+    db.prepare("INSERT INTO steps VALUES (0, 15, ?)").run(Buffer.from("earlier reply"));
+    db.close();
+    const session = createSession({ home, env: { STUB_DB: dbPath } });
+    const events = collect(session);
+    const done = turnEnd(session);
+    session.send("api-error");
+    const end = await done;
+    assert.ok(!end.aborted);
+    const errors = events.filter((event) => event.name === "providerError");
+    assert.equal(errors.length, 1);
+    assert.match(
+      errors[0].payload,
+      /^You've reached your Antigravity quota for this period\. It resets in 2h 5m\.$/,
+    );
+  });
+
+  it("keeps the turn open while a subagent's report is queued", async () => {
+    const home = join(dir, "gemini-home-inbox");
+    const inbox = join(home, "antigravity-cli", "brain", "sess-1", ".system_generated", "messages");
+    mkdirSync(inbox, { recursive: true });
+    writeFileSync(
+      join(inbox, "msg-1.json"),
+      JSON.stringify({
+        id: "msg-1",
+        priority: "MESSAGE_PRIORITY_HIGH",
+        content: "It has 3 lines.",
+      }),
+    );
+    const session = createSession({ home, env: { STUB_INBOX: inbox } });
+    const outputs = [];
+    session.on("output", (message) => outputs.push(message));
+    const done = turnEnd(session);
+    session.send("queued-report");
+    await done;
+    const endAt = outputs.findIndex((message) => message.isWaiting);
+    const replyAt = outputs.findIndex((message) => message.text === "The report says 3.");
+    assert.ok(replyAt >= 0 && replyAt < endAt, "the queued reply belongs to the same turn");
+    await sleep(300);
+    assert.equal(outputs.filter((message) => message.isWaiting).length, 1);
+  });
+
   it("resumes an existing conversation", async () => {
     const session = createSession({ resumeSessionId: "sess-1" });
     const done = turnEnd(session);
@@ -1139,6 +1251,206 @@ describe("AntigravityAcpSession (stub agent)", () => {
       ),
     );
     assert.ok(!readLog().some((entry) => entry.method === "session/new"));
+  });
+});
+
+describe("antigravity turn outcomes", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const failed = (errorText) => ({ errorText, reachedModel: false });
+
+  it("passes a turn with no error step", () => {
+    assert.equal(classifyAntigravityTurn("end_turn", undefined, now), undefined);
+    assert.equal(classifyAntigravityTurn("end_turn", { reachedModel: true }, now), undefined);
+  });
+
+  it("reads an HTTP status line", () => {
+    const failure = classifyAntigravityTurn(
+      "end_turn",
+      failed("Error 502, Message: upstream connect error, Status: 502 Bad Gateway, Details: []"),
+      now,
+    );
+    assert.equal(failure.kind, "provider_error");
+    assert.equal(
+      failure.message,
+      "Antigravity error (502 502 Bad Gateway): upstream connect error",
+    );
+  });
+
+  it("reads the STATUS (code NNN) form", () => {
+    const failure = classifyAntigravityTurn(
+      "end_turn",
+      failed("UNAVAILABLE (code 503): The model is overloaded. Try again later."),
+      now,
+    );
+    assert.equal(failure.code, "UNAVAILABLE");
+    assert.match(
+      failure.message,
+      /^Antigravity error \(503 UNAVAILABLE\): The model is overloaded/,
+    );
+  });
+
+  it("names an exhausted quota and when it resets", () => {
+    const byDelay = classifyAntigravityTurn(
+      "end_turn",
+      failed(
+        "Error 429, Message: exhausted, Status: RESOURCE_EXHAUSTED, Details: [reason:QUOTA_EXHAUSTED quotaResetDelay:1h30m0s]",
+      ),
+      now,
+    );
+    assert.equal(byDelay.kind, "usage_limit");
+    assert.equal(byDelay.resetAt, now + 90 * 60_000);
+    assert.equal(
+      byDelay.message,
+      "You've reached your Antigravity quota for this period. It resets in 1h 30m.",
+    );
+    const byStamp = classifyAntigravityTurn(
+      "end_turn",
+      failed("reason:QUOTA_EXHAUSTED quotaResetTimeStamp:2026-11-23T12:40:00Z]"),
+      now,
+    );
+    assert.equal(byStamp.resetAt, Date.parse("2026-11-23T12:40:00Z"));
+    assert.match(byStamp.message, /resets in 40m\.$/);
+  });
+
+  it("treats a refusal as an exhausted quota even without a log", () => {
+    const failure = classifyAntigravityTurn("refusal", undefined, now);
+    assert.equal(failure.kind, "usage_limit");
+    assert.equal(failure.message, "You've reached your Antigravity quota for this period.");
+  });
+
+  it("separates a plain rate limit from a quota", () => {
+    const failure = classifyAntigravityTurn(
+      "end_turn",
+      failed(
+        "Error 429, Message: Too many requests., Status: RESOURCE_EXHAUSTED, Details: [retryDelay:40s]",
+      ),
+      now,
+    );
+    assert.equal(failure.kind, "usage_limit");
+    assert.equal(failure.message, "Antigravity is rate limited: Too many requests. Retry in 40s.");
+  });
+
+  it("flags a conversation whose thinking signature is invalid", () => {
+    const failure = classifyAntigravityTurn(
+      "end_turn",
+      failed(
+        "Error 400, Message: messages.3.content.0.thinking.signature: Field required, Status: INVALID_ARGUMENT",
+      ),
+      now,
+    );
+    assert.equal(failure.broken, true);
+    assert.match(failure.message, /Start a new chat/);
+  });
+
+  it("falls back to a generic message for an unrecognised error", () => {
+    assert.equal(
+      classifyAntigravityTurn("end_turn", failed("panic: something odd"), now).message,
+      "Antigravity stopped this turn because of an error.",
+    );
+  });
+
+  it("formats reset delays", () => {
+    assert.equal(formatAntigravityResetDelay(now + 5_000, now), "in 5s");
+    assert.equal(formatAntigravityResetDelay(now + 2 * 3_600_000, now), "in 2h");
+  });
+
+  it("reads the steps a prompt added from the conversation database", () => {
+    const home = mkdtempSync(join(tmpdir(), "relay-agy-steps-"));
+    try {
+      assert.equal(readAntigravityLastStepIndex(home, "conv"), -1);
+      assert.equal(readAntigravityTurnErrorStep(home, "conv", -1), undefined);
+      const conversations = join(home, "antigravity-cli", "conversations");
+      mkdirSync(conversations, { recursive: true });
+      const db = new DatabaseSync(join(conversations, "conv.db"));
+      db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)");
+      db.prepare("INSERT INTO steps VALUES (?, ?, ?)").run(0, 14, Buffer.from("prompt"));
+      db.prepare("INSERT INTO steps VALUES (?, ?, ?)").run(1, 15, Buffer.from("reply"));
+      assert.equal(readAntigravityLastStepIndex(home, "conv"), 1);
+      assert.equal(readAntigravityTurnErrorStep(home, "conv", 1), undefined);
+      db.prepare("INSERT INTO steps VALUES (?, ?, ?)").run(2, 14, Buffer.from("prompt"));
+      db.prepare("INSERT INTO steps VALUES (?, ?, ?)").run(
+        3,
+        17,
+        Buffer.from("Error 500, Message: boom, Status: INTERNAL"),
+      );
+      db.close();
+      assert.deepEqual(readAntigravityTurnErrorStep(home, "conv", 1), {
+        errorText: "Error 500, Message: boom, Status: INTERNAL",
+        reachedModel: false,
+      });
+      assert.equal(readAntigravityTurnErrorStep(home, "../conv", 1), undefined);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a reply agy has queued", () => {
+    const home = mkdtempSync(join(tmpdir(), "relay-agy-inbox-"));
+    try {
+      const generated = join(home, "antigravity-cli", "brain", "conv", ".system_generated");
+      const inbox = join(generated, "messages");
+      mkdirSync(inbox, { recursive: true });
+      mkdirSync(join(generated, "logs"), { recursive: true });
+      assert.equal(hasAntigravityPendingReply(home, "conv"), false);
+      writeFileSync(
+        join(inbox, "low.json"),
+        JSON.stringify({ id: "low", priority: "MESSAGE_PRIORITY_LOW" }),
+      );
+      assert.equal(hasAntigravityPendingReply(home, "conv"), false);
+      writeFileSync(
+        join(inbox, "high.json"),
+        JSON.stringify({ id: "high", priority: "MESSAGE_PRIORITY_HIGH" }),
+      );
+      assert.equal(hasAntigravityPendingReply(home, "conv"), true);
+      writeFileSync(join(inbox, "read.json"), JSON.stringify({ high: true }));
+      assert.equal(hasAntigravityPendingReply(home, "conv"), false);
+
+      // Dequeued but not yet answered: the transcript ends on the system step.
+      const transcript = join(generated, "logs", "transcript_full.jsonl");
+      const step = (type, content) => JSON.stringify({ type, content }) + "\n";
+      writeFileSync(
+        transcript,
+        step("SYSTEM_MESSAGE", "[Message] sender=x priority=MESSAGE_PRIORITY_HIGH content=done"),
+      );
+      assert.equal(hasAntigravityPendingReply(home, "conv"), true);
+      writeFileSync(
+        transcript,
+        step("SYSTEM_MESSAGE", "[Message] sender=x priority=MESSAGE_PRIORITY_LOW content=fyi"),
+      );
+      assert.equal(hasAntigravityPendingReply(home, "conv"), false);
+      writeFileSync(
+        transcript,
+        step("SYSTEM_MESSAGE", "[Message] sender=x priority=MESSAGE_PRIORITY_HIGH content=done") +
+          step("PLANNER_RESPONSE", "Got it."),
+      );
+      assert.equal(hasAntigravityPendingReply(home, "conv"), false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("recognises a request to run one of Relay's own tools", () => {
+    const raw = (ServerName, ToolName, extra = {}) => ({
+      rawInput: { ServerName, ToolName, ...extra },
+    });
+    assert.equal(antigravityRelayToolRequest(raw("relay", "ui_render")), "ui_render");
+    assert.equal(antigravityRelayToolRequest(raw("relay", "rm_rf")), undefined);
+    assert.equal(antigravityRelayToolRequest(raw("github", "ui_render")), undefined);
+    assert.equal(
+      antigravityRelayToolRequest(raw("relay", "ui_render", { CommandLine: "rm -rf /" })),
+      undefined,
+    );
+    assert.equal(antigravityRelayToolRequest({ title: "Run mcp_relay_chat_send" }), "chat_send");
+    assert.equal(antigravityRelayToolRequest({ name: "mcp_relay_delegate_task" }), "delegate_task");
+    assert.equal(antigravityRelayToolRequest({ title: "Run mcp_github_create_issue" }), undefined);
+    // agy's rawInput is authoritative over a name that only looks like Relay's.
+    assert.equal(
+      antigravityRelayToolRequest({
+        name: "mcp_relay_ui_render",
+        rawInput: { ServerName: "other", ToolName: "ui_render" },
+      }),
+      undefined,
+    );
   });
 });
 
