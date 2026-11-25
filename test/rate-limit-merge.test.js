@@ -6,6 +6,8 @@ import {
   rlSeverity,
   mergeRateLimitWindows,
   mergeRateLimits,
+  overlayRateLimits,
+  rateLimitPollInterval,
 } from "../dist/server/core/instance-manager.js";
 
 const future = () => new Date(Date.now() + 60_000).toISOString();
@@ -172,5 +174,60 @@ describe("mergeRateLimits", () => {
     assert.equal(merged[0].scope, "weekly");
     assert.equal(merged[0].windows[0].status, "allowed");
     assert.equal(merged[0].windows[0].usedPercent, 10);
+  });
+});
+
+describe("overlayRateLimits", () => {
+  it("merges a partial update without dropping other limits", () => {
+    const prev = [
+      { scope: "five_hour", windows: [{ usedPercent: 20, resetAt: future() }] },
+      { scope: "seven_day", windows: [{ usedPercent: 40, resetAt: future() }] },
+    ];
+    const out = overlayRateLimits(prev, [
+      { scope: "five_hour", windows: [{ status: "allowed_warning", usedPercent: 81 }] },
+    ]);
+    assert.deepEqual(
+      out.map((l) => [l.scope, l.windows[0].usedPercent]),
+      [
+        ["five_hour", 81],
+        ["seven_day", 40],
+      ],
+    );
+    assert.equal(out[0].windows[0].status, "allowed_warning");
+  });
+
+  it("keeps a known percentage when the live event carries none", () => {
+    const prev = [{ scope: "five_hour", windows: [{ usedPercent: 20, resetAt: future() }] }];
+    const out = overlayRateLimits(prev, [{ scope: "five_hour", windows: [{ status: "allowed" }] }]);
+    assert.equal(out[0].windows[0].usedPercent, 20);
+  });
+
+  it("appends limits the update introduces", () => {
+    const prev = [{ scope: "codex", windows: [{ usedPercent: 5 }] }];
+    const out = overlayRateLimits(prev, [{ scope: "gpt-x", windows: [{ usedPercent: 9 }] }]);
+    assert.deepEqual(
+      out.map((l) => l.scope),
+      ["codex", "gpt-x"],
+    );
+  });
+});
+
+describe("rateLimitPollInterval", () => {
+  const policy = { success: 300, backoffBase: 180, backoffMax: 900 };
+  it("settles to the success interval and backs off on failures, capped", () => {
+    assert.equal(rateLimitPollInterval(policy, 0), 300);
+    assert.equal(rateLimitPollInterval(policy, 1), 180);
+    assert.equal(rateLimitPollInterval(policy, 2), 360);
+    assert.equal(rateLimitPollInterval(policy, 3), 720);
+    assert.equal(rateLimitPollInterval(policy, 4), 900);
+  });
+});
+
+describe("overlayRateLimits with an unkeyed limit", () => {
+  it("updates the provider's one unnamed limit instead of appending a copy", () => {
+    const prev = [{ windows: [{ usedPercent: 10 }] }];
+    const out = overlayRateLimits(prev, [{ windows: [{ usedPercent: 30 }] }]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].windows[0].usedPercent, 30);
   });
 });

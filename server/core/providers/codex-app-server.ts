@@ -338,6 +338,8 @@ export interface CodexProviderGlobalStateSnapshotOptions {
   codexPath?: string;
   /** Codex home (`CODEX_HOME`) to read the state of. Absent = inherit the server env. */
   codexHome?: string;
+  /** Only read rate limits (the poller's cheap path); skip MCP, apps and account. */
+  rateLimitsOnly?: boolean;
 }
 
 // =============================================================================
@@ -1441,9 +1443,11 @@ export class CodexAppServerSession extends EventEmitter implements ProviderSessi
         this.emit("systemEvent", {
           type: "system_event",
           event: "provider_status",
+          // A full read: replaces the account's windows (see rateLimitsFetchedAt).
           payload: {
             account: {
               rateLimits,
+              rateLimitsFetchedAt: Date.now(),
             },
           },
         } as SystemEventMessage);
@@ -3080,6 +3084,7 @@ export async function fetchCodexProviderGlobalStateSnapshot({
   spawnProcess = spawn,
   codexPath = findCodexBinary() ?? "codex",
   codexHome,
+  rateLimitsOnly = false,
 }: CodexProviderGlobalStateSnapshotOptions): Promise<import("#core/types.js").ProviderGlobalState> {
   const child = spawnProcess(codexPath, ["app-server", "--listen", "stdio://"], {
     cwd,
@@ -3200,21 +3205,34 @@ export async function fetchCodexProviderGlobalStateSnapshot({
     ]);
     sendNotification("initialized");
 
+    const skip = Promise.resolve(null);
     const [mcpResult, appResult, accountResult, rateLimitsResult] = await Promise.all([
-      Promise.race([sendRpc("mcpServerStatus/list", {}), timeout]).catch(() => null),
-      Promise.race([sendRpc("app/list", {}), timeout]).catch(() => null),
-      Promise.race([sendRpc("account/read", { refreshToken: false }), timeout]).catch(() => null),
+      rateLimitsOnly
+        ? skip
+        : Promise.race([sendRpc("mcpServerStatus/list", {}), timeout]).catch(() => null),
+      rateLimitsOnly ? skip : Promise.race([sendRpc("app/list", {}), timeout]).catch(() => null),
+      rateLimitsOnly
+        ? skip
+        : Promise.race([sendRpc("account/read", { refreshToken: false }), timeout]).catch(
+            () => null,
+          ),
       Promise.race([sendRpc("account/rateLimits/read", undefined), timeout]).catch(() => null),
     ]);
 
     const appPayload = asRecord(appResult);
     const account = normalizeCodexAccountSnapshot(accountResult) ?? undefined;
 
-    // account/rateLimits/read currently returns null from a cold subprocess
-    // (requires internal snapshots that only exist after a live turn). Kept
-    // here so it starts working automatically if Codex adds cold-snapshot support.
+    // A cold app-server answers account/rateLimits/read with the full
+    // reading (verified against 0.16x), so this is a complete snapshot.
     const rateLimits = normalizeCodexRateLimitsSnapshot(rateLimitsResult);
 
+    if (rateLimitsOnly) {
+      return {
+        provider: "codex",
+        account: rateLimits?.length ? { rateLimits, rateLimitsFetchedAt: Date.now() } : undefined,
+        updatedAt: Date.now(),
+      };
+    }
     return {
       provider: "codex",
       account:
@@ -3222,6 +3240,7 @@ export async function fetchCodexProviderGlobalStateSnapshot({
           ? {
               ...(account ?? {}),
               rateLimits,
+              ...(rateLimits?.length ? { rateLimitsFetchedAt: Date.now() } : {}),
             }
           : undefined,
       mcpServers: normalizeMcpServerStatusSnapshot(mcpResult),

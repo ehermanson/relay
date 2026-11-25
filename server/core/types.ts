@@ -249,6 +249,12 @@ export interface ProviderAccountStatus {
   email?: string;
   status?: string;
   rateLimits?: ProviderRateLimitStatus[];
+  /**
+   * When `rateLimits` was last read as a complete snapshot (epoch ms). On a
+   * patch, its presence marks the windows as complete — they replace the
+   * account's windows instead of merging over them (live events are partial).
+   */
+  rateLimitsFetchedAt?: number;
   spendLimit?: SpendLimit | null;
 }
 

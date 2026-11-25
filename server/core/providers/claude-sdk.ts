@@ -523,6 +523,19 @@ interface SdkDiscoveryEntry {
    * rate_limit_event), so the UI can show utilization before any turn runs.
    */
   rateLimits: ProviderRateLimitStatus[] | null;
+  /** Extra-usage spend from the same snapshot. */
+  spendLimit: import("#core/types.js").SpendLimit | null;
+  /** When `rateLimits` was last read from a full get_usage snapshot (0 = never). */
+  rateLimitsFetchedAt: number;
+  /** In-flight standalone usage fetch, deduped per dir. */
+  usageInFlight: Promise<ClaudeUsage | null> | null;
+}
+
+/** One full get_usage reading: every plan window that currently applies, plus spend. */
+export interface ClaudeUsage {
+  rateLimits: ProviderRateLimitStatus[];
+  spendLimit: import("#core/types.js").SpendLimit | null;
+  fetchedAt: number;
 }
 
 const sdkDiscovery = new Map<string, SdkDiscoveryEntry>();
@@ -542,6 +555,9 @@ function discoveryEntry(configDir: string = resolveClaudeConfigDir()): SdkDiscov
       modelsRefreshInFlight: null,
       accountInfo: null,
       rateLimits: null,
+      spendLimit: null,
+      rateLimitsFetchedAt: 0,
+      usageInFlight: null,
     };
     sdkDiscovery.set(key, entry);
   }
@@ -660,7 +676,98 @@ function windowsFromUsageSnapshot(
     }
   }
 
-  return windows.size ? windows : null;
+  return windows;
+}
+
+/**
+ * A full usage reading from a get_usage snapshot, or null when the snapshot
+ * carries no rate-limit data at all (signed out, API key, throttled). A valid
+ * snapshot with every window null (no usage yet this period) is a reading
+ * with no windows — authoritative, so stale windows are dropped.
+ */
+function usageFromSnapshot(snapshot: SdkUsageSnapshot | null): ClaudeUsage | null {
+  const windows = windowsFromUsageSnapshot(snapshot);
+  if (!windows) return null;
+  return {
+    rateLimits: buildRateLimitsFromWindows(windows),
+    spendLimit: extraUsageFromSnapshot(snapshot),
+    fetchedAt: Date.now(),
+  };
+}
+
+/** Remember a full usage reading for a dir (prewarm, probe, session, poll). */
+function recordUsage(configDir: string, usage: ClaudeUsage): void {
+  const entry = discoveryEntry(configDir);
+  entry.rateLimits = usage.rateLimits;
+  entry.spendLimit = usage.spendLimit;
+  entry.rateLimitsFetchedAt = usage.fetchedAt;
+}
+
+/** The last full usage reading for a dir, if any. */
+export function getSdkDiscoveredUsage(configDir?: string): ClaudeUsage | null {
+  const entry = sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()));
+  if (!entry?.rateLimits || !entry.rateLimitsFetchedAt) return null;
+  return {
+    rateLimits: entry.rateLimits,
+    spendLimit: entry.spendLimit,
+    fetchedAt: entry.rateLimitsFetchedAt,
+  };
+}
+
+/**
+ * Read plan usage for one config dir the way Usage-Meter does: a short-lived
+ * warm CLI subprocess under the dir's credential keying, one get_usage
+ * control request, close. Zero tokens. Concurrent callers share one fetch.
+ * Returns null when the SDK is unavailable or the snapshot has no data.
+ */
+export function fetchClaudeUsage(
+  configDir: string,
+  logger: CoreConfig["logger"],
+): Promise<ClaudeUsage | null> {
+  const entry = discoveryEntry(configDir);
+  if (entry.usageInFlight) return entry.usageInFlight;
+  const run = (async (): Promise<ClaudeUsage | null> => {
+    if (!cachedStartupFn) return null;
+    const mode = claudeConfigDirEnvMode(configDir);
+    const warm = await cachedStartupFn({
+      options: {
+        pathToClaudeCodeExecutable: resolveClaudeExecutablePath(),
+        env: buildClaudeSpawnEnv(configDir, process.env, mode) as Record<
+          string,
+          string | undefined
+        >,
+      },
+      initializeTimeoutMs: 30_000,
+    });
+    const promptQueue = new PromptQueue();
+    const handle = warm.query(promptQueue);
+    try {
+      // The request itself has no timeout: a CLI that never answers would
+      // otherwise hold this fetch (and the poller's slot) open for good.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const snapshot = await Promise.race([
+        readUsageSnapshot(handle),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("get_usage timed out")), 30_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      const usage = usageFromSnapshot(snapshot);
+      if (usage) recordUsage(configDir, usage);
+      else logger.debug(`[SdkSession] get_usage for ${configDir} returned no rate-limit data`);
+      return usage;
+    } finally {
+      promptQueue.terminate();
+      try {
+        await handle.close();
+      } catch {
+        /* ignore close errors */
+      }
+    }
+  })().finally(() => {
+    entry.usageInFlight = null;
+  });
+  entry.usageInFlight = run;
+  return run;
 }
 
 /**
@@ -770,10 +877,10 @@ export async function prewarmSdk(
           : `[SdkSession] Pre-warm accountInfo carried no name: ${JSON.stringify(inspection.rawAccount)}`,
       );
     }
-    if (inspection.usageWindows) {
-      entry.rateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
+    if (inspection.usage) {
+      recordUsage(configDir, inspection.usage);
       logger.info(
-        `[SdkSession] Pre-warm usage snapshot: ${inspection.usageWindows.size} rate-limit windows`,
+        `[SdkSession] Pre-warm usage snapshot: ${inspection.usage.rateLimits.length} rate-limit windows`,
       );
     }
     // The Settings Accounts row for this dir can answer from the pre-warm
@@ -854,16 +961,6 @@ export function refreshSdkDiscoveredModelsIfStale(
  */
 export function getSdkDiscoveredAccountInfo(configDir?: string): AccountInfo | null {
   return sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()))?.accountInfo ?? null;
-}
-
-/**
- * Return plan rate-limit utilization discovered via the experimental
- * get_usage snapshot for one config dir, if available. Populated eagerly by
- * prewarmSdk() for the server's dir, by the identity probe for other
- * accounts, and refreshed by sessions bound to that dir.
- */
-export function getSdkDiscoveredRateLimits(configDir?: string): ProviderRateLimitStatus[] | null {
-  return sdkDiscovery.get(discoveryKey(configDir ?? resolveClaudeConfigDir()))?.rateLimits ?? null;
 }
 
 // =============================================================================
@@ -998,7 +1095,7 @@ interface ClaudeLoginInspection {
   /** Any auth signal from accountInfo(), or a usage snapshot (subscription only). */
   signedIn: boolean;
   models?: SdkModelInfo[];
-  usageWindows: Map<string, RateLimitWindowData> | null;
+  usage: ClaudeUsage | null;
 }
 
 /** Which env keyings to try for a dir: both for the default dir (preferred first), else explicit. */
@@ -1051,11 +1148,11 @@ async function inspectClaudeLogin(
     } catch (err) {
       logger.debug(`[SdkSession] accountInfo() failed for ${configDir} (${mode}): ${err}`);
     }
-    let usageWindows: Map<string, RateLimitWindowData> | null = null;
+    let usage: ClaudeUsage | null = null;
     let usageIdentity: ProviderAccountStatus | null = null;
     try {
       const snapshot = await readUsageSnapshot(handle);
-      usageWindows = windowsFromUsageSnapshot(snapshot);
+      usage = usageFromSnapshot(snapshot);
       usageIdentity = identityFromUsageSnapshot(snapshot);
     } catch (err) {
       logger.debug(`[SdkSession] get_usage failed for ${configDir} (${mode}): ${err}`);
@@ -1076,7 +1173,7 @@ async function inspectClaudeLogin(
         `[SdkSession] ${configDir} (CLAUDE_CONFIG_DIR ${mode}): not signed in (accountInfo=${JSON.stringify(rawAccount)}, usage=none)`,
       );
     }
-    return { mode, rawAccount, identity, signedIn, models, usageWindows };
+    return { mode, rawAccount, identity, signedIn, models, usage };
   } finally {
     promptQueue.terminate();
     try {
@@ -1165,8 +1262,7 @@ export function probeClaudeAccountIdentity(
       // plan/email and rate-limit windows without a session ever running.
       const discovery = discoveryEntry(configDir);
       if (inspection.rawAccount) discovery.accountInfo = inspection.rawAccount;
-      if (inspection.usageWindows)
-        discovery.rateLimits = buildRateLimitsFromWindows(inspection.usageWindows);
+      if (inspection.usage) recordUsage(configDir, inspection.usage);
       const identity = inspection.identity;
       logger.info(
         `[SdkSession] account probe for ${configDir} (CLAUDE_CONFIG_DIR ${mode}): ${identity?.email ?? identity?.label ?? identity?.plan ?? identity?.status}`,
@@ -2712,53 +2808,53 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     // an earlier warning/rejected event. Status always reflects the latest
     // event — it's the live signal.
     const prev = this.rateLimitWindows.get(rateLimitType);
-    this.rateLimitWindows.set(rateLimitType, {
+    const next: RateLimitWindowData = {
       utilization: utilization ?? prev?.utilization,
       resetsAt: resetsAt ?? prev?.resetsAt,
       status,
-    });
+    };
+    this.rateLimitWindows.set(rateLimitType, next);
 
-    this.emitRateLimitsStatus();
+    // A live event describes one window only: publish just that window as a
+    // partial update, so it can't drop or resurrect any other window.
+    this.emitRateLimitsStatus(buildRateLimitsFromWindows(new Map([[rateLimitType, next]])));
   }
 
   /**
-   * Merge get_usage snapshot windows into the accumulated map. The snapshot
-   * is fetched now, so its utilization is at least as fresh as any earlier
-   * event data — snapshot fields win, while live event `status` is preserved
-   * (the snapshot carries none). Exception: a stale `rejected` is cleared
-   * when the snapshot proves the window is below 100% — it cannot still be
-   * exhausted.
+   * Replace the accumulated windows with a full get_usage reading. The
+   * snapshot is authoritative for which windows exist (a window it reports
+   * null — e.g. five_hour before any use this period — is gone) and for
+   * utilization; a live event's status is kept for windows still present,
+   * except a stale `rejected` the snapshot proves is below 100%.
    */
   private seedUsageWindows(windows: Map<string, RateLimitWindowData>): void {
+    const next = new Map<string, RateLimitWindowData>();
     for (const [type, data] of windows) {
       const existing = this.rateLimitWindows.get(type);
-      if (!existing) {
-        this.rateLimitWindows.set(type, { ...data });
-        continue;
-      }
-      const utilization = data.utilization ?? existing.utilization;
+      const utilization = data.utilization ?? existing?.utilization;
       // utilization is a 0-1 fraction here (windowsFromUsageSnapshot normalizes
       // the snapshot's 0-100 values on ingest).
       const status =
-        existing.status === "rejected" && typeof utilization === "number" && utilization < 1
+        existing?.status === "rejected" && typeof utilization === "number" && utilization < 1
           ? undefined
-          : existing.status;
-      this.rateLimitWindows.set(type, {
+          : existing?.status;
+      next.set(type, {
         utilization,
-        resetsAt: data.resetsAt ?? existing.resetsAt,
+        resetsAt: data.resetsAt ?? existing?.resetsAt,
         status,
       });
     }
+    this.rateLimitWindows = next;
   }
 
   private _usageProbeInflight = false;
   private _lastUsageProbeAt = 0;
 
   /**
-   * Probe the get_usage snapshot and fold it into the accumulated windows.
-   * Called at session start and after each completed turn (throttled) so the
-   * 5h window keeps a percentage even though live events rarely carry one,
-   * and so a stale `rejected` self-corrects instead of latching until reset.
+   * Probe the get_usage snapshot and publish it as a full reading. Called at
+   * session start and after each completed turn (throttled) so the windows
+   * stay current while the chat is in use; the manager's poller covers the
+   * time in between.
    */
   private refreshUsageRateLimits(): void {
     if (this._stopped || this._usageProbeInflight) return;
@@ -2768,9 +2864,16 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       .then((snapshot) => {
         this._lastUsageProbeAt = Date.now();
         const windows = windowsFromUsageSnapshot(snapshot);
-        if (windows) this.seedUsageWindows(windows);
+        if (!windows) return;
+        this.seedUsageWindows(windows);
         this._spendLimit = extraUsageFromSnapshot(snapshot);
-        if (windows || this._spendLimit !== null) this.emitRateLimitsStatus();
+        const usage: ClaudeUsage = {
+          rateLimits: this.buildRateLimitsSnapshot(),
+          spendLimit: this._spendLimit,
+          fetchedAt: Date.now(),
+        };
+        recordUsage(this.configDir, usage);
+        this.emitRateLimitsStatus(usage.rateLimits, usage);
       })
       .catch((err) => {
         this.logger.debug(`[SdkSession] get_usage snapshot unavailable: ${err}`);
@@ -2780,19 +2883,23 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
       });
   }
 
-  /** Emit the accumulated rate-limit windows and spend limit as a provider_status event. */
-  private emitRateLimitsStatus(): void {
-    const rateLimits = this.buildRateLimitsSnapshot();
-    if (!rateLimits.length && this._spendLimit === null) return;
-
-    // Keep this account's snapshot fresh so the boot-time fallback in
-    // instance-manager reflects the latest data.
-    if (rateLimits.length) discoveryEntry(this.configDir).rateLimits = rateLimits;
-
-    const account: import("#core/types.js").ProviderAccountStatus = {};
-    if (rateLimits.length) account.rateLimits = rateLimits;
-    if (this._spendLimit !== null) account.spendLimit = this._spendLimit;
-
+  /**
+   * Emit rate-limit windows as a provider_status event. With `full`, the
+   * windows are a complete reading (`rateLimitsFetchedAt` set, spend
+   * included) that replaces the account's windows; without it they are a
+   * partial update merged over the existing ones.
+   */
+  private emitRateLimitsStatus(
+    rateLimits: import("#core/types.js").ProviderRateLimitStatus[],
+    full?: ClaudeUsage,
+  ): void {
+    const account: import("#core/types.js").ProviderAccountStatus = { rateLimits };
+    if (full) {
+      account.spendLimit = full.spendLimit;
+      account.rateLimitsFetchedAt = full.fetchedAt;
+    } else if (!rateLimits.length) {
+      return;
+    }
     this.emit("systemEvent", {
       type: "system_event",
       event: "provider_status",

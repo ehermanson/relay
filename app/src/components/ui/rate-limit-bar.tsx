@@ -1,5 +1,11 @@
-import type { ProviderRateLimitStatus, ProviderRateLimitWindow, SpendLimit } from "@shared/types";
-import { formatTimeUntil, rateLimitColorClass } from "../../lib/utils";
+import type {
+  ProviderAccountStatus,
+  ProviderRateLimitStatus,
+  ProviderRateLimitWindow,
+  SpendLimit,
+} from "@shared/types";
+import { rateLimitView } from "../../lib/rate-limits";
+import { formatTimeAgo, formatTimeUntil, rateLimitColorClass } from "../../lib/utils";
 
 /**
  * Known limit-pool scopes/names → display qualifier appended to the window
@@ -197,5 +203,42 @@ export function flattenRateLimitWindows(
       key: `rl-${li}-${wi}`,
       qualifier: limitQualifier(limit),
     })),
+  );
+}
+
+/**
+ * An account's plan limits and extra-usage spend, as shown in Settings and the
+ * chat's Context sidecar. Expired windows render as reset and an old reading
+ * says how old it is (see `rateLimitView`). Renders nothing when there is
+ * nothing current to show.
+ */
+export function RateLimitList({
+  account,
+  size = "sm",
+  title,
+  className,
+}: {
+  account: ProviderAccountStatus | undefined;
+  size?: "sm" | "md";
+  title?: string;
+  className?: string;
+}) {
+  const view = rateLimitView(account);
+  const spendLimit = account?.spendLimit;
+  if (!view && !spendLimit) return null;
+  const textSize = size === "sm" ? "text-[0.6875rem]" : "text-[0.75rem]";
+  return (
+    <div className={className}>
+      {title || view?.staleSince ? (
+        <div className={`flex items-baseline justify-between ${textSize} text-muted`}>
+          {title ? <span>{title}</span> : <span />}
+          {view?.staleSince ? <span>Updated {formatTimeAgo(view.staleSince)}</span> : null}
+        </div>
+      ) : null}
+      {flattenRateLimitWindows(view?.rateLimits ?? []).map(({ window, key, qualifier }) => (
+        <RateLimitBar key={key} window={window} size={size} qualifier={qualifier} />
+      ))}
+      {spendLimit ? <SpendLimitBar spendLimit={spendLimit} size={size} /> : null}
+    </div>
   );
 }

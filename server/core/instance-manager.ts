@@ -64,7 +64,8 @@ import {
   accountInfoToStatus,
   getSdkDiscoveredAccountInfo,
   getSdkDiscoveredModels,
-  getSdkDiscoveredRateLimits,
+  getSdkDiscoveredUsage,
+  fetchClaudeUsage,
   readMcpResourceLinks,
   readToolResultResourceLinks,
 } from "#core/providers/claude-sdk.js";
@@ -93,6 +94,7 @@ import { isSubagentSessionMeta } from "#core/providers/codex-discovery.js";
 import { fetchCodexProviderGlobalStateSnapshot } from "#core/providers/codex-app-server.js";
 import { getCachedCodexModels, prewarmCodexModels } from "#core/providers/codex-models.js";
 import { isCodexInstalled } from "#core/providers/codex-cli.js";
+import { fetchAntigravityUsage } from "#core/providers/antigravity-usage.js";
 import { readAgentModelFromTranscript } from "#core/agent-model.js";
 import {
   antigravityDataDir,
@@ -676,6 +678,31 @@ function resolveProviderStateDir(): string {
   return testProviderStateDir;
 }
 
+/** How often the rate-limit poller checks which logins are due. */
+const RATE_LIMIT_POLL_TICK_MS = 60_000;
+
+/**
+ * Per-provider poll cadence, from Usage-Meter: Claude's usage endpoint is
+ * itself rate-limited, so settle to 5 min and back off 3→6→12→15 min on
+ * failure; Codex is a cheap local app-server read.
+ */
+const RATE_LIMIT_POLL_POLICY: Partial<
+  Record<ProviderKind, { success: number; backoffBase: number; backoffMax: number }>
+> = {
+  claude: { success: 5 * 60_000, backoffBase: 3 * 60_000, backoffMax: 15 * 60_000 },
+  codex: { success: 2 * 60_000, backoffBase: 2 * 60_000, backoffMax: 15 * 60_000 },
+  // `agy -p /usage`: a ~1.5s read-only print-mode command, no turn.
+  antigravity: { success: 2 * 60_000, backoffBase: 2 * 60_000, backoffMax: 15 * 60_000 },
+};
+
+export function rateLimitPollInterval(
+  policy: { success: number; backoffBase: number; backoffMax: number },
+  failures: number,
+): number {
+  if (failures <= 0) return policy.success;
+  return Math.min(policy.backoffBase * 2 ** (failures - 1), policy.backoffMax);
+}
+
 export function mergeRateLimitWindows(
   prevWindows: import("#core/types.js").ProviderRateLimitWindow[] | undefined,
   patchWindows: import("#core/types.js").ProviderRateLimitWindow[] | undefined,
@@ -720,6 +747,19 @@ export function mergeRateLimitWindows(
 }
 
 /**
+ * Whether two rate-limit entries are the same limit: by scope, else by name.
+ * Two entries with neither are the provider's one unnamed limit.
+ */
+function sameRateLimit(
+  a: import("#core/types.js").ProviderRateLimitStatus,
+  b: import("#core/types.js").ProviderRateLimitStatus,
+): boolean {
+  if (a.scope && a.scope === b.scope) return true;
+  if (a.name && a.name === b.name) return true;
+  return !a.scope && !a.name && !b.scope && !b.name;
+}
+
+/**
  * Merge incoming rate limit statuses against previously stored ones,
  * matching limits by scope/name and delegating window merging to
  * mergeRateLimitWindows.
@@ -730,16 +770,32 @@ export function mergeRateLimits(
 ): import("#core/types.js").ProviderRateLimitStatus[] | undefined {
   if (!patch) return prev?.map((l) => ({ ...l }));
   return patch.map((patchLimit) => {
-    const prevLimit = prev?.find(
-      (pl) =>
-        (patchLimit.scope && pl.scope === patchLimit.scope) ||
-        (patchLimit.name && pl.name === patchLimit.name),
-    );
+    const prevLimit = prev?.find((pl) => sameRateLimit(pl, patchLimit));
     return {
       ...patchLimit,
       windows: mergeRateLimitWindows(prevLimit?.windows, patchLimit.windows),
     };
   });
+}
+
+/**
+ * Apply a partial rate-limit update (a live event describing some windows)
+ * over the stored list: matched limits merge field by field, every other
+ * stored limit is kept. Never used for full snapshots, which replace the list
+ * (`mergeRateLimits`) so windows that no longer apply disappear.
+ */
+export function overlayRateLimits(
+  prev: import("#core/types.js").ProviderRateLimitStatus[] | undefined,
+  patch: import("#core/types.js").ProviderRateLimitStatus[],
+): import("#core/types.js").ProviderRateLimitStatus[] {
+  const matches = sameRateLimit;
+  const merged = mergeRateLimits(prev, patch) ?? [];
+  // Keep the stored order; limits the patch introduces go at the end.
+  const out = (prev ?? []).map((limit) => merged.find((m) => matches(m, limit)) ?? { ...limit });
+  for (const limit of merged) {
+    if (!(prev ?? []).some((p) => matches(limit, p))) out.push(limit);
+  }
+  return out;
 }
 
 /**
@@ -2245,9 +2301,8 @@ export class InstanceManager extends EventEmitter {
       logger: this.baseConfig.logger,
       codexHome: this.providerDirs.codex,
     });
-    // Account info + MCP + apps → populates providerGlobalState, served to
-    // the UI on connect. Rate limits come from live sessions (the cold
-    // app-server probe can't read them without a prior turn snapshot).
+    // Account info + MCP + apps + rate limits → populates providerGlobalState,
+    // served to the UI on connect; the rate-limit poller keeps limits fresh.
     void this.ensureProviderGlobalState("codex");
   }
 
@@ -4736,25 +4791,14 @@ export class InstanceManager extends EventEmitter {
               : (identity.identity ?? mapped ?? {})),
           };
 
-          // Rate limits: prefer live `rate_limit_event` data accumulated by
-          // this account's active sessions, falling back to the experimental
-          // get_usage snapshot cached for the dir at prewarm / probe / session
-          // start (SDK >= 0.3.169).
-          for (const instance of this.instances.values()) {
-            if (instance.info.provider !== "claude" || !instance.process) continue;
-            if (this.scopeConfigDir("claude", instance.info.configDir) !== scopedDir) continue;
-            const session =
-              instance.process as import("#core/providers/claude-sdk.js").ClaudeSdkSession;
-            if (typeof session.getRateLimitSnapshot !== "function") continue;
-            const rateLimits = session.getRateLimitSnapshot();
-            if (rateLimits?.length) {
-              accountPatch.rateLimits = rateLimits;
-              break;
-            }
-          }
-          if (!accountPatch.rateLimits) {
-            const snapshot = getSdkDiscoveredRateLimits(dir);
-            if (snapshot?.length) accountPatch.rateLimits = snapshot;
+          // Rate limits: the last full get_usage reading for this dir (prewarm,
+          // identity probe, a session, or the poller), when it is newer than
+          // what the state already holds.
+          const usage = getSdkDiscoveredUsage(dir);
+          if (usage && usage.fetchedAt > (existing?.account?.rateLimitsFetchedAt ?? 0)) {
+            accountPatch.rateLimits = usage.rateLimits;
+            accountPatch.spendLimit = usage.spendLimit;
+            accountPatch.rateLimitsFetchedAt = usage.fetchedAt;
           }
 
           if (Object.keys(accountPatch).length > 0) {
@@ -4792,6 +4836,153 @@ export class InstanceManager extends EventEmitter {
     return run;
   }
 
+  // ===========================================================================
+  // Rate-limit poller
+  // ===========================================================================
+  //
+  // Plan limits change while no Relay chat runs (the terminal CLI, another
+  // machine, a window rolling over), so they are read on a timer per login,
+  // the way Usage-Meter does it: a full snapshot that replaces the stored
+  // windows. Sessions and live events still update in between, and a fresh
+  // reading from a session defers the next poll. Polling only runs while a
+  // client is connected; nobody sees the numbers otherwise.
+
+  private rateLimitPollRefs = 0;
+  private rateLimitPollTimer: ReturnType<typeof setInterval> | null = null;
+  private rateLimitPollState = new Map<
+    string,
+    { lastAttempt: number; failures: number; inFlight: boolean }
+  >();
+
+  /** Keep rate limits polled while the returned release hasn't been called (one per client). */
+  retainRateLimitPolling(): () => void {
+    this.rateLimitPollRefs++;
+    if (!this.rateLimitPollTimer && !process.env.NODE_TEST_CONTEXT) {
+      this.rateLimitPollTimer = setInterval(
+        () => this.pollDueRateLimits(),
+        RATE_LIMIT_POLL_TICK_MS,
+      );
+      this.rateLimitPollTimer.unref?.();
+    }
+    if (!process.env.NODE_TEST_CONTEXT) this.pollDueRateLimits();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.rateLimitPollRefs = Math.max(0, this.rateLimitPollRefs - 1);
+      if (this.rateLimitPollRefs === 0 && this.rateLimitPollTimer) {
+        clearInterval(this.rateLimitPollTimer);
+        this.rateLimitPollTimer = null;
+      }
+    };
+  }
+
+  private stopRateLimitPolling(): void {
+    if (this.rateLimitPollTimer) clearInterval(this.rateLimitPollTimer);
+    this.rateLimitPollTimer = null;
+    this.rateLimitPollRefs = 0;
+  }
+
+  /** Every login whose limits are polled: each provider's default plus account logins. */
+  private rateLimitLogins(): Array<{ provider: ProviderKind; configDir: string | undefined }> {
+    const logins: Array<{ provider: ProviderKind; configDir: string | undefined }> = [];
+    if (this._sdkQueryFn) {
+      logins.push({ provider: "claude", configDir: undefined });
+      for (const dir of this.listAccountConfigDirs("claude")) {
+        logins.push({ provider: "claude", configDir: dir });
+      }
+    }
+    if (isCodexInstalled()) {
+      logins.push({ provider: "codex", configDir: undefined });
+      for (const dir of this.listAccountConfigDirs("codex")) {
+        logins.push({ provider: "codex", configDir: dir });
+      }
+    }
+    // Antigravity has no account logins yet: only the server's own home.
+    if (isAntigravityInstalled()) logins.push({ provider: "antigravity", configDir: undefined });
+    return logins;
+  }
+
+  private pollDueRateLimits(): void {
+    if (this.shuttingDown) return;
+    for (const { provider, configDir } of this.rateLimitLogins()) {
+      void this.refreshRateLimits(provider, configDir);
+    }
+  }
+
+  /**
+   * Read one login's plan limits if due (or `force`), and publish them as a
+   * full reading. A failure keeps the last reading (its `rateLimitsFetchedAt`
+   * shows its age) and backs off.
+   */
+  async refreshRateLimits(
+    provider: ProviderKind,
+    configDir?: string,
+    force = false,
+  ): Promise<void> {
+    const scopedDir = this.scopeConfigDir(provider, configDir);
+    const key = providerStateKey(provider, scopedDir);
+    const state = this.rateLimitPollState.get(key) ?? {
+      lastAttempt: 0,
+      failures: 0,
+      inFlight: false,
+    };
+    this.rateLimitPollState.set(key, state);
+    if (state.inFlight) return;
+    const now = Date.now();
+    const policy = RATE_LIMIT_POLL_POLICY[provider];
+    if (!policy) return;
+    if (!force) {
+      const interval = rateLimitPollInterval(policy, state.failures);
+      if (now - state.lastAttempt < interval) return;
+      // A session (or another path) already published a fresh full reading.
+      const fetchedAt = this.providerGlobalState.get(key)?.account?.rateLimitsFetchedAt ?? 0;
+      if (now - fetchedAt < policy.success) return;
+    }
+    state.inFlight = true;
+    state.lastAttempt = now;
+    try {
+      let account: import("#core/types.js").ProviderAccountStatus | undefined;
+      if (provider === "claude") {
+        const usage = await fetchClaudeUsage(
+          scopedDir ?? this.providerDirs.claude,
+          this.baseConfig.logger,
+        );
+        if (usage) {
+          account = {
+            rateLimits: usage.rateLimits,
+            spendLimit: usage.spendLimit,
+            rateLimitsFetchedAt: usage.fetchedAt,
+          };
+        }
+      } else if (provider === "antigravity") {
+        const rateLimits = await fetchAntigravityUsage({
+          home: scopedDir ?? this.providerDirs.antigravity,
+          logger: this.baseConfig.logger,
+        });
+        if (rateLimits) account = { rateLimits, rateLimitsFetchedAt: Date.now() };
+      } else {
+        const snapshot = await fetchCodexProviderGlobalStateSnapshot({
+          cwd: this.baseConfig.workingDirectory ?? process.cwd(),
+          logger: this.baseConfig.logger,
+          rateLimitsOnly: true,
+          ...(scopedDir ? { codexHome: scopedDir } : {}),
+        });
+        if (snapshot.account?.rateLimitsFetchedAt) account = snapshot.account;
+      }
+      if (!account) throw new Error("no rate-limit data");
+      state.failures = 0;
+      if (!this.shuttingDown) this.updateProviderGlobalState(provider, { account }, scopedDir);
+    } catch (err) {
+      state.failures++;
+      this.baseConfig.logger.debug(
+        `[InstanceManager] Rate-limit poll for ${key} failed (${state.failures}): ${err}`,
+      );
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
   /** Every non-default login of a provider whose global state should be hydrated alongside the default. */
   listAccountConfigDirs(provider: ProviderKind): string[] {
     return this.accounts
@@ -4825,19 +5016,27 @@ export class InstanceManager extends EventEmitter {
     const key = providerStateKey(provider, scopedDir);
     const prev = this.providerGlobalState.get(key);
     const { configDir: _patchDir, ...patchFields } = patch;
+    // A patch carrying `rateLimitsFetchedAt` is a complete reading and
+    // replaces the windows; one without is a partial live update.
+    const patchLimits = patch.account?.rateLimits;
+    const nextRateLimits = !patchLimits
+      ? prev?.account?.rateLimits?.map((limit) => ({ ...limit }))
+      : patch.account?.rateLimitsFetchedAt
+        ? (mergeRateLimits(prev?.account?.rateLimits, patchLimits) ?? [])
+        : overlayRateLimits(prev?.account?.rateLimits, patchLimits);
     const next: import("#core/types.js").ProviderGlobalState = {
       provider,
-      updatedAt: Date.now(),
       ...prev,
       ...patchFields,
+      updatedAt: Date.now(),
       ...(scopedDir ? { configDir: scopedDir } : {}),
       account: patch.account
         ? {
             ...prev?.account,
             ...patch.account,
-            rateLimits: patch.account.rateLimits
-              ? mergeRateLimits(prev?.account?.rateLimits, patch.account.rateLimits)
-              : prev?.account?.rateLimits?.map((limit) => ({ ...limit })),
+            rateLimits: nextRateLimits,
+            rateLimitsFetchedAt:
+              patch.account.rateLimitsFetchedAt ?? prev?.account?.rateLimitsFetchedAt,
           }
         : prev?.account
           ? {
@@ -7268,6 +7467,7 @@ export class InstanceManager extends EventEmitter {
     this.fileStatsDebouncer.cancelAll();
     await this.flushInstanceMutations();
     this.shuttingDown = true;
+    this.stopRateLimitPolling();
     this.clearDelegationTimers();
 
     const instances = [...this.instances.values()];
@@ -7337,6 +7537,7 @@ export class InstanceManager extends EventEmitter {
 
   stopAll(): void {
     this.shuttingDown = true;
+    this.stopRateLimitPolling();
     this.clearDelegationTimers();
     this.fileStatsDebouncer.cancelAll();
     // Flush a pending (debounced) provider-state write now rather than
@@ -12318,6 +12519,11 @@ export class InstanceManager extends EventEmitter {
       this.fileStatsDebouncer.schedule(instance.info.id, { immediate: true });
     }
     invalidateRepoStatus(instance.actualCwd || instance.info.workingDirectory);
+    // agy sends no live limit events; a finished turn is the moment its
+    // limits moved, so re-read them (still subject to the poll interval).
+    if (instance.info.provider === "antigravity" && this.rateLimitPollRefs > 0) {
+      void this.refreshRateLimits("antigravity", instance.info.configDir);
+    }
   }
 
   /**

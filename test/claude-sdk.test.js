@@ -640,6 +640,69 @@ describe("ClaudeSdkSession", () => {
       session.close();
     });
 
+    it("marks a usage snapshot as a full reading and drops windows it no longer reports", async () => {
+      const harness = makeHarness();
+      harness.fakeQuery.usageSnapshot = {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 30, resets_at: "2026-06-09T21:30:00.000Z" },
+          seven_day: { utilization: 10, resets_at: "2026-06-15T12:00:00.000Z" },
+        },
+      };
+      const session = createSdkSessionSync(
+        { cwd: "/test/project", logger: noopLogger },
+        harness.queryFn,
+      );
+      const systemEvents = collectEvents(session, "systemEvent");
+      await tick();
+
+      const first = systemEvents
+        .map(([event]) => event)
+        .find((event) => event.event === "provider_status");
+      assert.equal(typeof first.payload.account.rateLimitsFetchedAt, "number");
+      assert.equal(first.payload.account.rateLimits.length, 2);
+
+      // A live event publishes only its own window, as a partial update.
+      harness.fakeQuery.emit({
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "seven_day", status: "allowed", resetsAt: 1781200000 },
+      });
+      await tick();
+      const statuses = systemEvents
+        .map(([event]) => event)
+        .filter((event) => event.event === "provider_status");
+      const partial = statuses[statuses.length - 1];
+      assert.equal(partial.payload.account.rateLimitsFetchedAt, undefined);
+      assert.deepEqual(
+        partial.payload.account.rateLimits.map((l) => l.scope),
+        ["seven_day"],
+      );
+
+      // The 5h window ends: the next snapshot reports it null, and it is gone.
+      session._lastUsageProbeAt = 0;
+      harness.fakeQuery.usageSnapshot = {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: null,
+          seven_day: { utilization: 12, resets_at: "2026-06-15T12:00:00.000Z" },
+        },
+      };
+      session.refreshUsageRateLimits();
+      await tick();
+      const all = systemEvents
+        .map(([event]) => event)
+        .filter((event) => event.event === "provider_status");
+      const last = all[all.length - 1];
+      assert.equal(typeof last.payload.account.rateLimitsFetchedAt, "number");
+      assert.deepEqual(
+        last.payload.account.rateLimits.map((l) => l.scope),
+        ["seven_day"],
+      );
+      session.close();
+    });
+
     it("emits output from assistant text blocks", async () => {
       const harness = makeHarness();
       const session = await createTestSession(harness);

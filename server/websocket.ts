@@ -512,6 +512,8 @@ export function createWebSocketServer(
         void instanceManager.ensureProviderGlobalState(provider, false, configDir);
       }
     }
+    // Plan limits are polled per login while any client is connected.
+    const releaseRateLimitPolling = instanceManager.retainRateLimitPolling();
     sendMessage(ws, {
       type: "projects_changed",
       projects: instanceManager.projectManager.listProjects(),
@@ -1081,6 +1083,7 @@ export function createWebSocketServer(
       terminalSubscriptions.delete(ws);
       clearRepoStatusSubscriptions(ws);
       missedPongs.delete(ws);
+      releaseRateLimitPolling();
     });
   });
 
