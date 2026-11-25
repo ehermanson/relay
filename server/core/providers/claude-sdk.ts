@@ -2089,6 +2089,18 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
     return isAgentTask ? toolUseId : undefined;
   }
 
+  private applySubagentRetry(msg: Record<string, unknown>, patch: AgentInfo): void {
+    const retry = msg.subagent_retry;
+    if (!retry || typeof retry !== "object") return;
+    const r = retry as Record<string, unknown>;
+    if (typeof r.attempt === "number" && r.attempt > 0) {
+      patch.retryAttempt = r.attempt;
+    }
+    if (typeof r.max_retries === "number") {
+      patch.retryMaxAttempts = r.max_retries;
+    }
+  }
+
   private readTaskUsage(raw: unknown): AgentInfo["usage"] | undefined {
     if (!raw || typeof raw !== "object") return undefined;
     const u = raw as Record<string, unknown>;
@@ -2181,6 +2193,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         if (msg.skip_transcript === true) patch.statusDetail = "background";
         if (typeof msg.is_backgrounded === "boolean") patch.isBackgrounded = msg.is_backgrounded;
         if (typeof msg.spawn_depth === "number") patch.spawnDepth = msg.spawn_depth;
+        this.applySubagentRetry(msg, patch);
         break;
       }
       case "task_progress": {
@@ -2203,6 +2216,7 @@ class ClaudeSdkSessionImpl extends EventEmitter implements ClaudeSdkSession {
         }
         const usage = this.readTaskUsage(msg.usage);
         if (usage) patch.usage = usage;
+        this.applySubagentRetry(msg, patch);
         break;
       }
       case "task_updated": {
