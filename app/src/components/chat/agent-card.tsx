@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronRight, ShieldAlert } from "lucide-react";
+import { ChevronRight, RefreshCw, ShieldAlert } from "lucide-react";
 import type { AgentInfo } from "@shared/types";
 import { getAgentLastActivity, getAgentSubtitle, getAgentTitle, isAgentActive } from "@/lib/agents";
 import { AgentStatusBadge } from "@/components/chat/agent-status-badge";
@@ -93,6 +93,21 @@ export function AgentCard({
                 </span>
               )}
               {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
+              {agent.retryAttempt != null && agent.retryAttempt > 0 && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-muted/10 px-1.5 py-px text-[0.5625rem] font-medium text-muted/80"
+                  title={
+                    agent.retryMaxAttempts != null
+                      ? `Retry ${agent.retryAttempt} of ${agent.retryMaxAttempts}`
+                      : `Retry attempt ${agent.retryAttempt}`
+                  }
+                >
+                  <RefreshCw size={8} />
+                  {agent.retryMaxAttempts != null
+                    ? `Retry ${agent.retryAttempt}/${agent.retryMaxAttempts}`
+                    : `Retry ${agent.retryAttempt}`}
+                </span>
+              )}
               {hasPendingRequest && (
                 <span
                   className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-warning/10 px-1.5 py-px text-[0.5625rem] font-medium text-warning"
@@ -139,7 +154,7 @@ export function AgentCard({
             }}
             className="overflow-hidden"
           >
-            <div className="border-t border-border/50 px-3 py-2.5">
+            <div className="px-3 pb-3">
               <AgentDetail agent={agent} fallbackResult={fallbackResult} depth={depth} />
             </div>
           </motion.div>
