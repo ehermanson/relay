@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import { ChevronRight, ShieldAlert } from "lucide-react";
+import { ChevronRight, RefreshCw, ShieldAlert } from "lucide-react";
 import type { AgentInfo, AgentLifecycle, ProviderKind } from "@shared/types";
 import type { ChatItem } from "@/lib/chat-types";
 import {
@@ -113,6 +113,21 @@ function AgentRow({
             <span className="flex items-center gap-1.5">
               <span className="truncate text-[0.8125rem] font-medium text-text">{title}</span>
               {agent.origin === "relay" && <RelayAgentMarker agent={agent} />}
+              {agent.retryAttempt != null && agent.retryAttempt > 0 && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-muted/10 px-1.5 py-px text-[0.5625rem] font-medium text-muted/80"
+                  title={
+                    agent.retryMaxAttempts != null
+                      ? `Retry ${agent.retryAttempt} of ${agent.retryMaxAttempts}`
+                      : `Retry attempt ${agent.retryAttempt}`
+                  }
+                >
+                  <RefreshCw size={8} />
+                  {agent.retryMaxAttempts != null
+                    ? `Retry ${agent.retryAttempt}/${agent.retryMaxAttempts}`
+                    : `Retry ${agent.retryAttempt}`}
+                </span>
+              )}
               {hasPendingRequest && (
                 <ShieldAlert
                   size={11}

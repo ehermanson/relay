@@ -1460,6 +1460,10 @@ export interface AgentInfo {
   isBackgrounded?: boolean;
   /** Nesting depth of the spawned agent: 1 for a top-level spawn, N+1 when spawned inside a depth-N agent. */
   spawnDepth?: number;
+  /** Retry attempt number when this agent invocation is a retry of a previously failed one (SDK subagent_retry.attempt). 1 = first retry. */
+  retryAttempt?: number;
+  /** Maximum retries allowed for this agent (SDK subagent_retry.max_retries). */
+  retryMaxAttempts?: number;
 }
 
 /** Sparse upsert of one delegated agent. Replayable (part of history). */
